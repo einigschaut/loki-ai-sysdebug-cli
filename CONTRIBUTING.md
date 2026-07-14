@@ -177,6 +177,31 @@ Allowed types: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`, `ci`,
 - Small, focused commits and PRs are strongly preferred — one command or
   feature per PR, no drive-by unrelated changes bundled in.
 
+Your commit types matter beyond style: they drive the version bump (below).
+
+## Versioning & Releases
+
+Loki follows [Semantic Versioning](https://semver.org). The version lives
+in a single file, **`version.txt`** at the repo root, and the CLI reports
+exactly what it contains. See
+[`docs/adr/0005-versioning-and-releases.md`](docs/adr/0005-versioning-and-releases.md)
+for the full policy.
+
+Releases are automated with
+[release-please](https://github.com/googleapis/release-please):
+
+- **Do not hand-edit `version.txt`, git tags, or a released `CHANGELOG`
+  section.** Those are produced by the release tooling. Add human-readable
+  notes under `## [Unreleased]` in `CHANGELOG.md`; the release process
+  promotes them into a dated version section.
+- On merges to `main`, release-please reads your Conventional Commits and,
+  when a release is warranted, opens a **Release PR** that bumps
+  `version.txt`, moves the changelog, and (on merge, by the maintainer)
+  tags `vX.Y.Z`. `feat:` → minor, `fix:` → patch; while Loki is pre-1.0
+  (`0.x`), breaking changes bump the minor rather than jumping to `1.0`.
+- Nothing releases automatically — the maintainer merges the Release PR
+  deliberately.
+
 ## Security-Critical Contributions
 
 Changes to isolation (`env-isolate`), the allow-list gate, authentication,

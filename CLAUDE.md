@@ -114,7 +114,12 @@ security suites are release blockers.
 - Before merge: `/code-review` + `/simplify` (reuse/dead-code) + `security-review` for security changes.
 - **No scope creep:** any deviation from the plan/ticket → ADR or ask, never silently.
 - **Commit prefixes:** Conventional Commits — `feat: fix: chore: refactor: docs: test: ci: perf: build:`.
-  `WIP:` is not merged.
+  `WIP:` is not merged. They also drive the version bump (below).
+- **Versioning is automated (ADR-0005):** `version.txt` (repo root) is the single SemVer source of
+  truth, read by the CLI. **Never hand-edit `version.txt`, a git tag, or a released CHANGELOG
+  section** — release-please bumps them from Conventional Commits (`feat:`→minor, `fix:`→patch;
+  breaking stays on minor pre-1.0) and the maintainer merges the Release PR. Add notes under
+  `## [Unreleased]`.
 - **Done =** code + green tests + generated docs current + CHANGELOG line + dead-code-free/lint-clean
   + contract honored + (security → Opus review).
 
