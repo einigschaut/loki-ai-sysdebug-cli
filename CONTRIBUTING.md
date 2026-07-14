@@ -190,10 +190,11 @@ for the full policy.
 Releases are automated with
 [release-please](https://github.com/googleapis/release-please):
 
-- **Do not hand-edit `version.txt`, git tags, or a released `CHANGELOG`
-  section.** Those are produced by the release tooling. Add human-readable
-  notes under `## [Unreleased]` in `CHANGELOG.md`; the release process
-  promotes them into a dated version section.
+- **Do not hand-edit `version.txt`, git tags, or the `CHANGELOG.md` version
+  sections.** Those are produced by the release tooling from your commit
+  history — so **your commit message is the changelog entry**. Write a clear
+  Conventional Commit subject (and a body for detail); there is no
+  hand-maintained `[Unreleased]` section to update.
 - On merges to `main`, release-please reads your Conventional Commits and,
   when a release is warranted, opens a **Release PR** that bumps
   `version.txt`, moves the changelog, and (on merge, by the maintainer)

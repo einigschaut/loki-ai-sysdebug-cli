@@ -103,6 +103,6 @@ Write-Host 'Next steps (Definition of Done):'
 Write-Host "  1. Implement the handler in src\commands\$Name.ps1 (the placeholder returns a non-zero exit for now)."
 Write-Host "  2. Add behaviour tests in tests\$Name.Tests.ps1 — break every new guard once on purpose."
 Write-Host "  3. Add the Summary key + any user-facing strings to src\i18n\*.psd1 (all locales; CLAUDE.md §10)."
-Write-Host '  4. Add a CHANGELOG.md line.'
+Write-Host '  4. Commit with a Conventional Commit (feat:/fix:) -- the CHANGELOG is generated from commits, not hand-edited.'
 Write-Host '  5. build\Invoke-Checks.ps1 -> must be green.'
 exit 0
