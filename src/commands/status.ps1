@@ -1,6 +1,9 @@
 ﻿# commands/status.ps1 — `loki status`
-# Stage-0 build-out: fast, WRITE-FREE environment check (app root, PowerShell, network reachability).
-# Honestly scoped: auth, host-posture, and volume checks follow in stage 1 (F5/F7) — do NOT fake them here.
+# Fast, WRITE-FREE glance: app root, PowerShell, network reachability, auth, and a host-posture rollup.
+# Reuses the pure ConvertTo-LokiDoctorChecks interpreter (src/lib/posture.ps1) with a placeholder "unknown"
+# volume so there is no duplicated check logic against `loki doctor` — but status ONLY calls the FAST
+# Get-LokiHostPosture and MUST NOT call Get-LokiVolumePosture (that ~5s BitLocker probe belongs to doctor;
+# it is dropped from the rollup here). The full volume/BitLocker diagnosis stays exclusive to `loki doctor`.
 Set-StrictMode -Version Latest
 
 function Get-LokiCmdMeta_status {
@@ -28,7 +31,47 @@ function Invoke-LokiCmd_status {
         Write-LokiWarn (Get-LokiText 'status.net.offline')
     }
 
+    $cfg = Read-LokiConfig -Path (Join-Path $Context.AppRoot 'loki.config.json')
+    $auth = Get-LokiAuthStatus -EnvFilePath (Join-Path $Context.AppRoot 'home\.env') -Config $cfg
+    $hostPosture = Get-LokiHostPosture
+    # Placeholder volume ("unknown" sentinel) -- status must NEVER call Get-LokiVolumePosture (slow BitLocker
+    # probe, ~5s); the volume check is dropped from the rollup below. Full volume diagnosis: `loki doctor`.
+    $volumePlaceholder = [pscustomobject]@{ Drive = $null; Removable = $null; BitLockerOn = $null }
+    $allChecks = ConvertTo-LokiDoctorChecks -HostPosture $hostPosture -VolumePosture $volumePlaceholder -AuthStatus $auth
+
+    $authCheck = $allChecks | Where-Object { $_.Id -eq 'auth' } | Select-Object -First 1
+    $hostChecks = @($allChecks | Where-Object { ($_.Id -ne 'auth') -and ($_.Id -ne 'volume') })
+
+    $authStatusWord = Get-LokiText ('doctor.status.' + $authCheck.Severity)
+    $authDetail = $authCheck.DetailRaw
+    if ($null -ne $authCheck.DetailKey) {
+        $authDetail = Get-LokiText $authCheck.DetailKey -ArgumentList $authCheck.DetailArgs
+    }
+    $authLine = "{0,-14} [{1}] {2}" -f 'Auth:', $authStatusWord, $authDetail
+    if ($authCheck.Severity -eq 'ok') {
+        Write-LokiOk $authLine
+    }
+    else {
+        Write-LokiWarn $authLine
+    }
+
+    $ok = @($hostChecks | Where-Object { $_.Severity -eq 'ok' }).Count
+    $warn = @($hostChecks | Where-Object { ($_.Severity -eq 'warn') -or ($_.Severity -eq 'unknown') }).Count
+    $fail = @($hostChecks | Where-Object { $_.Severity -eq 'fail' }).Count
+
+    $rollupText = Get-LokiText 'status.postureRollup' -ArgumentList @($ok, $warn, $fail)
+    $postureLine = "{0,-14} {1}" -f 'Posture:', $rollupText
+    if ($fail -gt 0) {
+        Write-LokiErr $postureLine
+    }
+    elseif ($warn -gt 0) {
+        Write-LokiWarn $postureLine
+    }
+    else {
+        Write-LokiOk $postureLine
+    }
+
     Write-LokiLine ''
-    Write-LokiInfo (Get-LokiText 'status.pending')
+    Write-LokiInfo (Get-LokiText 'status.doctorHint')
     return (Get-LokiExitCode 'Ok')
 }
