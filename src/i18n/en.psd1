@@ -41,4 +41,27 @@
     'help.summary'              = 'Help / command overview (also: loki <cmd> --help)'
     'version.summary'           = 'Show Loki and environment versions'
     'auth.summary'              = 'Manage auth method and secret'
+    'doctor.summary'            = 'Full environment & host-posture diagnosis'
+
+    'doctor.check.auth'         = 'Authentication'
+    'doctor.check.lang'         = 'PowerShell language mode'
+    'doctor.check.execpolicy'   = 'Execution policy'
+    'doctor.check.deviceguard'  = 'Device Guard / WDAC'
+    'doctor.check.applocker'    = 'AppLocker'
+    'doctor.check.volume'       = 'Volume'
+
+    'doctor.status.ok'          = 'OK'
+    'doctor.status.warn'        = 'WARN'
+    'doctor.status.fail'        = 'FAIL'
+    'doctor.status.unknown'     = '?'
+
+    'doctor.detail.unknown'         = 'could not be determined'
+    'doctor.deviceguard.enforced'   = 'code integrity enforced'
+    'doctor.deviceguard.off'        = 'not enforced'
+    'doctor.applocker.rules'        = 'effective rules present'
+    'doctor.applocker.none'         = 'no effective rules'
+    'doctor.volume.encrypted'       = 'removable, BitLocker on'
+    'doctor.volume.plain'           = 'not on an encrypted removable volume'
+
+    'doctor.footer'             = '{0} OK, {1} warning(s), {2} failure(s)'
 }
