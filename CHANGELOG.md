@@ -3,6 +3,13 @@
 All notable changes to **Loki**. Format: [Keep a Changelog](https://keepachangelog.com),
 versioning: [Semantic Versioning](https://semver.org).
 
+## [0.2.0](https://github.com/einigschaut/loki-ai-sysdebug-cli/compare/v0.1.0...v0.2.0) (2026-07-14)
+
+
+### Features
+
+* **doctor:** read-only environment & host-posture diagnosis ([#3](https://github.com/einigschaut/loki-ai-sysdebug-cli/issues/3)) ([42c2ffc](https://github.com/einigschaut/loki-ai-sysdebug-cli/commit/42c2ffc4c009e85e54129fabdadb6c43b908999d))
+
 ## [Unreleased]
 
 ### Added
