@@ -1,0 +1,26 @@
+# Zeilenenden explizit & maschinenunabhaengig festlegen (nicht von core.autocrlf jedes Devs abhaengig).
+# Wichtig fuer spaeteres Authenticode-Signing: ein signiertes .ps1 darf zwischen Checkouts nicht die EOL wechseln.
+* text=auto
+
+# PowerShell / CMD -> CRLF (Windows-nativ, signing-stabil)
+*.ps1   text eol=crlf
+*.psm1  text eol=crlf
+*.psd1  text eol=crlf
+*.cmd   text eol=crlf
+*.bat   text eol=crlf
+
+# Doku / Config / Assets -> LF (portabel, ruhige Diffs)
+*.md    text eol=lf
+*.json  text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.gbnf  text eol=lf
+*.txt   text eol=lf
+
+# Binaerartefakte -> nie normalisieren (kommen ohnehin per Fetch-Manifest, nicht ins Git)
+*.exe   binary
+*.dll   binary
+*.gguf  binary
+*.sig   binary
+*.png   binary
+*.zip   binary

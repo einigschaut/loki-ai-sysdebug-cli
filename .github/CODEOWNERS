@@ -1,0 +1,7 @@
+# Code owners for loki-ai-sysdebug-cli.
+#
+# Global rule: every path in the repo requires a review from the listed
+# owner(s) before merge. Split into per-path rules later if/when there is
+# more than one maintainer with distinct areas.
+
+* @einigschaut

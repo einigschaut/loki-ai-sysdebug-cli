@@ -1,0 +1,13 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/einigschaut/loki-ai-sysdebug-cli/security/advisories/new
+    about: >-
+      Please report security vulnerabilities via GitHub Private
+      Vulnerability Reporting (Security tab -> "Report a vulnerability"),
+      not as a public issue. See SECURITY.md for details.
+  - name: Contribution scope / questions
+    url: https://github.com/einigschaut/loki-ai-sysdebug-cli/blob/main/CONTRIBUTING.md
+    about: >-
+      Not sure if your idea fits, or what's expected before opening a PR?
+      Read CONTRIBUTING.md first.

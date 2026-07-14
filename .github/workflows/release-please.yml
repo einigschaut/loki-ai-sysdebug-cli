@@ -1,0 +1,29 @@
+name: release-please
+
+# Opens a Release PR the maintainer merges deliberately (SemVer).
+# release-please tracks Conventional Commits on `main` and, once commits
+# warranting a release land, opens/updates a standing "Release PR" that
+# bumps VERSION and appends the changelog. Nothing ships until a human
+# merges that PR -- this workflow never publishes on its own.
+#
+# For post-flip use only: this is only meaningful once commits land on
+# the eventual `main` branch of loki-ai-sysdebug-cli.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run release-please
+        uses: googleapis/release-please-action@v4
+        with:
+          release-type: simple
+          # `simple` release-type tracks a plain VERSION file plus
+          # CHANGELOG.md -- no language-specific manifest required.

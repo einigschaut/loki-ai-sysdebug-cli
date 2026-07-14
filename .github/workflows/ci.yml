@@ -1,0 +1,40 @@
+name: CI
+
+# Gates from day 1 (CLAUDE.md section 7): PSScriptAnalyzer + structure/dead-code gate + Pester.
+# Deliberately runs under `shell: powershell` = Windows PowerShell 5.1 (the stick's target
+# runtime), not pwsh 7 -- the code must run on 5.1.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: Lint + Structure Gate + Pester (Windows PowerShell 5.1)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Module installieren (Pester 5 + PSScriptAnalyzer)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module Pester           -MinimumVersion 5.5.0  -Scope CurrentUser -Force -SkipPublisherCheck
+          Install-Module PSScriptAnalyzer -MinimumVersion 1.21.0 -Scope CurrentUser -Force
+          Write-Host ("Pester:          " + (Get-Module -ListAvailable Pester           | Sort-Object Version -Descending | Select-Object -First 1).Version)
+          Write-Host ("PSScriptAnalyzer: " + (Get-Module -ListAvailable PSScriptAnalyzer | Sort-Object Version -Descending | Select-Object -First 1).Version)
+
+      - name: Checks (Lint + Struktur-Gate + Pester)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\build\Invoke-Checks.ps1

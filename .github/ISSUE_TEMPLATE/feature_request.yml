@@ -1,0 +1,70 @@
+name: Feature request
+description: Propose a new command or a change to existing behavior.
+title: "feat: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing: please check
+        [CONTRIBUTING.md](../../CONTRIBUTING.md) — larger features and
+        anything touching a public contract (commands, flags, exit
+        codes, `lib/` signatures) or a security core (isolation,
+        allow-list, auth, agent guardrails) need to be discussed here
+        **before** a PR is opened. Unsolicited PRs for out-of-scope or
+        undiscussed large changes may be closed without merge.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: >-
+        What problem are you trying to solve? What's missing or awkward
+        today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: >-
+        What would you like Loki to do? If this is a new command,
+        sketch its usage (`loki <name> [flags]`) and what it outputs.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Any other approaches you considered and why you didn't pick them.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: scope-check
+    attributes:
+      label: Scope check
+      description: >-
+        Does this touch a public contract (command/flag/exit-code
+        names, `lib/` function signatures) or a security core
+        (isolation, allow-list, auth, agent guardrails)?
+      options:
+        - "No — small, self-contained addition"
+        - "Yes — changes a public contract"
+        - "Yes — touches a security core"
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: >-
+        Links to related issues/ADRs, example scenarios, screenshots of
+        the problem this solves, etc.
+    validations:
+      required: false
