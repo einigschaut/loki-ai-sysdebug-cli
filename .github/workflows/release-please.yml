@@ -2,12 +2,15 @@ name: release-please
 
 # Opens a Release PR the maintainer merges deliberately (SemVer).
 # release-please tracks Conventional Commits on `main` and, once commits
-# warranting a release land, opens/updates a standing "Release PR" that
-# bumps VERSION and appends the changelog. Nothing ships until a human
-# merges that PR -- this workflow never publishes on its own.
+# warranting a release land (feat -> minor, fix -> patch; pre-1.0 keeps
+# breaking changes on minor), opens/updates a standing "Release PR" that
+# bumps version.txt, moves the CHANGELOG section, and tags vX.Y.Z on merge.
+# Nothing ships until a human merges that PR -- this workflow never
+# publishes on its own. See docs/adr/0005-versioning-and-releases.md.
 #
-# For post-flip use only: this is only meaningful once commits land on
-# the eventual `main` branch of loki-ai-sysdebug-cli.
+# Manifest mode: configuration lives in release-please-config.json and the
+# last-released version in .release-please-manifest.json (both at the repo
+# root). The `simple` strategy is the one that reads/writes version.txt.
 
 on:
   push:
@@ -24,6 +27,6 @@ jobs:
       - name: Run release-please
         uses: googleapis/release-please-action@v4
         with:
-          release-type: simple
-          # `simple` release-type tracks a plain VERSION file plus
-          # CHANGELOG.md -- no language-specific manifest required.
+          token: ${{ secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json

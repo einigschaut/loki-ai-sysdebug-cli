@@ -1,9 +1,9 @@
-# === Secrets — NIEMALS committen (CLAUDE.md B.2 / Sicherheits-Scope) ===
+# === Secrets — NEVER commit (CLAUDE.md §5 / security scope) ===
 *.env
 .env
 !config/.env.example
 
-# === Große Binaries & Modelle — via build/fetch-manifest.json geholt, nie ins Git ===
+# === Large binaries & models — fetched via build/fetch-manifest.json, never in git ===
 *.exe
 *.gguf
 *.dll
@@ -11,12 +11,12 @@ engine-offline/
 bin/
 tools/
 
-# === Stick-/Build-Artefakte ===
+# === Stick / build artifacts ===
 build/out/
 *.sig
 manifest.sig
 
-# === Test-/Temp-Output ===
+# === Test / temp output ===
 testresults/
 coverage.xml
 *.tmp

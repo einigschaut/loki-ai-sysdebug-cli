@@ -59,8 +59,8 @@ body:
     id: loki-version
     attributes:
       label: Loki version
-      description: Output of `loki version` (or the contents of `VERSION`).
-      placeholder: e.g. 0.0.1
+      description: Output of `loki version` (or the contents of `version.txt`).
+      placeholder: e.g. 0.1.0
     validations:
       required: true
 

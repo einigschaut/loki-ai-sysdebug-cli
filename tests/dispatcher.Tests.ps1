@@ -53,7 +53,7 @@ Describe 'Dispatcher routing & exit codes (PS 5.1 child process)' {
     It 'version => exit 0, shows version' {
         $r = & $script:InvokeLoki @('version')
         $r.Code | Should -Be 0
-        $r.Text | Should -BeLike '*loki*0.0.1*'
+        $r.Text | Should -BeLike '*loki*0.1.0*'
     }
 
     It 'help => exit 0, lists commands from the registry' {

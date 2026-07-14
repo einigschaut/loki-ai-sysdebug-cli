@@ -5,7 +5,12 @@ versioning: [Semantic Versioning](https://semver.org).
 
 ## [Unreleased]
 
-Pre-release development toward the first public release.
+_Nothing yet. New entries are added here and cut into a version by release-please._
+
+## [0.1.0] - 2026-07-14
+
+Initial public release (pre-1.0). Foundation and first commands; the diagnostic
+engines are not wired up yet.
 
 ### Added
 - Dispatcher (`src/loki.ps1`) and a generated command registry as the single source of truth;
