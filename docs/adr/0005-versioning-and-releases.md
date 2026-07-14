@@ -54,9 +54,11 @@ trigger a release.
 
 - The version the CLI reports, the git tag, the GitHub Release, and the changelog entry
   are always in lockstep — they are produced from one operation.
-- **Agents and contributors must not hand-edit `version.txt` or hand-cut a released
-  changelog section** — that is release-please's job. Add human-readable notes under
-  `## [Unreleased]`; the Release PR promotes them. (Recorded in CLAUDE.md §8.)
+- **Agents and contributors must not hand-edit `version.txt` or the `CHANGELOG.md`
+  version sections** — that is release-please's job. The changelog is generated from the
+  Conventional Commit history, so **the commit message *is* the changelog entry**: write a
+  clear `feat:`/`fix:` subject (and body for detail). There is no hand-maintained
+  `[Unreleased]` section. (Recorded in CLAUDE.md §8.)
 - A CI gate (`tests/meta.Tests.ps1`) asserts `version.txt` exists, is valid SemVer, and
   is exactly what `Get-LokiVersion` returns — so the version state cannot silently drift
   into something non-parseable.
