@@ -20,9 +20,9 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
-      - name: Module installieren (Pester 5 + PSScriptAnalyzer)
+      - name: Install modules (Pester 5 + PSScriptAnalyzer)
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
@@ -33,7 +33,7 @@ jobs:
           Write-Host ("Pester:          " + (Get-Module -ListAvailable Pester           | Sort-Object Version -Descending | Select-Object -First 1).Version)
           Write-Host ("PSScriptAnalyzer: " + (Get-Module -ListAvailable PSScriptAnalyzer | Sort-Object Version -Descending | Select-Object -First 1).Version)
 
-      - name: Checks (Lint + Struktur-Gate + Pester)
+      - name: Checks (lint + structure gate + Pester)
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
