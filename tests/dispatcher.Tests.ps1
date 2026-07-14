@@ -4,6 +4,10 @@ Set-StrictMode -Version Latest
 
 BeforeAll {
     $lokiPath = (Resolve-Path "$PSScriptRoot\..\src\loki.ps1").Path
+    # The version the CLI must report = the repo's single source of truth (version.txt, bumped by
+    # release-please). Read it here instead of hardcoding a literal, so a release bump never breaks
+    # this test (ADR-0005).
+    $script:RepoVersion = (Get-Content -LiteralPath "$PSScriptRoot\..\version.txt" -Raw -Encoding utf8).Trim()
     # Always launch the real Windows PowerShell 5.1 as a child (target runtime), regardless of which host runs Pester.
     $ps51Path = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
     if (-not (Test-Path -LiteralPath $ps51Path)) { throw "Windows PowerShell 5.1 nicht gefunden: $ps51Path" }
@@ -50,10 +54,10 @@ Describe 'Dispatcher routing & exit codes (PS 5.1 child process)' {
         $r.Text | Should -BeLike '*loki help*'
     }
 
-    It 'version => exit 0, shows version' {
+    It 'version => exit 0, shows the version from version.txt' {
         $r = & $script:InvokeLoki @('version')
         $r.Code | Should -Be 0
-        $r.Text | Should -BeLike '*loki*0.1.0*'
+        $r.Text | Should -BeLike "*loki*$($script:RepoVersion)*"
     }
 
     It 'help => exit 0, lists commands from the registry' {
