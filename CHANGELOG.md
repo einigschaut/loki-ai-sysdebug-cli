@@ -5,7 +5,13 @@ versioning: [Semantic Versioning](https://semver.org).
 
 ## [Unreleased]
 
-_Nothing yet. New entries are added here and cut into a version by release-please._
+### Added
+- `loki doctor` — a read-only environment & host-posture diagnosis: PowerShell language mode,
+  execution policy, Device Guard/WDAC enforcement, effective AppLocker rules, auth-secret status,
+  and whether the app root sits on an encrypted removable volume. Backed by the new
+  `lib/posture.ps1` (`Get-LokiHostPosture`, `Get-LokiVolumePosture`, the pure
+  `ConvertTo-LokiDoctorChecks` interpreter, and `Get-LokiDoctorExitCode`) — every environment probe
+  is read-only, requires no admin rights, and degrades to an "unknown" sentinel instead of throwing.
 
 ## [0.1.0] - 2026-07-14
 
