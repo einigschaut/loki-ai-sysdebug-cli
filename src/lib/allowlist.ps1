@@ -65,7 +65,10 @@ $script:LokiDenyPatterns = @(
     '\bStart-Process\b',
     '\bsaps\b',
     'Invoke-Item',
-    '\bii\b'
+    '\bii\b',
+    '^start(\.exe)?(\s|$)',      # the `start` alias for Start-Process (launches a program); Start-* cmdlets are unaffected
+    '^&',                        # leading call operator: & <path> runs an arbitrary, un-gated program
+    '^\.'                        # leading dot: dot-source (. script) or relative-path exec (.\foo) -- arbitrary code
 )
 
 # --- Curated read-only command names (first token only, ANY arguments allowed -- these native tools

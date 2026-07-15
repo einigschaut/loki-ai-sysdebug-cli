@@ -85,4 +85,12 @@
     'scan.timeout'              = 'The online engine did not respond in time.'
     'scan.failed'               = 'The online engine could not complete the scan.'
     'scan.cost'                 = 'Cost: ${0} USD'
+
+    'chat.summary'              = 'Interactive diagnostic session with the online engine (mutations require confirmation)'
+    'chat.offline'              = 'loki chat needs network access (the online engine is unreachable). Use the offline path instead.'
+    'chat.starting'             = 'Starting an interactive diagnostic session (read-only auto, changes need confirmation)...'
+    'chat.authMissing'          = "No API key set. Run 'loki auth set' first."
+    'chat.engineMissing'        = 'Claude Code (the `claude` CLI) was not found. Install it to use the online engine.'
+    'chat.ended'                = 'Session ended.'
+    'chat.failed'               = 'The online engine could not start the interactive session.'
 }
