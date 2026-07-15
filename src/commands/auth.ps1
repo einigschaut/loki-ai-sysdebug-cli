@@ -17,7 +17,7 @@ function Get-LokiCmdMeta_auth {
         Group    = 'Setup'
         Summary  = 'auth.summary'
         Usage    = 'loki auth <status|use|set|clear|login>'
-        Examples = @('loki auth status', 'loki auth use api', 'loki auth set')
+        Examples = @('loki auth status', 'loki auth login', 'loki auth use api', 'loki auth set')
         Flags    = @()
     }
 }
@@ -81,15 +81,25 @@ function Invoke-LokiCmd_auth {
     }
 
     if ($verb -eq 'login') {
-        # The online login flow (Claude engine, setup token) only lands in F2 (docs/DESIGN.md) -- do NOT
-        # fake it here (CLAUDE.md §9: marking a stub/TODO as "done" is forbidden). Exit code choice: none of the
-        # existing names fit exactly -- 'AuthMissing' would be wrong (it's not a missing secret, but the
-        # missing engine wiring), 'NetworkRequired' would be misleading (not a connectivity issue), and
-        # 'OfflineEngineMissing' is semantically the opposite (here the ONLINE engine wiring is missing, not the
-        # offline engine). Hence the deliberate, generic 'GeneralError' -- don't fake a special case that doesn't
-        # exist (yet) instead of abusing a wrongly-fitting name.
-        Write-LokiWarn (Get-LokiText 'auth.login.deferred')
-        return (Get-LokiExitCode 'GeneralError')
+        # Subscription onboarding: switch to the 'sub' method and store a long-lived Claude-subscription token.
+        # We deliberately do NOT run `claude setup-token` from here: it needs the operator's EXISTING host login
+        # (so it would write into the host profile -- a footprint) and its output format is not a contract we
+        # should parse (CLAUDE.md §9). Instead we guide the user to generate the token and paste it through the
+        # SAME hidden SecureString path as `auth set` (secret NEVER via argv/logs, CLAUDE.md §5).
+        Write-LokiInfo (Get-LokiText 'auth.login.hint')
+        $sec = Read-Host -AsSecureString -Prompt (Get-LokiText 'auth.login.prompt')
+        if ($sec.Length -eq 0) {
+            Write-LokiErr (Get-LokiText 'auth.login.empty')
+            return (Get-LokiExitCode 'Usage')
+        }
+        # Token entered -> select the subscription method AND store it. Order: method first, then secret, so a
+        # later failure never leaves a stored token under the wrong method.
+        $cfg = Read-LokiConfig -Path $configPath
+        $cfg['AuthMethod'] = 'sub'
+        Write-LokiConfig -Path $configPath -Config $cfg
+        Set-LokiSecret -EnvFilePath $envPath -SecureValue $sec
+        Write-LokiOk (Get-LokiText 'auth.login.done')
+        return (Get-LokiExitCode 'Ok')
     }
 
     if ([string]::IsNullOrEmpty($verb)) {

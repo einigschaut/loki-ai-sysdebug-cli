@@ -28,7 +28,10 @@
     'auth.set.prompt'           = 'API-Key / Token (Eingabe verborgen)'
     'auth.set.saved'            = 'Secret gespeichert.'
     'auth.clear.removed'        = 'Secret entfernt.'
-    'auth.login.deferred'       = 'loki auth login benötigt die Online-Engine (folgt in F2).'
+    'auth.login.hint'           = 'Nutzt deine Claude-Subscription. Erzeuge einen langlebigen Token mit: claude setup-token (öffnet einen Browser; braucht ein Abo), dann füge ihn unten ein.'
+    'auth.login.prompt'         = 'Subscription-Token (Eingabe verborgen)'
+    'auth.login.empty'          = 'Kein Token eingegeben - nichts geändert.'
+    'auth.login.done'           = 'Subscription-Token gespeichert; Auth-Methode auf sub gesetzt.'
     'auth.missingSub'           = 'loki auth benötigt ein Sub-Command.'
     'auth.unknownSub'           = "Unbekanntes Sub-Command: '{0}'."
     'auth.usage'                = 'Verwendung: loki auth <status|use|set|clear|login>'
@@ -70,7 +73,7 @@
     'ask.usage'                 = 'Verwendung: loki ask <Frage>'
     'ask.offline'               = 'loki ask benötigt Netzzugang (Online-Engine nicht erreichbar). Nutze stattdessen den Offline-Pfad.'
     'ask.working'               = 'Frage an die Online-Engine (read-only Diagnose)...'
-    'ask.authMissing'           = "Kein API-Key gesetzt. Führe zuerst 'loki auth set' aus."
+    'ask.authMissing'           = "Kein Zugang für die Online-Engine gesetzt. Führe 'loki auth set' (API-Key) oder 'loki auth login' (Claude-Abo) aus."
     'ask.engineMissing'         = 'Claude Code (das `claude`-CLI) wurde nicht gefunden. Installiere es für die Online-Engine.'
     'ask.timeout'               = 'Die Online-Engine hat nicht rechtzeitig geantwortet.'
     'ask.failed'                = 'Die Online-Engine konnte die Anfrage nicht abschließen.'
@@ -80,7 +83,7 @@
     'scan.invalidArea'          = 'Unbekannter Scan-Bereich. Gültige Bereiche: {0}.'
     'scan.offline'              = 'loki scan benötigt Netzzugang (Online-Engine nicht erreichbar). Nutze stattdessen den Offline-Pfad.'
     'scan.working'              = 'Scanne {0} mit der Online-Engine (read-only Diagnose)...'
-    'scan.authMissing'          = "Kein API-Key gesetzt. Führe zuerst 'loki auth set' aus."
+    'scan.authMissing'          = "Kein Zugang für die Online-Engine gesetzt. Führe 'loki auth set' (API-Key) oder 'loki auth login' (Claude-Abo) aus."
     'scan.engineMissing'        = 'Claude Code (das `claude`-CLI) wurde nicht gefunden. Installiere es für die Online-Engine.'
     'scan.timeout'              = 'Die Online-Engine hat nicht rechtzeitig geantwortet.'
     'scan.failed'               = 'Die Online-Engine konnte den Scan nicht abschließen.'
@@ -89,7 +92,7 @@
     'chat.summary'              = 'Interaktive Diagnose-Session mit der Online-Engine (Mutationen nur nach Bestätigung)'
     'chat.offline'              = 'loki chat benötigt Netzzugang (Online-Engine nicht erreichbar). Nutze stattdessen den Offline-Pfad.'
     'chat.starting'             = 'Starte interaktive Diagnose-Session (read-only automatisch, Änderungen nur nach Bestätigung)...'
-    'chat.authMissing'          = "Kein API-Key gesetzt. Führe zuerst 'loki auth set' aus."
+    'chat.authMissing'          = "Kein Zugang für die Online-Engine gesetzt. Führe 'loki auth set' (API-Key) oder 'loki auth login' (Claude-Abo) aus."
     'chat.engineMissing'        = 'Claude Code (das `claude`-CLI) wurde nicht gefunden. Installiere es für die Online-Engine.'
     'chat.ended'                = 'Session beendet.'
     'chat.failed'               = 'Die Online-Engine konnte die interaktive Session nicht starten.'

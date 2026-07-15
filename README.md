@@ -50,12 +50,18 @@ cd loki-ai-sysdebug-cli
 
 powershell -ExecutionPolicy Bypass -File src\loki.ps1 help     # command overview
 powershell -ExecutionPolicy Bypass -File src\loki.ps1 status   # write-free environment check
-powershell -ExecutionPolicy Bypass -File src\loki.ps1 auth set # store an API key (hidden input)
+powershell -ExecutionPolicy Bypass -File src\loki.ps1 auth set   # API key (hidden input)
+powershell -ExecutionPolicy Bypass -File src\loki.ps1 auth login # OR a Claude subscription
 ```
 
-Authentication uses **exactly one** variable — `ANTHROPIC_API_KEY` (default) or
-`CLAUDE_CODE_OAUTH_TOKEN`. The secret is never passed via `argv` and never printed:
-`loki auth status` only ever shows a masked value.
+Authentication uses **exactly one** variable — `ANTHROPIC_API_KEY` (an API key, the default) or
+`CLAUDE_CODE_OAUTH_TOKEN` (a **Claude subscription**). Two ways in:
+
+- **API key:** `loki auth set` — paste a console API key.
+- **Subscription:** `loki auth login` — generate a long-lived token with `claude setup-token` (requires a
+  Pro/Max subscription), then paste it; Loki switches to the subscription method for you.
+
+The secret is never passed via `argv` and never printed: `loki auth status` only ever shows a masked value.
 
 ## Commands
 

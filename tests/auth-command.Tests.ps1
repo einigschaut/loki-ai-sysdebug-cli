@@ -214,12 +214,52 @@ Describe 'Command auth - routing & exit codes' {
         Read-LokiSecret -EnvFilePath $envPath | Should -Be $null
     }
 
-    It 'login -> non-null exit + warning (online engine only lands in F2, no fake login)' {
+    It 'login with a token -> exit Ok, sets AuthMethod=sub AND stores the token' {
+        Mock Read-Host {
+            $ss = New-Object System.Security.SecureString
+            foreach ($ch in $script:FakeSecret.ToCharArray()) { $ss.AppendChar($ch) }
+            $ss.MakeReadOnly()
+            return $ss
+        }
+        $approot = New-TestAppRoot
+        $envPath = Join-Path $approot 'home\.env'
+        $ctx = New-TestAuthContext -AppRoot $approot -CmdArgs @('login')
+        $r = Invoke-AuthCommand -Context $ctx
+        $r.Code | Should -Be (Get-LokiExitCode 'Ok')
+
+        $cfg = Read-LokiConfig -Path (Join-Path $approot 'loki.config.json')
+        $cfg['AuthMethod'] | Should -Be 'sub'
+        Read-LokiSecret -EnvFilePath $envPath | Should -Be $script:FakeSecret
+    }
+
+    It 'login with an EMPTY token -> exit Usage, config + secret unchanged (no half-state)' {
+        Mock Read-Host {
+            $ss = New-Object System.Security.SecureString   # empty
+            $ss.MakeReadOnly()
+            return $ss
+        }
+        $approot = New-TestAppRoot
+        $envPath = Join-Path $approot 'home\.env'
+        $ctx = New-TestAuthContext -AppRoot $approot -CmdArgs @('login')
+        $r = Invoke-AuthCommand -Context $ctx
+        $r.Code | Should -Be (Get-LokiExitCode 'Usage')
+
+        # The method must NOT have been switched and no secret stored (order guarantee: nothing on an empty token).
+        Test-Path -LiteralPath (Join-Path $approot 'loki.config.json') | Should -BeFalse
+        Read-LokiSecret -EnvFilePath $envPath | Should -Be $null
+    }
+
+    It 'BREAK-THE-GUARD: login never echoes the pasted token to stdout/stderr (secret hygiene)' {
+        Mock Read-Host {
+            $ss = New-Object System.Security.SecureString
+            foreach ($ch in $script:FakeSecret.ToCharArray()) { $ss.AppendChar($ch) }
+            $ss.MakeReadOnly()
+            return $ss
+        }
         $ctx = New-TestAuthContext -AppRoot (New-TestAppRoot) -CmdArgs @('login')
         $r = Invoke-AuthCommand -Context $ctx
-        $r.Code | Should -Not -Be (Get-LokiExitCode 'Ok')
-        $r.Code | Should -Be (Get-LokiExitCode 'GeneralError')
-        $r.ErrText | Should -BeLike '*online engine*'
+        $r.Text.Contains($script:FakeSecret) | Should -BeFalse
+        $r.ErrText.Contains($script:FakeSecret) | Should -BeFalse
     }
 }
 
