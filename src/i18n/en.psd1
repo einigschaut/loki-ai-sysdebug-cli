@@ -28,13 +28,24 @@
     'auth.set.prompt'           = 'API key / token (input hidden)'
     'auth.set.saved'            = 'Secret saved.'
     'auth.clear.removed'        = 'Secret removed.'
-    'auth.login.hint'           = 'Uses your Claude subscription. Generate a long-lived token with: claude setup-token (opens a browser; requires a subscription), then paste it below.'
+    'auth.login.chooseHeading'  = 'How should Loki reach the online engine?'
+    'auth.login.optSub'         = '  [1] Claude subscription  (opens a browser to sign in)'
+    'auth.login.optApi'         = '  [2] Anthropic API key    (paste a console key)'
+    'auth.login.choosePrompt'   = 'Choose 1 or 2'
+    'auth.login.badMethod'      = 'Choose a method: sub (Claude subscription) or api (API key).'
+    'auth.login.usage'          = 'Usage: loki auth login [sub|api]'
+    'auth.login.subLaunch'      = 'Starting Claude sign-in - a browser will open. Complete it, then copy the token it prints.'
+    'auth.login.pasteHint'      = 'Now paste the token shown above.'
     'auth.login.prompt'         = 'Subscription token (input hidden)'
-    'auth.login.empty'          = 'No token entered - nothing changed.'
+    'auth.login.subFailed'      = 'Claude sign-in did not complete - no token was generated. Nothing changed.'
+    'auth.login.engineMissing'  = 'Claude Code (the `claude` CLI) was not found. Install it to sign in with a subscription.'
+    'auth.login.apiPrompt'      = 'Anthropic API key (input hidden)'
+    'auth.login.apiDone'        = 'API key saved; auth method set to api.'
+    'auth.login.empty'          = 'No credential entered - nothing changed.'
     'auth.login.done'           = 'Subscription token saved; auth method set to sub.'
     'auth.missingSub'           = 'loki auth requires a sub-command.'
     'auth.unknownSub'           = "Unknown sub-command: '{0}'."
-    'auth.usage'                = 'Usage: loki auth <status|use|set|clear|login>'
+    'auth.usage'                = 'Usage: loki auth <login|status|use|set|clear>'
 
     'status.net.online'         = 'Network: reachable (online engine available)'
     'status.net.offline'        = 'Network: unreachable - only the offline path (collect/offline) is available'
@@ -73,7 +84,7 @@
     'ask.usage'                 = 'Usage: loki ask <question>'
     'ask.offline'               = 'loki ask needs network access (the online engine is unreachable). Use the offline path instead.'
     'ask.working'               = 'Asking the online engine (read-only diagnosis)...'
-    'ask.authMissing'           = "No credential set for the online engine. Run 'loki auth set' (API key) or 'loki auth login' (Claude subscription)."
+    'ask.authMissing'           = "No credential set for the online engine. Run 'loki auth login' (Claude subscription or API key)."
     'ask.engineMissing'         = 'Claude Code (the `claude` CLI) was not found. Install it to use the online engine.'
     'ask.timeout'               = 'The online engine did not respond in time.'
     'ask.failed'                = 'The online engine could not complete the request.'
@@ -83,7 +94,7 @@
     'scan.invalidArea'          = 'Unknown scan area. Valid areas: {0}.'
     'scan.offline'              = 'loki scan needs network access (the online engine is unreachable). Use the offline path instead.'
     'scan.working'              = 'Scanning {0} with the online engine (read-only diagnosis)...'
-    'scan.authMissing'          = "No credential set for the online engine. Run 'loki auth set' (API key) or 'loki auth login' (Claude subscription)."
+    'scan.authMissing'          = "No credential set for the online engine. Run 'loki auth login' (Claude subscription or API key)."
     'scan.engineMissing'        = 'Claude Code (the `claude` CLI) was not found. Install it to use the online engine.'
     'scan.timeout'              = 'The online engine did not respond in time.'
     'scan.failed'               = 'The online engine could not complete the scan.'
@@ -92,7 +103,7 @@
     'chat.summary'              = 'Interactive diagnostic session with the online engine (mutations require confirmation)'
     'chat.offline'              = 'loki chat needs network access (the online engine is unreachable). Use the offline path instead.'
     'chat.starting'             = 'Starting an interactive diagnostic session (read-only auto, changes need confirmation)...'
-    'chat.authMissing'          = "No credential set for the online engine. Run 'loki auth set' (API key) or 'loki auth login' (Claude subscription)."
+    'chat.authMissing'          = "No credential set for the online engine. Run 'loki auth login' (Claude subscription or API key)."
     'chat.engineMissing'        = 'Claude Code (the `claude` CLI) was not found. Install it to use the online engine.'
     'chat.ended'                = 'Session ended.'
     'chat.failed'               = 'The online engine could not start the interactive session.'

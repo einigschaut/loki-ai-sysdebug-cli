@@ -16,9 +16,10 @@ computers.
 
 > **Status: pre-release (v0.x). Not production-ready.**
 > What works today: the dispatcher, the generated command registry, `version` / `help` / `status` /
-> `auth`, config + settings precedence, the environment-isolation primitives, and localization.
-> The engines themselves (online and offline) are **not wired up yet** — `loki auth login` honestly
-> tells you so instead of pretending. See the [roadmap](docs/DESIGN.md#7-roadmap).
+> `doctor` / `auth`, config + settings precedence, the environment-isolation primitives, localization,
+> and the **online engine** (`ask` / `scan` / `chat`) behind the allow-list gate. The **offline engine**
+> is not wired up yet, and the online commands' interactive/live paths are still being hardened. See the
+> [roadmap](docs/DESIGN.md#7-roadmap).
 
 ## Honest security scope
 
@@ -50,18 +51,19 @@ cd loki-ai-sysdebug-cli
 
 powershell -ExecutionPolicy Bypass -File src\loki.ps1 help     # command overview
 powershell -ExecutionPolicy Bypass -File src\loki.ps1 status   # write-free environment check
-powershell -ExecutionPolicy Bypass -File src\loki.ps1 auth set   # API key (hidden input)
-powershell -ExecutionPolicy Bypass -File src\loki.ps1 auth login # OR a Claude subscription
+powershell -ExecutionPolicy Bypass -File src\loki.ps1 auth login  # one-time setup: pick subscription or API key
 ```
 
-Authentication uses **exactly one** variable — `ANTHROPIC_API_KEY` (an API key, the default) or
-`CLAUDE_CODE_OAUTH_TOKEN` (a **Claude subscription**). Two ways in:
+`loki auth login` is the one-command setup, in the shape of `gh auth login`. It asks how Loki should reach
+the online engine and lands **exactly one** credential on the stick:
 
-- **API key:** `loki auth set` — paste a console API key.
-- **Subscription:** `loki auth login` — generate a long-lived token with `claude setup-token` (requires a
-  Pro/Max subscription), then paste it; Loki switches to the subscription method for you.
+- **Claude subscription** (`loki auth login sub`) — opens a browser to sign in via `claude setup-token`
+  (requires a Pro/Max subscription), then you paste the token it prints. Stored as `CLAUDE_CODE_OAUTH_TOKEN`.
+- **API key** (`loki auth login api`) — paste a console API key. Stored as `ANTHROPIC_API_KEY` (the default).
 
-The secret is never passed via `argv` and never printed: `loki auth status` only ever shows a masked value.
+The online engine needs one of these; the **offline engine needs none**. The secret is never passed via
+`argv` and never printed — `loki auth status` only ever shows a masked value. (`auth use` / `set` / `clear`
+remain as scriptable primitives.)
 
 ## Commands
 
