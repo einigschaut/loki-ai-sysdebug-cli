@@ -116,3 +116,21 @@ function Format-LokiHelp {
     [void]$sb.AppendLine((Get-LokiText 'help.footer'))
     return $sb.ToString().TrimEnd()
 }
+
+function Format-LokiCommandTable {
+    # Generates the Markdown command reference embedded in README.md (between the GENERATED COMMANDS markers).
+    # Sourced from the registry so it can never drift from the actual commands: build\Update-LokiDocs.ps1 writes
+    # it and tests\docs.Tests.ps1 fails the build if README is stale (the missing half of the CLAUDE.md §7 docs
+    # gate). Summaries are localization keys resolved in the current locale -- callers pin 'en' (README is English).
+    param([Parameter(Mandatory = $true)]$Registry)
+
+    $sb = New-Object System.Text.StringBuilder
+    [void]$sb.AppendLine('| Command | Group | Description |')
+    [void]$sb.AppendLine('| --- | --- | --- |')
+    foreach ($c in $Registry) {
+        # Escape any pipe in the resolved summary so it cannot break the table layout.
+        $desc = (Get-LokiText $c.Summary) -replace '\|', '\|'
+        [void]$sb.AppendLine(('| `{0}` | {1} | {2} |' -f $c.Name, $c.Group, $desc))
+    }
+    return $sb.ToString().TrimEnd()
+}

@@ -57,6 +57,24 @@ Authentication uses **exactly one** variable — `ANTHROPIC_API_KEY` (default) o
 `CLAUDE_CODE_OAUTH_TOKEN`. The secret is never passed via `argv` and never printed:
 `loki auth status` only ever shows a masked value.
 
+## Commands
+
+The full command set — generated from the command registry, so it never drifts. Do not edit the
+table by hand; run `build/Update-LokiDocs.ps1` (a CI gate fails the build if it is stale).
+
+<!-- BEGIN GENERATED COMMANDS (build/Update-LokiDocs.ps1 -- do not edit by hand) -->
+
+| Command | Group | Description |
+| --- | --- | --- |
+| `doctor` | Health | Full environment & host-posture diagnosis |
+| `help` | Health | Help / command overview (also: loki <cmd> --help) |
+| `status` | Health | Quick environment check (writes nothing) |
+| `version` | Health | Show Loki and environment versions |
+| `ask` | Online | Ask the online engine a read-only diagnostic question |
+| `auth` | Setup | Manage auth method and secret |
+
+<!-- END GENERATED COMMANDS -->
+
 ## Language
 
 Loki's user-facing output is localized. It **auto-detects your OS language** and falls back to
