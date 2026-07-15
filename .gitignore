@@ -22,3 +22,6 @@ coverage.xml
 *.tmp
 *.log
 docs/gen/*.tmp
+
+# === Claude Code local settings (per-machine, not shipped) ===
+.claude/settings.local.json
