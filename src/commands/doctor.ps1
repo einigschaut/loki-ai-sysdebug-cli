@@ -9,14 +9,42 @@ function Get-LokiCmdMeta_doctor {
         Name     = 'doctor'
         Group    = 'Health'
         Summary  = 'doctor.summary'
-        Usage    = 'loki doctor'
-        Examples = @('loki doctor')
-        Flags    = @()
+        Usage    = 'loki doctor [--footprint]'
+        Examples = @('loki doctor', 'loki doctor --footprint')
+        Flags    = @( @{ Flag = '--footprint'; Desc = 'Prove zero host-profile footprint (isolated write-probe + before/after diff)' } )
     }
 }
 
 function Invoke-LokiCmd_doctor {
     param($Context)
+
+    # --footprint mode (DESIGN.md section 5.4): the falsifiable zero-app-level-footprint gate. Thin wiring over
+    # lib/footprint.ps1 -- run the isolated write-probe, render the verdict, map to an exit code. A hard probe-target
+    # leak -> FootprintGuard (6); an inconclusive probe (isolation could not be exercised) -> GeneralError; a change in
+    # a soft standing location is reported but does not fail the gate (see ADR-0010).
+    if (@($Context.Args) -contains '--footprint') {
+        Write-LokiHeading (Get-LokiText 'footprint.heading')
+        Write-LokiLine ''
+        $res = Invoke-LokiFootprintProbe -AppRoot $Context.AppRoot
+        # A detected leak MUST win. When the redirect breaks, the isolated child writes to the host (leak detected,
+        # Clean=$false) AND the stick marker is absent (ProbeVerified=$false) -- these co-occur in the gate's primary
+        # failure mode. Check the leak FIRST so it always maps to FootprintGuard (6) and names the target; only a
+        # clean-but-unverified run (isolation could not be exercised at all) is the inconclusive GeneralError case.
+        if (-not $res.Clean) {
+            Write-LokiErr (Get-LokiText 'footprint.leaked' -ArgumentList @(($res.Leaked -join ', ')))
+            return (Get-LokiExitCode 'FootprintGuard')
+        }
+        if (-not $res.ProbeVerified) {
+            Write-LokiErr (Get-LokiText 'footprint.probeFailed')
+            return (Get-LokiExitCode 'GeneralError')
+        }
+        Write-LokiOk (Get-LokiText 'footprint.probeVerified')
+        if ($res.Observed.Count -gt 0) {
+            Write-LokiWarn (Get-LokiText 'footprint.observed' -ArgumentList @(($res.Observed -join ', ')))
+        }
+        Write-LokiOk (Get-LokiText 'footprint.clean')
+        return (Get-LokiExitCode 'Ok')
+    }
 
     $envPath = Join-Path $Context.AppRoot 'home\.env'
     $configPath = Join-Path $Context.AppRoot 'loki.config.json'

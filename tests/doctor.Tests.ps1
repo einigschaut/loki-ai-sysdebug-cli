@@ -18,6 +18,8 @@ BeforeAll {
     . "$PSScriptRoot\..\src\lib\config.ps1"
     . "$PSScriptRoot\..\src\lib\auth.ps1"
     . "$PSScriptRoot\..\src\lib\posture.ps1"
+    . "$PSScriptRoot\..\src\lib\env-isolate.ps1"
+    . "$PSScriptRoot\..\src\lib\footprint.ps1"
     . "$PSScriptRoot\..\src\lib\registry.ps1"
     . "$PSScriptRoot\..\src\commands\doctor.ps1"
     Initialize-LokiUi -NoColor
@@ -34,8 +36,8 @@ BeforeAll {
     }
 
     function global:New-TestDoctorContext {
-        param([Parameter(Mandatory = $true)][string]$AppRoot)
-        return @{ AppRoot = $AppRoot; Version = 'test'; Args = @(); Flags = @{}; Registry = @() }
+        param([Parameter(Mandatory = $true)][string]$AppRoot, [string[]]$CmdArgs = @())
+        return @{ AppRoot = $AppRoot; Version = 'test'; Args = $CmdArgs; Flags = @{}; Registry = @() }
     }
 
     # Calls Invoke-LokiCmd_doctor and returns exit code, stdout text (stream 6), stderr text, and the
@@ -158,6 +160,60 @@ Describe 'Command doctor' {
             $r = Invoke-DoctorCommand -Context $ctx
             $r.AllText | Should -BeLike '*sk-...abcd*'
             $r.AllText.Contains($plain) | Should -BeFalse
+        }
+    }
+
+    Context 'footprint mode (--footprint, ADR-0010)' {
+
+        It 'clean probe -> exit Ok, reports clean' {
+            Mock Invoke-LokiFootprintProbe { @{ Clean = $true; Leaked = @(); Observed = @(); Added = @(); Changed = @(); ProbeVerified = $true } }
+            $ctx = New-TestDoctorContext -AppRoot (New-TestDoctorAppRoot) -CmdArgs @('--footprint')
+            $r = Invoke-DoctorCommand -Context $ctx
+            $r.Code | Should -Be (Get-LokiExitCode 'Ok')
+            $r.AllText | Should -BeLike '*Clean*'
+        }
+
+        It 'a probe-target leak -> exit FootprintGuard (6), names the leaked target' {
+            Mock Invoke-LokiFootprintProbe { @{ Clean = $false; Leaked = @('probe-appdata'); Observed = @(); Added = @('probe-appdata'); Changed = @(); ProbeVerified = $true } }
+            $ctx = New-TestDoctorContext -AppRoot (New-TestDoctorAppRoot) -CmdArgs @('--footprint')
+            $r = Invoke-DoctorCommand -Context $ctx
+            $r.Code | Should -Be (Get-LokiExitCode 'FootprintGuard')
+            $r.AllText | Should -BeLike '*FOOTPRINT*'
+            $r.AllText | Should -BeLike '*probe-appdata*'
+        }
+
+        It 'a clean-but-unverified probe (isolation could not be exercised) -> exit GeneralError' {
+            Mock Invoke-LokiFootprintProbe { @{ Clean = $true; Leaked = @(); Observed = @(); Added = @(); Changed = @(); ProbeVerified = $false } }
+            $ctx = New-TestDoctorContext -AppRoot (New-TestDoctorAppRoot) -CmdArgs @('--footprint')
+            $r = Invoke-DoctorCommand -Context $ctx
+            $r.Code | Should -Be (Get-LokiExitCode 'GeneralError')
+        }
+
+        It 'a DETECTED leak with an unverified probe -> FootprintGuard (6), not inconclusive (leak wins; the gate primary failure mode)' {
+            # When the redirect breaks, the child writes to the host (Clean=$false) AND the stick marker is absent
+            # (ProbeVerified=$false) -- they co-occur. The leak must dominate: exit 6 + name the target, never a
+            # benign-sounding GeneralError. (Regression the 3-vote review reproduced live.)
+            Mock Invoke-LokiFootprintProbe { @{ Clean = $false; Leaked = @('probe-temp'); Observed = @(); Added = @('probe-temp'); Changed = @(); ProbeVerified = $false } }
+            $ctx = New-TestDoctorContext -AppRoot (New-TestDoctorAppRoot) -CmdArgs @('--footprint')
+            $r = Invoke-DoctorCommand -Context $ctx
+            $r.Code | Should -Be (Get-LokiExitCode 'FootprintGuard')
+            $r.AllText | Should -BeLike '*FOOTPRINT*'
+            $r.AllText | Should -BeLike '*probe-temp*'
+        }
+
+        It 'a soft standing change is reported (Observed) but the gate still exits Ok' {
+            Mock Invoke-LokiFootprintProbe { @{ Clean = $true; Leaked = @(); Observed = @('host-userprofile-claude'); Added = @(); Changed = @('host-userprofile-claude'); ProbeVerified = $true } }
+            $ctx = New-TestDoctorContext -AppRoot (New-TestDoctorAppRoot) -CmdArgs @('--footprint')
+            $r = Invoke-DoctorCommand -Context $ctx
+            $r.Code | Should -Be (Get-LokiExitCode 'Ok')
+            $r.AllText | Should -BeLike '*host-userprofile-claude*'
+        }
+
+        It 'footprint mode does NOT run the posture checks (no Authentication line)' {
+            Mock Invoke-LokiFootprintProbe { @{ Clean = $true; Leaked = @(); Observed = @(); Added = @(); Changed = @(); ProbeVerified = $true } }
+            $ctx = New-TestDoctorContext -AppRoot (New-TestDoctorAppRoot) -CmdArgs @('--footprint')
+            $r = Invoke-DoctorCommand -Context $ctx
+            $r.AllText | Should -Not -BeLike '*Authentication*'
         }
     }
 }
