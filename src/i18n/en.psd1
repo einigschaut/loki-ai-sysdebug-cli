@@ -75,4 +75,14 @@
     'ask.timeout'               = 'The online engine did not respond in time.'
     'ask.failed'                = 'The online engine could not complete the request.'
     'ask.cost'                  = 'Cost: ${0} USD'
+
+    'scan.summary'              = 'Run a structured read-only diagnostic scan of an area'
+    'scan.invalidArea'          = 'Unknown scan area. Valid areas: {0}.'
+    'scan.offline'              = 'loki scan needs network access (the online engine is unreachable). Use the offline path instead.'
+    'scan.working'              = 'Scanning {0} with the online engine (read-only diagnosis)...'
+    'scan.authMissing'          = "No API key set. Run 'loki auth set' first."
+    'scan.engineMissing'        = 'Claude Code (the `claude` CLI) was not found. Install it to use the online engine.'
+    'scan.timeout'              = 'The online engine did not respond in time.'
+    'scan.failed'               = 'The online engine could not complete the scan.'
+    'scan.cost'                 = 'Cost: ${0} USD'
 }
