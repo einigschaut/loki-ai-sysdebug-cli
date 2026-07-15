@@ -27,6 +27,11 @@ jobs:
       - name: Run release-please
         uses: googleapis/release-please-action@v4
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          # Fine-grained PAT, NOT the default GITHUB_TOKEN: a PR opened via GITHUB_TOKEN does not
+          # trigger further workflows (GitHub's anti-recursion rule), which would leave every Release
+          # PR without CI. Using a PAT makes the Release PR run the normal CI gate before it is merged.
+          # Secret RELEASE_PLEASE_TOKEN = a repo-scoped PAT (Contents + Pull requests: RW); renew before
+          # it expires or the bot can no longer open Release PRs. See docs/adr/0005-versioning-and-releases.md.
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
