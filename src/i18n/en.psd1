@@ -35,7 +35,8 @@
 
     'status.net.online'         = 'Network: reachable (online engine available)'
     'status.net.offline'        = 'Network: unreachable - only the offline path (collect/offline) is available'
-    'status.pending'            = 'Auth, host-posture and volume checks are coming in stage 1 (loki doctor).'
+    'status.postureRollup'      = '{0} ok, {1} warning(s), {2} issue(s)'
+    'status.doctorHint'         = "Run 'loki doctor' for the full check (auth, host posture, volume/BitLocker)."
 
     'status.summary'            = 'Quick environment check (writes nothing)'
     'help.summary'              = 'Help / command overview (also: loki <cmd> --help)'

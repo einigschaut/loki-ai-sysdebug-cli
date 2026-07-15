@@ -35,7 +35,8 @@
 
     'status.net.online'         = 'Netz: erreichbar (Online-Engine nutzbar)'
     'status.net.offline'        = 'Netz: nicht erreichbar - nur Offline-Pfad (collect/offline) verfügbar'
-    'status.pending'            = 'Auth-, Host-Posture- und Volume-Checks folgen in Stufe 1 (loki doctor).'
+    'status.postureRollup'      = '{0} ok, {1} Warnung(en), {2} Problem(e)'
+    'status.doctorHint'         = '`loki doctor` für die volle Prüfung (Auth, Host-Posture, Volume/BitLocker).'
 
     'status.summary'            = 'Schneller Umgebungs-Check (schreibt nichts)'
     'help.summary'              = 'Hilfe / Command-Übersicht (auch: loki <cmd> --help)'
