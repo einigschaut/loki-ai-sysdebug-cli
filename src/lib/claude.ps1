@@ -44,6 +44,16 @@
 #   Invoke-LokiClaudeInteractive -AppRoot <string> -Config <hashtable> [-Model] [-ClaudePath] -> [hashtable]{ Ok;
 #       Reason; ExitCode }  -- the interactive (chat) spawn: `claude` attached to the console (no -p, no stream
 #       redirection, no timeout), the mutate->ask confirm gate live. Live-gated (ADR-0008).
+#   Get-LokiSetupTokenChildEnv -AppRoot <string> [-BaseEnv <IDictionary>] -> [hashtable]
+#       The isolated child env block for the `claude setup-token` bootstrap: the ADR-0003 isolation overlaid on the
+#       parent env, then BOTH auth vars removed -- this is where the subscription token is GENERATED, so none is
+#       injected and no personal token may cross in. Pure/testable: a unit test asserts neither auth var survives even
+#       when the parent env carried one.
+#   Invoke-LokiClaudeSetupToken -AppRoot <string> [-ClaudePath] -> [hashtable]{ Ok; Reason; ExitCode }
+#       Launches `claude setup-token` ATTACHED to the console (browser sign-in + the printed token reach the operator)
+#       under that isolated env. The ONLY claude spawn with NO auth variable. No hook/--settings/charter (setup-token
+#       runs no agent tools). Loki NEVER captures/parses the token -- the operator pastes it back via auth's hidden
+#       SecureString path (CLAUDE.md section 5). Live-gated (ADR-0009). Ok=$false Reason 'claude-not-found' short-circuits.
 # CLAUDE.md section 5: secret NEVER in argv/logs; exactly ONE auth variable; allow-list (not deny-list) is the gate;
 # scanned data is data, never instructions. ASCII-only file -> no BOM (CLAUDE.md section 1).
 Set-StrictMode -Version Latest
@@ -99,6 +109,13 @@ $script:LokiReadSideEffectPatterns = @(
     '\bGet-Help\b',              # Get-Help -Online opens the default browser (external process + network)
     '\s-online\b'                # the -Online switch on any read command (browser launch)
 )
+
+# Every auth env-var name Claude Code can authenticate on. Loki sets exactly ONE (api -> ANTHROPIC_API_KEY,
+# sub -> CLAUDE_CODE_OAUTH_TOKEN); ANTHROPIC_AUTH_TOKEN is a third bearer credential Claude Code also honors (custom
+# gateways/proxies). Single source of truth for the child-env strip so no personal/gateway token from the operator's
+# shell crosses into the engine -- normal spawns strip the ones Loki did NOT set, setup-token strips ALL of them
+# (it is generating a credential). This is what makes "exactly one auth variable" (CLAUDE.md section 5) hold.
+$script:LokiClaudeAuthVars = @('ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_AUTH_TOKEN')
 
 function Get-LokiJsonProp {
     param(
@@ -408,10 +425,10 @@ function Get-LokiClaudeInvocation {
     if ($Interactive) { $isolated['LOKI_HOOK_MODE'] = 'interactive' } else { $isolated['LOKI_HOOK_MODE'] = 'headless' }
     $childEnv = New-LokiChildEnvBlock -Isolated $isolated
     # Exactly ONE auth variable (CLAUDE.md section 5). New-LokiChildEnvBlock copies the operator's FULL parent env,
-    # which may carry the OTHER auth var (e.g. the operator's personal CLAUDE_CODE_OAUTH_TOKEN while Loki uses the
-    # api key). Strip every auth var the child inherited that is NOT the one Loki set, so the online engine
-    # authenticates on exactly Loki's chosen credential and no personal token crosses into it.
-    foreach ($authVar in @('ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN')) {
+    # which may carry ANOTHER auth var (a personal CLAUDE_CODE_OAUTH_TOKEN while Loki uses the api key, or a bearer
+    # ANTHROPIC_AUTH_TOKEN). Strip every known auth var the child inherited that is NOT the one Loki set, so the online
+    # engine authenticates on exactly Loki's chosen credential and no personal/gateway token crosses into it.
+    foreach ($authVar in $script:LokiClaudeAuthVars) {
         if (-not $authEnv.ContainsKey($authVar)) { [void]$childEnv.Remove($authVar) }
     }
 
@@ -623,6 +640,89 @@ function Invoke-LokiClaudeInteractive {
         if ((-not [string]::IsNullOrEmpty($plan.SettingsPath)) -and (Test-Path -LiteralPath $plan.SettingsPath)) {
             Remove-Item -LiteralPath $plan.SettingsPath -Force -ErrorAction SilentlyContinue
         }
+    }
+
+    return @{ Ok = $true; Reason = 'ok'; ExitCode = $exitCode }
+}
+
+function Get-LokiSetupTokenChildEnv {
+    # The isolated child env for the `claude setup-token` bootstrap. Same ADR-0003 isolation as every claude spawn
+    # (CLAUDE_CONFIG_DIR etc. redirected onto the stick -> setup-token's own artifacts stay on the stick, no host
+    # footprint even at setup), but with NO auth variable injected -- this is where the subscription token is being
+    # GENERATED, so there is none yet -- and BOTH auth vars the operator's shell may carry are STRIPPED so no personal
+    # token crosses into the bootstrap. Pure: builds and returns the block, spawns nothing (unit-testable, CLAUDE.md section 6).
+    param(
+        [Parameter(Mandatory = $true)][string]$AppRoot,
+        [System.Collections.IDictionary]$BaseEnv
+    )
+    $isolated = Get-LokiIsolatedEnv -StickRoot $AppRoot
+    $childEnv = New-LokiChildEnvBlock -Isolated $isolated -BaseEnv $BaseEnv
+    # Exactly ZERO auth variables here (we are generating one). Strip ALL known auth vars, regardless of what the
+    # parent carried, so no personal/gateway credential from the operator's shell reaches the sign-in.
+    foreach ($authVar in $script:LokiClaudeAuthVars) { [void]$childEnv.Remove($authVar) }
+    return $childEnv
+}
+
+function Invoke-LokiClaudeSetupToken {
+    # Bootstraps a long-lived Claude *subscription* token: launches `claude setup-token` ATTACHED to the current
+    # console so the operator completes the browser sign-in and sees the token `claude` prints. This is the ONLY place
+    # Loki spawns `claude` WITHOUT an auth variable -- it is generating the credential, so there is none yet
+    # (Get-LokiSetupTokenChildEnv strips both). No PreToolUse hook / --settings / charter: setup-token runs no agent
+    # tools, so there is nothing to gate. Loki NEVER captures or parses the printed token -- the operator pastes it
+    # back through auth's hidden SecureString path (secret NEVER in argv/logs, CLAUDE.md section 5). Returns
+    # { Ok; Reason; ExitCode } (Ok=$false Reason 'claude-not-found' short-circuits). Named "Invoke" to match the
+    # sibling spawns and to stay clear of the ShouldProcess analyzer rule for state-changing verbs.
+    #
+    # LIVE-GATE (ADR-0009): that `claude setup-token` completes its browser OAuth correctly UNDER Loki's env isolation
+    # (redirected USERPROFILE/CLAUDE_CONFIG_DIR, neutralized HOME siblings) can only be confirmed on a real machine
+    # with a real Claude subscription.
+    param(
+        [Parameter(Mandatory = $true)][string]$AppRoot,
+        [string]$ClaudePath
+    )
+
+    $filePath = Get-LokiClaudeCommand -Override $ClaudePath
+    if ($null -eq $filePath) {
+        return @{ Ok = $false; Reason = 'claude-not-found' }
+    }
+
+    $childEnv = Get-LokiSetupTokenChildEnv -AppRoot $AppRoot
+
+    $argString = ConvertTo-LokiArgString -ArgumentList @('setup-token')
+
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    # Same `.cmd`/`.bat` routing as the other spawns (CreateProcess cannot launch a batch file directly).
+    $ext = ([System.IO.Path]::GetExtension([string]$filePath)).ToLowerInvariant()
+    if ($ext -eq '.cmd' -or $ext -eq '.bat') {
+        $psi.FileName = (Join-Path $env:SystemRoot 'System32\cmd.exe')
+        $psi.Arguments = '/c ' + (ConvertTo-LokiArgString -ArgumentList @($filePath)) + ' ' + $argString
+    }
+    else {
+        $psi.FileName = $filePath
+        $psi.Arguments = $argString
+    }
+    # Attached to the console (no stream redirection) so the browser-login prompts + the printed token reach the
+    # operator directly. UseShellExecute=$false is still required to install the isolated child env block.
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $false
+    $psi.RedirectStandardError = $false
+    $psi.RedirectStandardInput = $false
+    $psi.CreateNoWindow = $false
+    $psi.WorkingDirectory = $AppRoot
+    # The child runs under the isolated env WITHOUT any auth variable (CLAUDE.md section 5) -- setup-token does its own
+    # browser sign-in and prints a fresh token.
+    $psi.EnvironmentVariables.Clear()
+    foreach ($k in $childEnv.Keys) { $psi.EnvironmentVariables[[string]$k] = [string]$childEnv[$k] }
+
+    $proc = New-Object System.Diagnostics.Process
+    $proc.StartInfo = $psi
+    try {
+        [void]$proc.Start()
+        $proc.WaitForExit()   # no timeout: the operator drives the browser sign-in at their own pace
+        $exitCode = $proc.ExitCode
+    }
+    finally {
+        $proc.Dispose()
     }
 
     return @{ Ok = $true; Reason = 'ok'; ExitCode = $exitCode }

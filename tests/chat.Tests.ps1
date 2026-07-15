@@ -110,7 +110,7 @@ Describe 'Command chat' {
             Mock Invoke-LokiClaudeInteractive { @{ Ok = $false; Reason = 'auth-missing' } }
             $r = Invoke-ChatCommand -Context (New-TestChatContext)
             $r.Code | Should -Be (Get-LokiExitCode 'AuthMissing')
-            $r.AllText | Should -BeLike '*auth set*'
+            $r.AllText | Should -BeLike '*auth login*'
         }
 
         It 'claude-not-found -> GeneralError exit' {

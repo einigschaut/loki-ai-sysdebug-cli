@@ -111,7 +111,7 @@ Describe 'Command ask' {
             Mock Invoke-LokiClaude { @{ Ok = $false; Reason = 'auth-missing' } }
             $r = Invoke-AskCommand -Context (New-TestAskContext)
             $r.Code | Should -Be (Get-LokiExitCode 'AuthMissing')
-            $r.AllText | Should -BeLike '*auth set*'
+            $r.AllText | Should -BeLike '*auth login*'
         }
 
         It 'claude-not-found -> GeneralError exit' {

@@ -1,4 +1,4 @@
-﻿# commands/auth.ps1 — `loki auth <status|use|set|clear|login>`
+﻿# commands/auth.ps1 — `loki auth <login|status|use|set|clear>`
 # Metadata (Get-LokiCmdMeta_auth) is the single source of truth; handler (Invoke-LokiCmd_auth) executes it. ADR-0002.
 #
 # Scaffold deviation (deliberate, documented -- CLAUDE.md §9 "scope creep -> ADR or ask, never silently"):
@@ -16,8 +16,8 @@ function Get-LokiCmdMeta_auth {
         Name     = 'auth'
         Group    = 'Setup'
         Summary  = 'auth.summary'
-        Usage    = 'loki auth <status|use|set|clear|login>'
-        Examples = @('loki auth status', 'loki auth use api', 'loki auth set')
+        Usage    = 'loki auth <login|status|use|set|clear>'
+        Examples = @('loki auth login', 'loki auth login sub', 'loki auth login api', 'loki auth status')
         Flags    = @()
     }
 }
@@ -81,15 +81,77 @@ function Invoke-LokiCmd_auth {
     }
 
     if ($verb -eq 'login') {
-        # The online login flow (Claude engine, setup token) only lands in F2 (docs/DESIGN.md) -- do NOT
-        # fake it here (CLAUDE.md §9: marking a stub/TODO as "done" is forbidden). Exit code choice: none of the
-        # existing names fit exactly -- 'AuthMissing' would be wrong (it's not a missing secret, but the
-        # missing engine wiring), 'NetworkRequired' would be misleading (not a connectivity issue), and
-        # 'OfflineEngineMissing' is semantically the opposite (here the ONLINE engine wiring is missing, not the
-        # offline engine). Hence the deliberate, generic 'GeneralError' -- don't fake a special case that doesn't
-        # exist (yet) instead of abusing a wrongly-fitting name.
-        Write-LokiWarn (Get-LokiText 'auth.login.deferred')
-        return (Get-LokiExitCode 'GeneralError')
+        # THE single onboarding door (ADR-0009, gh-`auth login` style). Pick the method, then land exactly ONE
+        # credential on the stick. `use`/`set`/`clear` remain as scriptable advanced primitives (kept out of the main
+        # help). Method precedence: an explicit 2nd arg (`sub`/`api`, also `--sub`/`--api`) skips the chooser; else ask.
+        $methodArg = $null
+        if ($Context.Args.Count -gt 1) {
+            $methodArg = ([string]$Context.Args[1]).Trim().TrimStart('-').ToLowerInvariant()
+        }
+
+        $method = $null
+        if ($methodArg -eq 'api' -or $methodArg -eq 'console') { $method = 'api' }
+        elseif ($methodArg -eq 'sub' -or $methodArg -eq 'claudeai' -or $methodArg -eq 'subscription') { $method = 'sub' }
+        elseif (-not [string]::IsNullOrEmpty($methodArg)) {
+            Write-LokiErr (Get-LokiText 'auth.login.badMethod')
+            Write-LokiLine (Get-LokiText 'auth.login.usage')
+            return (Get-LokiExitCode 'Usage')
+        }
+        else {
+            # Interactive chooser (rudimentary MVP UI on purpose -- a richer prompt is a later-version item).
+            Write-LokiLine (Get-LokiText 'auth.login.chooseHeading')
+            Write-LokiLine (Get-LokiText 'auth.login.optSub')
+            Write-LokiLine (Get-LokiText 'auth.login.optApi')
+            $choice = ([string](Read-Host -Prompt (Get-LokiText 'auth.login.choosePrompt'))).Trim().ToLowerInvariant()
+            if ($choice -eq '1' -or $choice -eq 'sub' -or $choice -eq 's') { $method = 'sub' }
+            elseif ($choice -eq '2' -or $choice -eq 'api' -or $choice -eq 'a') { $method = 'api' }
+            else {
+                Write-LokiErr (Get-LokiText 'auth.login.badMethod')
+                return (Get-LokiExitCode 'Usage')
+            }
+        }
+
+        if ($method -eq 'sub') {
+            # Subscription: launch the real browser sign-in INLINE (`claude setup-token`) under Loki's env isolation,
+            # then collect the token it prints through the SAME hidden SecureString path as the API key. Loki launches
+            # the flow but NEVER captures/parses the token itself (secret only via SecureString, CLAUDE.md §5).
+            Write-LokiInfo (Get-LokiText 'auth.login.subLaunch')
+            $res = Invoke-LokiClaudeSetupToken -AppRoot $Context.AppRoot
+            if (-not $res.Ok) {
+                if ($res.Reason -eq 'claude-not-found') {
+                    Write-LokiErr (Get-LokiText 'auth.login.engineMissing')
+                    return (Get-LokiExitCode 'GeneralError')
+                }
+                Write-LokiErr (Get-LokiText 'auth.login.subFailed')
+                return (Get-LokiExitCode 'GeneralError')
+            }
+            if (($null -ne $res.ExitCode) -and ([int]$res.ExitCode -ne 0)) {
+                # setup-token aborted or errored -> no token was generated. Do not prompt for a paste; change nothing.
+                Write-LokiErr (Get-LokiText 'auth.login.subFailed')
+                return (Get-LokiExitCode 'GeneralError')
+            }
+            Write-LokiInfo (Get-LokiText 'auth.login.pasteHint')
+            $prompt = Get-LokiText 'auth.login.prompt'
+            $done = Get-LokiText 'auth.login.done'
+        }
+        else {
+            $prompt = Get-LokiText 'auth.login.apiPrompt'
+            $done = Get-LokiText 'auth.login.apiDone'
+        }
+
+        # Secret NEVER via argv -- hidden input directly as a SecureString (CLAUDE.md §5).
+        $sec = Read-Host -AsSecureString -Prompt $prompt
+        if ($sec.Length -eq 0) {
+            Write-LokiErr (Get-LokiText 'auth.login.empty')
+            return (Get-LokiExitCode 'Usage')
+        }
+        # Order: method first, then secret, so a later failure never leaves a stored credential under the wrong method.
+        $cfg = Read-LokiConfig -Path $configPath
+        $cfg['AuthMethod'] = $method
+        Write-LokiConfig -Path $configPath -Config $cfg
+        Set-LokiSecret -EnvFilePath $envPath -SecureValue $sec
+        Write-LokiOk $done
+        return (Get-LokiExitCode 'Ok')
     }
 
     if ([string]::IsNullOrEmpty($verb)) {

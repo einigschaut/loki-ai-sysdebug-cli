@@ -537,17 +537,51 @@ Describe 'Interactive mode (chat): permission gate + invocation (ADR-0008)' {
             $plan.ArgList | Should -Not -Contain '--no-session-persistence'
         }
 
-        It 'EXACTLY-ONE-AUTH-VAR: strips an inherited other-method auth var from the child (adversarial regression)' {
+        It 'EXACTLY-ONE-AUTH-VAR: strips every inherited other-method auth var from the child (adversarial regression)' {
             $env:CLAUDE_CODE_OAUTH_TOKEN = 'operator-personal-sub-token'
+            $env:ANTHROPIC_AUTH_TOKEN = 'operator-bearer-token'   # third credential Claude Code also honors
             try {
                 $root = New-TestClaudeAppRoot
                 $plan = Get-LokiClaudeInvocation -Prompt 'q' -AppRoot $root -Config @{} -ClaudePath $script:FakeClaude -Secret 'sk-loki-key'
                 $plan.ChildEnv['ANTHROPIC_API_KEY'] | Should -Be 'sk-loki-key'
                 $plan.ChildEnv.ContainsKey('CLAUDE_CODE_OAUTH_TOKEN') | Should -BeFalse
+                $plan.ChildEnv.ContainsKey('ANTHROPIC_AUTH_TOKEN') | Should -BeFalse
             }
             finally {
                 Remove-Item Env:\CLAUDE_CODE_OAUTH_TOKEN -ErrorAction SilentlyContinue
+                Remove-Item Env:\ANTHROPIC_AUTH_TOKEN -ErrorAction SilentlyContinue
             }
         }
+    }
+}
+
+Describe 'setup-token bootstrap env hygiene (subscription login, ADR-0009)' {
+
+    It 'Get-LokiSetupTokenChildEnv applies the ADR-0003 isolation (USERPROFILE/HOME/CLAUDE_CONFIG_DIR under the stick)' {
+        $root = New-TestClaudeAppRoot
+        $block = Get-LokiSetupTokenChildEnv -AppRoot $root -BaseEnv @{ PATH = 'C:\orig' }
+        $block['USERPROFILE'] | Should -Be (Join-Path $root 'home')
+        $block['HOME'] | Should -Be (Join-Path $root 'home')
+        $block['CLAUDE_CONFIG_DIR'] | Should -Be (Join-Path $root 'home\.claude')
+    }
+
+    It 'BREAK-THE-LEAK: strips ALL known auth vars even when the parent env carried them (no credential injected -- one is being generated)' {
+        $root = New-TestClaudeAppRoot
+        $base = @{
+            ANTHROPIC_API_KEY       = 'sk-parent-key'
+            CLAUDE_CODE_OAUTH_TOKEN = 'parent-sub-token'
+            ANTHROPIC_AUTH_TOKEN    = 'parent-bearer-token'   # third credential Claude Code also honors
+            PATH                    = 'C:\orig'
+        }
+        $block = Get-LokiSetupTokenChildEnv -AppRoot $root -BaseEnv $base
+        $block.ContainsKey('ANTHROPIC_API_KEY') | Should -BeFalse
+        $block.ContainsKey('CLAUDE_CODE_OAUTH_TOKEN') | Should -BeFalse
+        $block.ContainsKey('ANTHROPIC_AUTH_TOKEN') | Should -BeFalse
+    }
+
+    It 'Invoke-LokiClaudeSetupToken short-circuits with claude-not-found for an unresolvable binary (no spawn)' {
+        $r = Invoke-LokiClaudeSetupToken -AppRoot (New-TestClaudeAppRoot) -ClaudePath 'Z:\nope\claude.exe'
+        $r.Ok | Should -BeFalse
+        $r.Reason | Should -Be 'claude-not-found'
     }
 }

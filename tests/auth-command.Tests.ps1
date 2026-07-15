@@ -20,6 +20,11 @@ BeforeAll {
     . "$PSScriptRoot\..\src\lib\config.ps1"
     . "$PSScriptRoot\..\src\lib\auth.ps1"
     . "$PSScriptRoot\..\src\lib\registry.ps1"
+    # env-isolate + allowlist + claude so the browser-flow seam (Invoke-LokiClaudeSetupToken) exists to be Mocked in
+    # the `login sub` tests -- the real spawn never runs here (it is mocked away), only the command wiring is exercised.
+    . "$PSScriptRoot\..\src\lib\env-isolate.ps1"
+    . "$PSScriptRoot\..\src\lib\allowlist.ps1"
+    . "$PSScriptRoot\..\src\lib\claude.ps1"
     . "$PSScriptRoot\..\src\commands\auth.ps1"
     Initialize-LokiUi -NoColor
     Initialize-LokiI18n -AppRoot (Resolve-Path "$PSScriptRoot\..\src").Path -Locale 'en' | Out-Null
@@ -214,12 +219,147 @@ Describe 'Command auth - routing & exit codes' {
         Read-LokiSecret -EnvFilePath $envPath | Should -Be $null
     }
 
-    It 'login -> non-null exit + warning (online engine only lands in F2, no fake login)' {
+    It 'login sub -> Ok: launches the browser flow, sets AuthMethod=sub AND stores the token' {
+        Mock Invoke-LokiClaudeSetupToken { @{ Ok = $true; Reason = 'ok'; ExitCode = 0 } }
+        Mock Read-Host -ParameterFilter { $AsSecureString } {
+            $ss = New-Object System.Security.SecureString
+            foreach ($ch in $script:FakeSecret.ToCharArray()) { $ss.AppendChar($ch) }
+            $ss.MakeReadOnly(); return $ss
+        }
+        $approot = New-TestAppRoot
+        $envPath = Join-Path $approot 'home\.env'
+        $ctx = New-TestAuthContext -AppRoot $approot -CmdArgs @('login', 'sub')
+        $r = Invoke-AuthCommand -Context $ctx
+        $r.Code | Should -Be (Get-LokiExitCode 'Ok')
+        Should -Invoke Invoke-LokiClaudeSetupToken -Times 1 -Exactly
+
+        $cfg = Read-LokiConfig -Path (Join-Path $approot 'loki.config.json')
+        $cfg['AuthMethod'] | Should -Be 'sub'
+        Read-LokiSecret -EnvFilePath $envPath | Should -Be $script:FakeSecret
+    }
+
+    It 'login api -> Ok: sets AuthMethod=api, stores the key, and does NOT launch the browser flow' {
+        Mock Invoke-LokiClaudeSetupToken { @{ Ok = $true; Reason = 'ok'; ExitCode = 0 } }
+        Mock Read-Host -ParameterFilter { $AsSecureString } {
+            $ss = New-Object System.Security.SecureString
+            foreach ($ch in $script:FakeSecret.ToCharArray()) { $ss.AppendChar($ch) }
+            $ss.MakeReadOnly(); return $ss
+        }
+        $approot = New-TestAppRoot
+        $envPath = Join-Path $approot 'home\.env'
+        $ctx = New-TestAuthContext -AppRoot $approot -CmdArgs @('login', 'api')
+        $r = Invoke-AuthCommand -Context $ctx
+        $r.Code | Should -Be (Get-LokiExitCode 'Ok')
+        Should -Invoke Invoke-LokiClaudeSetupToken -Times 0 -Exactly
+
+        $cfg = Read-LokiConfig -Path (Join-Path $approot 'loki.config.json')
+        $cfg['AuthMethod'] | Should -Be 'api'
+        Read-LokiSecret -EnvFilePath $envPath | Should -Be $script:FakeSecret
+    }
+
+    It 'login sub, setup-token exits non-zero -> GeneralError, never prompts for a paste, no half-state' {
+        Mock Invoke-LokiClaudeSetupToken { @{ Ok = $true; Reason = 'ok'; ExitCode = 1 } }
+        Mock Read-Host -ParameterFilter { $AsSecureString } {
+            $ss = New-Object System.Security.SecureString
+            foreach ($ch in $script:FakeSecret.ToCharArray()) { $ss.AppendChar($ch) }
+            $ss.MakeReadOnly(); return $ss
+        }
+        $approot = New-TestAppRoot
+        $envPath = Join-Path $approot 'home\.env'
+        $ctx = New-TestAuthContext -AppRoot $approot -CmdArgs @('login', 'sub')
+        $r = Invoke-AuthCommand -Context $ctx
+        $r.Code | Should -Be (Get-LokiExitCode 'GeneralError')
+        Should -Invoke Read-Host -ParameterFilter { $AsSecureString } -Times 0 -Exactly
+        Test-Path -LiteralPath (Join-Path $approot 'loki.config.json') | Should -BeFalse
+        Read-LokiSecret -EnvFilePath $envPath | Should -Be $null
+    }
+
+    It 'login sub, claude not found -> GeneralError, no half-state' {
+        Mock Invoke-LokiClaudeSetupToken { @{ Ok = $false; Reason = 'claude-not-found' } }
+        Mock Read-Host -ParameterFilter { $AsSecureString } {
+            $ss = New-Object System.Security.SecureString
+            foreach ($ch in $script:FakeSecret.ToCharArray()) { $ss.AppendChar($ch) }
+            $ss.MakeReadOnly(); return $ss
+        }
+        $approot = New-TestAppRoot
+        $envPath = Join-Path $approot 'home\.env'
+        $ctx = New-TestAuthContext -AppRoot $approot -CmdArgs @('login', 'sub')
+        $r = Invoke-AuthCommand -Context $ctx
+        $r.Code | Should -Be (Get-LokiExitCode 'GeneralError')
+        Should -Invoke Read-Host -ParameterFilter { $AsSecureString } -Times 0 -Exactly
+        Test-Path -LiteralPath (Join-Path $approot 'loki.config.json') | Should -BeFalse
+        Read-LokiSecret -EnvFilePath $envPath | Should -Be $null
+    }
+
+    It 'login sub with an EMPTY token -> Usage, config + secret unchanged (no half-state)' {
+        Mock Invoke-LokiClaudeSetupToken { @{ Ok = $true; Reason = 'ok'; ExitCode = 0 } }
+        Mock Read-Host -ParameterFilter { $AsSecureString } {
+            $ss = New-Object System.Security.SecureString; $ss.MakeReadOnly(); return $ss   # empty paste
+        }
+        $approot = New-TestAppRoot
+        $envPath = Join-Path $approot 'home\.env'
+        $ctx = New-TestAuthContext -AppRoot $approot -CmdArgs @('login', 'sub')
+        $r = Invoke-AuthCommand -Context $ctx
+        $r.Code | Should -Be (Get-LokiExitCode 'Usage')
+        Test-Path -LiteralPath (Join-Path $approot 'loki.config.json') | Should -BeFalse
+        Read-LokiSecret -EnvFilePath $envPath | Should -Be $null
+    }
+
+    It 'login api with an EMPTY key -> Usage, config + secret unchanged (no half-state)' {
+        Mock Read-Host -ParameterFilter { $AsSecureString } {
+            $ss = New-Object System.Security.SecureString; $ss.MakeReadOnly(); return $ss   # empty paste
+        }
+        $approot = New-TestAppRoot
+        $envPath = Join-Path $approot 'home\.env'
+        $ctx = New-TestAuthContext -AppRoot $approot -CmdArgs @('login', 'api')
+        $r = Invoke-AuthCommand -Context $ctx
+        $r.Code | Should -Be (Get-LokiExitCode 'Usage')
+        Test-Path -LiteralPath (Join-Path $approot 'loki.config.json') | Should -BeFalse
+        Read-LokiSecret -EnvFilePath $envPath | Should -Be $null
+    }
+
+    It 'login with an unknown method arg -> Usage' {
+        $ctx = New-TestAuthContext -AppRoot (New-TestAppRoot) -CmdArgs @('login', 'banana')
+        $r = Invoke-AuthCommand -Context $ctx
+        $r.Code | Should -Be (Get-LokiExitCode 'Usage')
+    }
+
+    It 'login (interactive chooser) choosing 1 -> sub path launches the browser flow and stores the token' {
+        Mock Invoke-LokiClaudeSetupToken { @{ Ok = $true; Reason = 'ok'; ExitCode = 0 } }
+        Mock Read-Host -ParameterFilter { $AsSecureString } {
+            $ss = New-Object System.Security.SecureString
+            foreach ($ch in $script:FakeSecret.ToCharArray()) { $ss.AppendChar($ch) }
+            $ss.MakeReadOnly(); return $ss
+        }
+        Mock Read-Host -ParameterFilter { -not $AsSecureString } { '1' }
+        $approot = New-TestAppRoot
+        $envPath = Join-Path $approot 'home\.env'
+        $ctx = New-TestAuthContext -AppRoot $approot -CmdArgs @('login')
+        $r = Invoke-AuthCommand -Context $ctx
+        $r.Code | Should -Be (Get-LokiExitCode 'Ok')
+        Should -Invoke Invoke-LokiClaudeSetupToken -Times 1 -Exactly
+        (Read-LokiConfig -Path (Join-Path $approot 'loki.config.json'))['AuthMethod'] | Should -Be 'sub'
+        Read-LokiSecret -EnvFilePath $envPath | Should -Be $script:FakeSecret
+    }
+
+    It 'login (interactive chooser) with an invalid choice -> Usage' {
+        Mock Read-Host -ParameterFilter { -not $AsSecureString } { 'x' }
         $ctx = New-TestAuthContext -AppRoot (New-TestAppRoot) -CmdArgs @('login')
         $r = Invoke-AuthCommand -Context $ctx
-        $r.Code | Should -Not -Be (Get-LokiExitCode 'Ok')
-        $r.Code | Should -Be (Get-LokiExitCode 'GeneralError')
-        $r.ErrText | Should -BeLike '*online engine*'
+        $r.Code | Should -Be (Get-LokiExitCode 'Usage')
+    }
+
+    It 'BREAK-THE-GUARD: login never echoes the pasted token to stdout/stderr (secret hygiene)' {
+        Mock Invoke-LokiClaudeSetupToken { @{ Ok = $true; Reason = 'ok'; ExitCode = 0 } }
+        Mock Read-Host -ParameterFilter { $AsSecureString } {
+            $ss = New-Object System.Security.SecureString
+            foreach ($ch in $script:FakeSecret.ToCharArray()) { $ss.AppendChar($ch) }
+            $ss.MakeReadOnly(); return $ss
+        }
+        $ctx = New-TestAuthContext -AppRoot (New-TestAppRoot) -CmdArgs @('login', 'sub')
+        $r = Invoke-AuthCommand -Context $ctx
+        $r.Text.Contains($script:FakeSecret) | Should -BeFalse
+        $r.ErrText.Contains($script:FakeSecret) | Should -BeFalse
     }
 }
 
