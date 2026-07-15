@@ -133,6 +133,22 @@ Describe 'Get-LokiCommandClass - denied (defense-in-depth)' {
         Get-LokiCommandClass -CommandLine 'Start-Process calc' | Should -Be 'denied'
     }
 
+    It "'start notepad.exe' -> denied (the start alias for Start-Process)" {
+        Get-LokiCommandClass -CommandLine 'start notepad.exe' | Should -Be 'denied'
+    }
+
+    It "'& C:\evil.exe' -> denied (call operator hands off to an un-gated process)" {
+        Get-LokiCommandClass -CommandLine '& C:\evil.exe' | Should -Be 'denied'
+    }
+
+    It "'. C:\evil.ps1' -> denied (dot-source runs arbitrary code)" {
+        Get-LokiCommandClass -CommandLine '. C:\evil.ps1' | Should -Be 'denied'
+    }
+
+    It "'Start-Service spooler' -> mutate (the start-alias deny must NOT over-block Start-* cmdlets)" {
+        Get-LokiCommandClass -CommandLine 'Start-Service spooler' | Should -Be 'mutate'
+    }
+
     It "empty string '' -> denied" {
         Get-LokiCommandClass -CommandLine '' | Should -Be 'denied'
     }
