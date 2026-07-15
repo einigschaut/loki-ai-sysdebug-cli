@@ -43,6 +43,7 @@
     'version.summary'           = 'Zeigt Loki- und Umgebungs-Versionen'
     'auth.summary'              = 'Auth-Methode und Secret verwalten'
     'doctor.summary'            = 'Vollständige Umgebungs- und Host-Posture-Diagnose'
+    'ask.summary'               = 'Der Online-Engine eine read-only Diagnosefrage stellen'
 
     'doctor.check.auth'         = 'Authentifizierung'
     'doctor.check.lang'         = 'PowerShell-Sprachmodus'
@@ -65,4 +66,13 @@
     'doctor.volume.plain'           = 'kein verschlüsselter Wechseldatenträger'
 
     'doctor.footer'             = '{0} OK, {1} Warnung(en), {2} Fehler'
+
+    'ask.usage'                 = 'Verwendung: loki ask <Frage>'
+    'ask.offline'               = 'loki ask benötigt Netzzugang (Online-Engine nicht erreichbar). Nutze stattdessen den Offline-Pfad.'
+    'ask.working'               = 'Frage an die Online-Engine (read-only Diagnose)...'
+    'ask.authMissing'           = "Kein API-Key gesetzt. Führe zuerst 'loki auth set' aus."
+    'ask.engineMissing'         = 'Claude Code (das `claude`-CLI) wurde nicht gefunden. Installiere es für die Online-Engine.'
+    'ask.timeout'               = 'Die Online-Engine hat nicht rechtzeitig geantwortet.'
+    'ask.failed'                = 'Die Online-Engine konnte die Anfrage nicht abschließen.'
+    'ask.cost'                  = 'Kosten: {0} USD'
 }
