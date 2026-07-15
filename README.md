@@ -71,6 +71,7 @@ table by hand; run `build/Update-LokiDocs.ps1` (a CI gate fails the build if it 
 | `status` | Health | Quick environment check (writes nothing) |
 | `version` | Health | Show Loki and environment versions |
 | `ask` | Online | Ask the online engine a read-only diagnostic question |
+| `scan` | Online | Run a structured read-only diagnostic scan of an area |
 | `auth` | Setup | Manage auth method and secret |
 
 <!-- END GENERATED COMMANDS -->
