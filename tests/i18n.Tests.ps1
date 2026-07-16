@@ -43,6 +43,96 @@ Describe 'Get-LokiText - lookup, fallback, formatting' {
         Set-LokiLocale -Locale 'en' | Out-Null
         Get-LokiText -Key 'error.didYouMean' -ArgumentList @('version') | Should -Be "Did you mean 'loki version'?"
     }
+
+    Context 'numbers follow the MESSAGE locale, not the machine' {
+        # Every value here has a FRACTIONAL PART on purpose. This whole bug survived because the one pre-existing
+        # test that formatted numbers used 44 and 16 -- both whole -- so en-US and de-DE rendered identically and the
+        # assertion could never have caught it. A test with an integer here would be decoration.
+
+        It 'locale en renders a decimal POINT even on a machine whose culture uses a comma' {
+            Set-LokiLocale -Locale 'en' | Out-Null
+            # Unknown key -> rendered verbatim, so this asserts the FORMATTING and nothing about a catalog entry.
+            Get-LokiText -Key '{0}' -ArgumentList @([double]38.4) | Should -Be '38.4'
+        }
+
+        It 'locale de renders a decimal COMMA even on a machine whose culture uses a point' {
+            Set-LokiLocale -Locale 'de' | Out-Null
+            Get-LokiText -Key '{0}' -ArgumentList @([double]38.4) | Should -Be '38,4'
+        }
+
+        It 'BREAK-THE-GUARD: the same input renders DIFFERENTLY per locale (proves the culture is actually applied)' {
+            # Without this, both assertions above could pass on a machine whose ambient culture happens to match --
+            # which is precisely how a GitHub runner (en-US) stayed green while the dev box (de-DE) went red.
+            Set-LokiLocale -Locale 'en' | Out-Null
+            $en = Get-LokiText -Key '{0}' -ArgumentList @([double]4.5)
+            Set-LokiLocale -Locale 'de' | Out-Null
+            $de = Get-LokiText -Key '{0}' -ArgumentList @([double]4.5)
+            $en | Should -Not -Be $de
+            $en | Should -Be '4.5'
+            $de | Should -Be '4,5'
+        }
+
+        It 'does not depend on the AMBIENT culture: forcing the thread either way changes nothing' {
+            # The actual regression. -f followed CurrentCulture; [string]::Format(<locale culture>, ...) must not.
+            $orig = [System.Threading.Thread]::CurrentThread.CurrentCulture
+            try {
+                Set-LokiLocale -Locale 'en' | Out-Null
+                foreach ($ambient in @('de-DE', 'en-US', 'fr-FR')) {
+                    [System.Threading.Thread]::CurrentThread.CurrentCulture = [System.Globalization.CultureInfo]::GetCultureInfo($ambient)
+                    Get-LokiText -Key '{0}' -ArgumentList @([double]38.4) | Should -Be '38.4' -Because "ambient $ambient must not leak into an 'en' message"
+                }
+                Set-LokiLocale -Locale 'de' | Out-Null
+                foreach ($ambient in @('de-DE', 'en-US', 'fr-FR')) {
+                    [System.Threading.Thread]::CurrentThread.CurrentCulture = [System.Globalization.CultureInfo]::GetCultureInfo($ambient)
+                    Get-LokiText -Key '{0}' -ArgumentList @([double]38.4) | Should -Be '38,4' -Because "ambient $ambient must not leak into a 'de' message"
+                }
+            }
+            finally { [System.Threading.Thread]::CurrentThread.CurrentCulture = $orig }
+        }
+
+        It 'a real catalog message carrying a decimal is coherent end to end' {
+            # The message the finding was made on, asserted whole rather than as a loose number.
+            Set-LokiLocale -Locale 'en' | Out-Null
+            Get-LokiText -Key 'hwscan.limits' -ArgumentList @([double]38.4, [double]58.5) |
+                Should -Be 'Limits:    a model may use up to 38.4 GB on this machine; 58.5 GB is free enough right now'
+        }
+
+        It 'integers and strings are untouched by the culture (the change stays scoped to real numbers)' {
+            # Measured across every -ArgumentList call site: int/long/string/bool render identically in en and de,
+            # so counts and paths must not move. This pins that.
+            foreach ($loc in @('en', 'de')) {
+                Set-LokiLocale -Locale $loc | Out-Null
+                Get-LokiText -Key '{0}' -ArgumentList @([int]1234) | Should -Be '1234'
+                Get-LokiText -Key '{0}' -ArgumentList @([long]19762149696) | Should -Be '19762149696'
+                Get-LokiText -Key '{0}' -ArgumentList @('C:\models\a.gguf') | Should -Be 'C:\models\a.gguf'
+            }
+        }
+    }
+
+    Context 'Get-LokiLocaleCulture' {
+        It 'maps a 2-letter locale to a culture that formats it: <locale> -> <expect>' -ForEach @(
+            @{ locale = 'en'; expect = '38.4' }
+            @{ locale = 'de'; expect = '38,4' }
+        ) {
+            $c = Get-LokiLocaleCulture -Locale $locale
+            [string]::Format($c, '{0}', [double]38.4) | Should -Be $expect
+        }
+
+        It 'BREAK-THE-GUARD: a malformed locale name degrades to invariant instead of throwing' {
+            # Not theory: locale codes come from catalog FILENAMES, and GetCultureInfo throws on names like these
+            # (measured). A stray src\i18n\<junk>.psd1 must not take the whole CLI down on its first message.
+            foreach ($bad in @('a b c', '!!!', 'toolongtobeaculturename')) {
+                { Get-LokiLocaleCulture -Locale $bad } | Should -Not -Throw
+                (Get-LokiLocaleCulture -Locale $bad) | Should -Be ([System.Globalization.CultureInfo]::InvariantCulture)
+            }
+        }
+
+        It 'a well-formed but unknown locale yields an invariant-like culture rather than an error' {
+            # Measured: GetCultureInfo('xx') does NOT throw, it returns a pseudo-culture. Documented, not assumed.
+            { Get-LokiLocaleCulture -Locale 'xx' } | Should -Not -Throw
+            [string]::Format((Get-LokiLocaleCulture -Locale 'xx'), '{0}', [double]38.4) | Should -Be '38.4'
+        }
+    }
 }
 
 Describe 'Resolve-LokiLocale - precedence Flag > Env > Config > OS > en' {

@@ -133,6 +133,20 @@ Describe 'Command scan' {
             $r.AllText | Should -BeLike '*0.0207*'
         }
 
+        It 'the cost is localized with the message, not pre-stringified past it' {
+            # Only meaningful under 'de' -- see the same test in tests\ask.Tests.ps1 for why an en-locale assertion
+            # cannot tell a culture-invariant [string] pre-cast from a correctly formatted double.
+            Mock Invoke-LokiClaude { @{ Ok = $true; Reason = 'ok'; Result = 'ok'; CostUsd = 0.0207; IsError = $false } }
+            $src = (Resolve-Path "$PSScriptRoot\..\src").Path
+            try {
+                Initialize-LokiI18n -AppRoot $src -Locale 'de' | Out-Null
+                $r = Invoke-ScanCommand -Context (New-TestScanContext -ScanArgs @('storage'))
+                $r.AllText | Should -BeLike '*0,0207*'
+                $r.AllText | Should -Not -BeLike '*0.0207*'
+            }
+            finally { Initialize-LokiI18n -AppRoot $src -Locale 'en' | Out-Null }
+        }
+
         It 'auth-missing -> AuthMissing exit with a helpful message' {
             Mock Invoke-LokiClaude { @{ Ok = $false; Reason = 'auth-missing' } }
             $r = Invoke-ScanCommand -Context (New-TestScanContext)
