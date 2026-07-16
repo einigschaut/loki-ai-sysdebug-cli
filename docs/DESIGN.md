@@ -86,7 +86,9 @@ SmartScreen (though it does not clear a WDAC allow-list).
 ├── commands\            one command = one file (metadata + handler)
 ├── bin\claude.exe        Claude Code engine (native binary)
 ├── home\                 USERPROFILE of the child process (.claude\, .env, …)
-├── engine-offline\       llama-server + model tiers + playbooks + grammars
+├── engine-offline\       the pinned llama.cpp build ONLY — owned by the archive (see below)
+├── models\               the pinned GGUF tiers (own lifecycle, own hashes)
+├── playbooks\, grammars\ assets for the offline engine
 ├── tools\                bundled read-only diagnostic tools (on PATH)
 ├── power-module\         opt-in, off-by-default, NOT on PATH (active/dual-use tools)
 ├── temp\, reports\, logs\, loki.config.json, manifest.sig
@@ -94,6 +96,18 @@ SmartScreen (though it does not clear a WDAC allow-list).
 
 The layout above is the **deployed artifact**, produced from the repository by a build
 script — it is not assembled by hand.
+
+**`engine-offline\` belongs to the pinned engine archive and nothing else may live there.**
+`loki setup` does not merely unpack into it, it **reconciles** it: anything the pinned archive
+does not produce is removed (ADR-0012), because otherwise a planted `ggml-cpu-*.dll` would
+survive the very setup run meant to repair a suspect stick, and a version bump would leave the
+binaries it exists to remove sitting in `llama-server.exe`'s DLL search path. That is why the
+model tiers, playbooks and grammars are **siblings**, not children: they are pinned and verified
+separately, on their own lifecycle, and putting them under `engine-offline\` would mean the next
+`loki setup` deletes them — verified, not assumed: laid out that way, a re-run reports
+`Pruned: 2` and the models are gone. The only exceptions the reconcile spares are the verified
+archive itself (the chain back to the pin) and the operator-staged Microsoft runtime, which is
+passed in explicitly.
 
 ### Contracts-first, one truth per concept
 
