@@ -28,6 +28,8 @@
 #   Resolve-LokiEnginePreflight -AppRoot -Engine -Runtime -Model -> [hashtable]{ Ok; Reason; ... }
 #       may-we-start, answered before anything is launched. Reasons are stable machine tokens:
 #       engine-unverified | model-unverified | runtime-unavailable | insufficient-ram | engine-already-running | ok.
+#       insufficient-ram also carries Verdict (fits-if-freed | too-big | ram-unknown | ram-implausible) + NeedFreeGB,
+#       so the caller can tell "close something and retry" from "never on this machine" (ADR-0017).
 #   Wait-LokiEngineReady -Port -Process -TimeoutSec -> [hashtable]{ Ok; Reason; ElapsedMs }  ready | exited | timeout.
 #   Start-LokiEngineServer -ServerExePath -ArgList -ChildEnv -> [hashtable]{ Ok; Reason; [Process]; [StdOut]; [StdErr] }
 #       StdOut/StdErr are Task[string] -- the drained pipes; they complete when the process exits.
@@ -238,15 +240,19 @@ function Resolve-LokiEnginePreflight {
     }
 
     $hw = Get-LokiHardwareProfile
-    $budget = Get-LokiTierBudget -TotalRamGB ([double]$hw.TotalRamGB) -AvailableRamGB ([double]$hw.AvailableRamGB)
-    if ((-not $budget.Ok) -or ([double]$Model.ResidentGB -gt [double]$budget.BudgetGB)) {
-        return @{ Ok = $false; Reason = 'insufficient-ram'; NeedGB = [double]$Model.ResidentGB
-            BudgetGB = [double]$budget.BudgetGB; Id = [string]$Model.Id
+    # NOT [double]-cast: $null casts to 0.0, which would turn "the probe could not read this machine" into "this
+    # machine has no RAM" -- both refuse, but only the uncast form can say WHICH, and Get-LokiHardwareProfile's whole
+    # contract is that a field may be $null.
+    $fit = Get-LokiTierFit -TotalRamGB $hw.TotalRamGB -AvailableRamGB $hw.AvailableRamGB -ResidentGB $Model.ResidentGB
+    if ([string]$fit.Verdict -ne 'fits') {
+        # Verdict travels so the caller can tell "close something and retry" from "never on this machine" (ADR-0017).
+        return @{ Ok = $false; Reason = 'insufficient-ram'; Verdict = [string]$fit.Verdict
+            NeedGB = [double]$Model.ResidentGB; NeedFreeGB = $fit.NeedFreeGB; Id = [string]$Model.Id
         }
     }
 
     return @{ Ok = $true; Reason = 'ok'; ModelPath = [string]$modelState.Path
-        ServerExePath = [string]$layout.ServerExePath; BudgetGB = [double]$budget.BudgetGB
+        ServerExePath = [string]$layout.ServerExePath
     }
 }
 
