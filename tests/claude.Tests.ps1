@@ -552,6 +552,101 @@ Describe 'Interactive mode (chat): permission gate + invocation (ADR-0008)' {
                 Remove-Item Env:\ANTHROPIC_AUTH_TOKEN -ErrorAction SilentlyContinue
             }
         }
+
+        It 'EXACTLY-ONE-AUTH-VAR: an inherited CLOUD-PROVIDER credential loses too (it has HIGHER precedence than ours)' {
+            # Not a variant of the test above. Claude Code's documented precedence puts cloud-provider auth FIRST, so
+            # an inherited AWS_BEARER_TOKEN_BEDROCK does not sit harmlessly next to Loki's key -- it WINS, and the
+            # session silently runs on the target machine's account. These four were missing from the strip list.
+            $env:AWS_BEARER_TOKEN_BEDROCK = 'target-machine-bedrock-token'
+            $env:ANTHROPIC_FOUNDRY_API_KEY = 'target-machine-foundry-key'
+            $env:ANTHROPIC_FOUNDRY_AUTH_TOKEN = 'target-machine-foundry-bearer'
+            $env:ANTHROPIC_AWS_API_KEY = 'target-machine-aws-key'
+            try {
+                $plan = Get-LokiClaudeInvocation -Prompt 'q' -AppRoot (New-TestClaudeAppRoot) -Config @{} -ClaudePath $script:FakeClaude -Secret 'sk-loki-key'
+                $plan.ChildEnv['ANTHROPIC_API_KEY'] | Should -Be 'sk-loki-key'
+                foreach ($v in @('AWS_BEARER_TOKEN_BEDROCK', 'ANTHROPIC_FOUNDRY_API_KEY', 'ANTHROPIC_FOUNDRY_AUTH_TOKEN', 'ANTHROPIC_AWS_API_KEY')) {
+                    $plan.ChildEnv.ContainsKey($v) | Should -BeFalse -Because "$v outranks Loki's own credential"
+                }
+            }
+            finally {
+                Remove-Item Env:\AWS_BEARER_TOKEN_BEDROCK, Env:\ANTHROPIC_FOUNDRY_API_KEY, `
+                    Env:\ANTHROPIC_FOUNDRY_AUTH_TOKEN, Env:\ANTHROPIC_AWS_API_KEY -ErrorAction SilentlyContinue
+            }
+        }
+
+        It 'BREAK-THE-LEAK: an inherited ANTHROPIC_BASE_URL never reaches the child holding Loki''s key' {
+            # THE attack this slice exists for. Loki decrypts a secret off the stick and injects it into a child on a
+            # machine it does not control. One environment variable on that machine -- no malware, no privilege, no CA
+            # to install -- and Claude Code sends the key to the attacker's host in the x-api-key header.
+            $env:ANTHROPIC_BASE_URL = 'https://attacker.example/v1'
+            try {
+                $plan = Get-LokiClaudeInvocation -Prompt 'q' -AppRoot (New-TestClaudeAppRoot) -Config @{} -ClaudePath $script:FakeClaude -Secret 'sk-loki-key'
+                $plan.ChildEnv['ANTHROPIC_API_KEY'] | Should -Be 'sk-loki-key'
+                $plan.ChildEnv.ContainsKey('ANTHROPIC_BASE_URL') | Should -BeFalse
+                # The key is real and present, so this is not vacuously green: the credential IS in the block, it just
+                # has nowhere hostile to go.
+                $plan.ChildEnv.Values | Should -Contain 'sk-loki-key'
+            }
+            finally { Remove-Item Env:\ANTHROPIC_BASE_URL -ErrorAction SilentlyContinue }
+        }
+
+        It 'BREAK-THE-LEAK: every routing variable <var> is stripped from the child' -ForEach @(
+            @{ var = 'ANTHROPIC_BASE_URL'; value = 'https://attacker.example' }
+            @{ var = 'ANTHROPIC_BEDROCK_BASE_URL'; value = 'https://attacker.example' }
+            @{ var = 'ANTHROPIC_VERTEX_BASE_URL'; value = 'https://attacker.example' }
+            @{ var = 'ANTHROPIC_FOUNDRY_BASE_URL'; value = 'https://attacker.example' }
+            @{ var = 'ANTHROPIC_AWS_BASE_URL'; value = 'https://attacker.example' }
+            # Provider selection: precedence 1, so these redirect the whole session -- Loki's prompt IS the diagnostic
+            # data read off the customer's machine.
+            @{ var = 'CLAUDE_CODE_USE_BEDROCK'; value = '1' }
+            @{ var = 'CLAUDE_CODE_USE_VERTEX'; value = '1' }
+            @{ var = 'CLAUDE_CODE_USE_FOUNDRY'; value = '1' }
+            @{ var = 'CLAUDE_CODE_USE_ANTHROPIC_AWS'; value = '1' }
+            @{ var = 'CLAUDE_CODE_SKIP_BEDROCK_AUTH'; value = '1' }
+            @{ var = 'CLAUDE_CODE_SKIP_VERTEX_AUTH'; value = '1' }
+            @{ var = 'CLAUDE_CODE_SKIP_FOUNDRY_AUTH'; value = '1' }
+            @{ var = 'CLAUDE_CODE_SKIP_ANTHROPIC_AWS_AUTH'; value = '1' }
+            @{ var = 'ANTHROPIC_VERTEX_PROJECT_ID'; value = 'attacker-project' }
+            @{ var = 'ANTHROPIC_FOUNDRY_RESOURCE'; value = 'attacker-resource' }
+            @{ var = 'ANTHROPIC_AWS_WORKSPACE_ID'; value = 'attacker-workspace' }
+            @{ var = 'CLOUD_ML_REGION'; value = 'us-east5' }
+            @{ var = 'ANTHROPIC_CUSTOM_HEADERS'; value = "X-Exfil: sk-loki-key" }
+        ) {
+            Set-Item -LiteralPath "Env:\$var" -Value $value
+            try {
+                $plan = Get-LokiClaudeInvocation -Prompt 'q' -AppRoot (New-TestClaudeAppRoot) -Config @{} -ClaudePath $script:FakeClaude -Secret 'sk-loki-key'
+                $plan.ChildEnv.ContainsKey($var) | Should -BeFalse
+            }
+            finally { Remove-Item -LiteralPath "Env:\$var" -ErrorAction SilentlyContinue }
+        }
+
+        It 'the strip is surgical: variables the corporate network needs are NOT collateral' {
+            # A guard that is too eager is also a bug. Proxy settings are TRANSPORT (the payload stays TLS-protected to
+            # the pinned host) and a corporate network may require them; NODE_EXTRA_CA_CERTS is TLS trust and is the
+            # documented fix for the TLS-inspecting gateway Loki is actually deployed behind. Stripping either would
+            # trade a conditional benefit for a certain outage. See ADR-0016.
+            $env:HTTPS_PROXY = 'http://corp-proxy:8080'
+            $env:NO_PROXY = 'localhost'
+            $env:NODE_EXTRA_CA_CERTS = 'C:\corp\corp-ca.pem'
+            try {
+                $plan = Get-LokiClaudeInvocation -Prompt 'q' -AppRoot (New-TestClaudeAppRoot) -Config @{} -ClaudePath $script:FakeClaude -Secret 'sk-loki-key'
+                $plan.ChildEnv['HTTPS_PROXY'] | Should -Be 'http://corp-proxy:8080'
+                $plan.ChildEnv['NO_PROXY'] | Should -Be 'localhost'
+                $plan.ChildEnv['NODE_EXTRA_CA_CERTS'] | Should -Be 'C:\corp\corp-ca.pem'
+            }
+            finally { Remove-Item Env:\HTTPS_PROXY, Env:\NO_PROXY, Env:\NODE_EXTRA_CA_CERTS -ErrorAction SilentlyContinue }
+        }
+
+        It 'an ambient CLAUDE_CODE_CERT_STORE cannot move Loki''s pinned value' {
+            # Not stripped because it does not need to be: Get-LokiIsolatedEnv sets it explicitly, and Isolated is
+            # overlaid ON TOP of the inherited block. Asserted so that ordering stays a property and not an accident.
+            $env:CLAUDE_CODE_CERT_STORE = 'bundled'
+            try {
+                $plan = Get-LokiClaudeInvocation -Prompt 'q' -AppRoot (New-TestClaudeAppRoot) -Config @{} -ClaudePath $script:FakeClaude -Secret 'sk-loki-key'
+                $plan.ChildEnv['CLAUDE_CODE_CERT_STORE'] | Should -Be 'system'
+            }
+            finally { Remove-Item Env:\CLAUDE_CODE_CERT_STORE -ErrorAction SilentlyContinue }
+        }
     }
 }
 
@@ -577,6 +672,38 @@ Describe 'setup-token bootstrap env hygiene (subscription login, ADR-0009)' {
         $block.ContainsKey('ANTHROPIC_API_KEY') | Should -BeFalse
         $block.ContainsKey('CLAUDE_CODE_OAUTH_TOKEN') | Should -BeFalse
         $block.ContainsKey('ANTHROPIC_AUTH_TOKEN') | Should -BeFalse
+    }
+
+    It 'BREAK-THE-LEAK: strips the cloud-provider credentials too (they outrank the sign-in we are about to do)' {
+        $base = @{
+            AWS_BEARER_TOKEN_BEDROCK     = 'parent-bedrock-token'
+            ANTHROPIC_AWS_API_KEY        = 'parent-aws-key'
+            ANTHROPIC_FOUNDRY_API_KEY    = 'parent-foundry-key'
+            ANTHROPIC_FOUNDRY_AUTH_TOKEN = 'parent-foundry-bearer'
+            PATH                         = 'C:\orig'
+        }
+        $block = Get-LokiSetupTokenChildEnv -AppRoot (New-TestClaudeAppRoot) -BaseEnv $base
+        foreach ($v in @('AWS_BEARER_TOKEN_BEDROCK', 'ANTHROPIC_AWS_API_KEY', 'ANTHROPIC_FOUNDRY_API_KEY', 'ANTHROPIC_FOUNDRY_AUTH_TOKEN')) {
+            $block.ContainsKey($v) | Should -BeFalse
+        }
+    }
+
+    It 'BREAK-THE-LEAK: a redirected sign-in is a token minted straight into someone else''s endpoint' {
+        # This path matters at least as much as the normal spawn: it opens a browser sign-in and mints a LONG-LIVED
+        # token. Redirect it and the operator sees a normal-looking login while the credential is generated elsewhere.
+        $base = @{
+            ANTHROPIC_BASE_URL       = 'https://attacker.example/v1'
+            CLAUDE_CODE_USE_BEDROCK  = '1'
+            ANTHROPIC_CUSTOM_HEADERS = 'X-Exfil: yes'
+            SystemRoot               = 'C:\Windows'
+        }
+        $block = Get-LokiSetupTokenChildEnv -AppRoot (New-TestClaudeAppRoot) -BaseEnv $base
+        foreach ($v in @('ANTHROPIC_BASE_URL', 'CLAUDE_CODE_USE_BEDROCK', 'ANTHROPIC_CUSTOM_HEADERS')) {
+            $block.ContainsKey($v) | Should -BeFalse
+        }
+        # Not vacuous: this is a real, populated block and an unrelated variable came through untouched. (NOT PATH --
+        # the isolation deliberately rewrites that one, so asserting on it would test env-isolate, not the strip.)
+        $block['SystemRoot'] | Should -Be 'C:\Windows'
     }
 
     It 'Invoke-LokiClaudeSetupToken short-circuits with claude-not-found for an unresolvable binary (no spawn)' {

@@ -110,12 +110,95 @@ $script:LokiReadSideEffectPatterns = @(
     '\s-online\b'                # the -Online switch on any read command (browser launch)
 )
 
-# Every auth env-var name Claude Code can authenticate on. Loki sets exactly ONE (api -> ANTHROPIC_API_KEY,
-# sub -> CLAUDE_CODE_OAUTH_TOKEN); ANTHROPIC_AUTH_TOKEN is a third bearer credential Claude Code also honors (custom
-# gateways/proxies). Single source of truth for the child-env strip so no personal/gateway token from the operator's
-# shell crosses into the engine -- normal spawns strip the ones Loki did NOT set, setup-token strips ALL of them
-# (it is generating a credential). This is what makes "exactly one auth variable" (CLAUDE.md section 5) hold.
-$script:LokiClaudeAuthVars = @('ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_AUTH_TOKEN')
+# Every env-var name Claude Code can AUTHENTICATE on. Loki sets exactly ONE (api -> ANTHROPIC_API_KEY,
+# sub -> CLAUDE_CODE_OAUTH_TOKEN); the rest are credentials Claude Code also honors and that a target machine may
+# carry. Single source of truth for the child-env strip so no personal/gateway token from the operator's shell crosses
+# into the engine -- normal spawns strip the ones Loki did NOT set, setup-token strips ALL of them (it is generating a
+# credential). This is what makes "exactly one auth variable" (CLAUDE.md section 5) hold.
+#
+# The four provider credentials were MISSING from this list until 2026-07-16, and their absence was not cosmetic:
+# Claude Code's documented credential precedence puts CLOUD PROVIDER auth FIRST, ahead of ANTHROPIC_AUTH_TOKEN and
+# ANTHROPIC_API_KEY. An inherited AWS_BEARER_TOKEN_BEDROCK therefore does not merely sit there -- it WINS over the key
+# Loki injected, and the session runs on the target machine's account instead of Loki's chosen one, silently.
+# Verified against code.claude.com/docs/en/authentication.md (precedence) + env-vars.md, not recalled.
+$script:LokiClaudeAuthVars = @(
+    'ANTHROPIC_API_KEY',            # precedence 3 -> x-api-key
+    'ANTHROPIC_AUTH_TOKEN',         # precedence 2 -> Authorization: Bearer (LLM gateways)
+    'CLAUDE_CODE_OAUTH_TOKEN',      # precedence 5 -> the token `claude setup-token` generates
+    'AWS_BEARER_TOKEN_BEDROCK',     # precedence 1 (cloud provider) -- beats everything above
+    'ANTHROPIC_AWS_API_KEY',        # precedence 1 -- Claude Platform on AWS
+    'ANTHROPIC_FOUNDRY_API_KEY',    # precedence 1 -- Microsoft Foundry
+    'ANTHROPIC_FOUNDRY_AUTH_TOKEN'  # precedence 1 -- Microsoft Foundry, bearer variant
+)
+
+# Every env var that decides WHERE the request goes -- i.e. where Loki's credential is SENT. These authenticate
+# nothing, which is exactly why the auth list above did not catch them and why they need their own.
+#
+# THE ATTACK, stated plainly. Loki decrypts a secret off the stick and injects it into a child process on a machine it
+# does not control and is only there because something is wrong with it. lib/env-isolate.ps1 hands that child a COPY
+# of the FULL parent environment (ADR-0003's "redirect instead of clean up"). So `ANTHROPIC_BASE_URL=https://attacker`
+# on the target is enough: Claude Code reads it, and sends Loki's API key to that host in the x-api-key header. No
+# malware, no privilege, no CA to install -- one environment variable, and the operator's credential is gone. Verified
+# against code.claude.com/docs/en/{env-vars,authentication,llm-gateway-connect}.md.
+#
+# The USE_* / SKIP_*_AUTH switches are here rather than in the auth list because they are ROUTING decisions: they
+# select a provider (precedence 1), which redirects the whole session -- Loki's prompt, i.e. the diagnostic data read
+# off the customer's machine -- to that provider's endpoint, using that provider's credential.
+#
+# STRIPPED, not pinned: Claude Code's own docs contradict each other on whether a settings-file `env` block overrides
+# a shell export (llm-gateway-connect.md says the settings file wins; settings.md describes an empty-string workaround
+# that only makes sense if it does not). A guarantee resting on a documented ambiguity is not a guarantee. Removing
+# the variable from the block we build ourselves depends on nothing but us, and our own tests can prove it.
+#
+# NOT here, deliberately -- see ADR-0016:
+#   * HTTPS_PROXY / HTTP_PROXY / NO_PROXY: transport, not endpoint. The payload stays TLS-protected to the pinned
+#     host, so a hostile proxy sees a CONNECT target and nothing else unless it also owns a trusted CA. Stripping them
+#     would break Loki on every corporate network that requires an explicit proxy -- a certain cost against a
+#     conditional benefit.
+#   * NODE_EXTRA_CA_CERTS / CLAUDE_CODE_CLIENT_CERT*: TLS trust, and the corporate-network dependency is real
+#     (CLAUDE_CODE_CERT_STORE is already pinned to 'system' by Get-LokiIsolatedEnv, so an ambient value cannot move
+#     it). The proxy+CA COMBINATION is a genuine open question and is recorded in ADR-0016 rather than guessed at
+#     here.
+$script:LokiClaudeRoutingVars = @(
+    # Endpoint overrides -- the direct exfiltration path.
+    'ANTHROPIC_BASE_URL',
+    'ANTHROPIC_BEDROCK_BASE_URL',
+    'ANTHROPIC_VERTEX_BASE_URL',
+    'ANTHROPIC_FOUNDRY_BASE_URL',
+    'ANTHROPIC_AWS_BASE_URL',
+    # Provider selection -- precedence 1; makes Claude Code ignore Loki's credential entirely.
+    'CLAUDE_CODE_USE_BEDROCK',
+    'CLAUDE_CODE_USE_VERTEX',
+    'CLAUDE_CODE_USE_FOUNDRY',
+    'CLAUDE_CODE_USE_ANTHROPIC_AWS',
+    # Gateway auth bypass -- "send the request without proving who you are" is never Loki's intent.
+    'CLAUDE_CODE_SKIP_BEDROCK_AUTH',
+    'CLAUDE_CODE_SKIP_VERTEX_AUTH',
+    'CLAUDE_CODE_SKIP_FOUNDRY_AUTH',
+    'CLAUDE_CODE_SKIP_ANTHROPIC_AWS_AUTH',
+    # Provider targeting -- the rest of the address a redirected session needs.
+    'ANTHROPIC_VERTEX_PROJECT_ID',
+    'ANTHROPIC_FOUNDRY_RESOURCE',
+    'ANTHROPIC_AWS_WORKSPACE_ID',
+    'CLOUD_ML_REGION',
+    # Attacker-chosen headers on every request Loki makes. Loki sends none.
+    'ANTHROPIC_CUSTOM_HEADERS'
+)
+
+function Remove-LokiClaudeRoutingEnv {
+    <#
+        Drop every inherited routing variable from a child env block. ONE definition, both spawn paths (CLAUDE.md
+        section 2): the normal ask/scan/chat spawn and the setup-token sign-in. setup-token needs it just as much --
+        it is generating a credential, and a redirected sign-in is a credential generated straight into an
+        attacker's endpoint.
+
+        Loki does not support gateway/provider routing at all. If it ever should, that is a decision for Loki's own
+        config on the stick -- never something the machine under investigation gets to assert.
+    #>
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Mutates the caller''s in-memory hashtable only -- no external state. -WhatIf would report a cleaned block while leaving the routing variables in it, which is the failure this exists to prevent.')]
+    param([Parameter(Mandatory = $true)][System.Collections.IDictionary]$ChildEnv)
+    foreach ($v in $script:LokiClaudeRoutingVars) { [void]$ChildEnv.Remove($v) }
+}
 
 function Get-LokiJsonProp {
     param(
@@ -438,6 +521,10 @@ function Get-LokiClaudeInvocation {
     foreach ($authVar in $script:LokiClaudeAuthVars) {
         if (-not $authEnv.ContainsKey($authVar)) { [void]$childEnv.Remove($authVar) }
     }
+    # ...and exactly one DESTINATION. The strip above decides which credential authenticates; this one decides where
+    # that credential is sent, and without it the two guarantees come apart: a target machine setting
+    # ANTHROPIC_BASE_URL takes the key Loki just injected and points it at a host of its choosing.
+    Remove-LokiClaudeRoutingEnv -ChildEnv $childEnv
 
     # Hook settings written to a BOM-less temp file under the stick (avoids a huge JSON blob on the command line and
     # keeps traces on the stick, removed by the caller). --settings accepts a file path.
@@ -667,6 +754,10 @@ function Get-LokiSetupTokenChildEnv {
     # Exactly ZERO auth variables here (we are generating one). Strip ALL known auth vars, regardless of what the
     # parent carried, so no personal/gateway credential from the operator's shell reaches the sign-in.
     foreach ($authVar in $script:LokiClaudeAuthVars) { [void]$childEnv.Remove($authVar) }
+    # And zero inherited destinations. This path matters at least as much as the normal spawn: it opens a browser
+    # sign-in and mints a long-lived token, so a redirected endpoint here is a credential generated directly into
+    # someone else's hands -- and the operator would see a normal-looking login.
+    Remove-LokiClaudeRoutingEnv -ChildEnv $childEnv
     return $childEnv
 }
 
