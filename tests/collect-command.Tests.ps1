@@ -217,6 +217,77 @@ Describe 'Command collect -- a failed battery is content, not a failed run (ADR-
     }
 }
 
+Describe 'Command collect -- an existing dump is never overwritten' {
+
+    BeforeAll {
+        Mock Invoke-LokiCollect {
+            [pscustomobject]@{
+                CreatedAt = ([datetime]'2026-07-16 14:30:00')
+                Batteries = @(
+                    [pscustomobject]@{ Id = 'os'; Status = 'ok'; DurationMs = 441; Error = $null
+                        Data = [pscustomobject]@{ Caption = 'Windows' } }
+                )
+            }
+        }
+        # Pin the clock. Two real runs are ~14 ms apart and would get different millisecond stamps, so the collision
+        # cannot be produced by running twice -- it has to be forced. This mock IS the collision.
+        Mock Get-LokiCollectStamp { '20260716-143000-123' }
+    }
+
+    It 'keeps the first dump and refuses the second, rather than silently replacing it' {
+        $isolated = Join-Path ([System.IO.Path]::GetTempPath()) ("loki-dup-" + [System.Guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Force -Path $isolated | Out-Null
+        try {
+            $first = Invoke-CollectCommand -Context (New-TestCollectContext -AppRoot $isolated)
+            $first.Code | Should -Be 0
+            $json = Join-Path $isolated 'reports\collect-20260716-143000-123.json'
+            $original = Get-Content -LiteralPath $json -Raw
+
+            $second = Invoke-CollectCommand -Context (New-TestCollectContext -AppRoot $isolated)
+            $second.Code | Should -Be 1
+            # The point of the guard: the EXISTING dump survives untouched.
+            (Get-Content -LiteralPath $json -Raw) | Should -Be $original
+            # ...and exactly two files, not four and not two overwritten ones.
+            @(Get-ChildItem -LiteralPath (Join-Path $isolated 'reports') -File).Count | Should -Be 2
+        }
+        finally {
+            Remove-Item -LiteralPath $isolated -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'refuses when only the TEXT report is in the way -- half a dump is still evidence' {
+        # Reachable, not hypothetical: the two artifacts are written in sequence, so a failure between them (a stick
+        # that fills up, a lock) leaves one behind, and an operator can delete one by hand. Guarding only the JSON
+        # would then silently replace the surviving half -- a mutation that checks JsonPath alone passes every other
+        # test in this file, because in the normal case the two always exist together. This is the one that catches it.
+        $isolated = Join-Path ([System.IO.Path]::GetTempPath()) ("loki-half-" + [System.Guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Force -Path (Join-Path $isolated 'reports') | Out-Null
+        try {
+            $txt = Join-Path $isolated 'reports\collect-20260716-143000-123.txt'
+            Set-Content -LiteralPath $txt -Value 'an earlier report' -Encoding utf8
+            $r = Invoke-CollectCommand -Context (New-TestCollectContext -AppRoot $isolated)
+            $r.Code | Should -Be 1
+            (Get-Content -LiteralPath $txt -Raw).Trim() | Should -Be 'an earlier report'
+        }
+        finally {
+            Remove-Item -LiteralPath $isolated -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'says WHICH dump it kept, so the refusal is actionable' {
+        $isolated = Join-Path ([System.IO.Path]::GetTempPath()) ("loki-dup2-" + [System.Guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Force -Path $isolated | Out-Null
+        try {
+            $null = Invoke-CollectCommand -Context (New-TestCollectContext -AppRoot $isolated)
+            $second = Invoke-CollectCommand -Context (New-TestCollectContext -AppRoot $isolated)
+            $second.AllText | Should -Match 'collect-20260716-143000-123'
+        }
+        finally {
+            Remove-Item -LiteralPath $isolated -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 Describe 'Command collect -- an unwritable dump IS an error' {
 
     BeforeAll {

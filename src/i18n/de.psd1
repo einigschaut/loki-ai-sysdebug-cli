@@ -189,6 +189,7 @@
     'collect.wroteReport'       = 'Bericht: {0}'
     'collect.footer'            = 'Gesammelt: {0} ok, {1} fehlgeschlagen. Eine fehlgeschlagene Batterie steht im Dump - sie lässt den Lauf nicht scheitern.'
     'collect.writeFailed'       = 'Der Dump konnte nicht nach {0} geschrieben werden ({1}). Ist der Stick voll oder schreibgeschützt?'
+    'collect.wouldOverwrite'    = 'Unter {0} liegt bereits ein Dump. Er wurde behalten - nichts wurde überschrieben. Für einen neuen Dump "loki collect" erneut ausführen.'
     'collect.badArg'            = "Unbekanntes Argument: '{0}'."
     'collect.onlyNeedsValue'    = '--only braucht eine Batterie-Liste, z. B. "loki collect --only os,storage".'
     'collect.unknownBattery'    = "Unbekannte Batterie: '{0}'. Bekannt: {1}."
