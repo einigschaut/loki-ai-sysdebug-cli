@@ -249,12 +249,13 @@ Describe 'Test-LokiEngineIntegrity' {
     It 'writes nothing to the stick it is inspecting (a checker you can run on a stick you distrust)' {
         $s = New-EngineStick -Entries @{ 'llama-server.exe' = 'MZ-server'; 'ggml-base.dll' = 'dll-bytes' }
         # Measured before/after, not "we mocked the writer and it was not called" -- that proves the mock, not the code.
-        # Directories are included (a stray staging dir is a write too); PSIsContainer guards .Length, which a
-        # DirectoryInfo does not have and StrictMode therefore throws on.
+        # Directories are included by PATH (a stray staging dir is a write too), but NOT by timestamp: NTFS updates
+        # directory mtimes lazily, so an unflushed `before` reading can "change" on its own and fail a test that
+        # nothing actually wrote to. Files are compared by size AND mtime, which is where the property lives.
         $snapshot = {
             @(Get-ChildItem -LiteralPath $s.AppRoot -Recurse -Force | ForEach-Object {
-                    $size = if ($_.PSIsContainer) { 'dir' } else { $_.Length }
-                    '{0}|{1}|{2}' -f $_.FullName, $size, $_.LastWriteTimeUtc.Ticks
+                    if ($_.PSIsContainer) { '{0}|dir' -f $_.FullName }
+                    else { '{0}|{1}|{2}' -f $_.FullName, $_.Length, $_.LastWriteTimeUtc.Ticks }
                 }) -join "`n"
         }
         $before = & $snapshot

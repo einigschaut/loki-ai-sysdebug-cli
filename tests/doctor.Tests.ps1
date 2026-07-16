@@ -211,10 +211,15 @@ Describe 'loki doctor --engine (ADR-0014)' {
 
     It 'writes nothing to the stick it is inspecting' {
         $root = New-TestEngineStick
+        # A directory's LastWriteTime is deliberately NOT snapshotted: NTFS updates directory timestamps LAZILY, so
+        # the `before` reading can catch a value that has not been flushed yet and then "change" on its own with
+        # nothing having written anything. That made this test flaky -- green locally, red on CI, where the engine
+        # directory's mtime moved by 8ms mid-run. Directories are still snapshotted by PATH, so a created or removed
+        # directory is caught; for files, size and mtime are both compared, which is what "writes nothing" means.
         $snapshot = {
             @(Get-ChildItem -LiteralPath $root -Recurse -Force | ForEach-Object {
-                    $size = if ($_.PSIsContainer) { 'dir' } else { $_.Length }
-                    '{0}|{1}|{2}' -f $_.FullName, $size, $_.LastWriteTimeUtc.Ticks
+                    if ($_.PSIsContainer) { '{0}|dir' -f $_.FullName }
+                    else { '{0}|{1}|{2}' -f $_.FullName, $_.Length, $_.LastWriteTimeUtc.Ticks }
                 }) -join "`n"
         }
         $before = & $snapshot
