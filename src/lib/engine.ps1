@@ -17,6 +17,9 @@
 #   Test-LokiArchiveEntrySafe -EntryName <string> -> [bool]  (pure predicate; the zip-slip gate).
 #   ConvertTo-LokiRuntimeVersion -Text <string> -> [version] or $null  (pure; parses '14.51.36247.0' / 'v14.51.36247.00';
 #       $null -- never a throw -- on anything unparsable, so callers can fail closed).
+#   Get-LokiEngineExpectedSet -EntryNames <string[]> -ArchiveFileName <string> [-PreserveNames <string[]>]
+#       -> [HashSet[string]] (OrdinalIgnoreCase) the relative paths that may legitimately live in engine-offline\.
+#       Pure. ONE definition, shared by the expand (what to prune) and lib/integrity.ps1 (what is unexpected).
 #   Expand-LokiVerifiedArchive -ArchivePath -DestDir -ExpectedSha256 [-PreserveNames <string[]>]
 #       -> [hashtable]{ Ok; Reason; [Count]; [Pruned]; [Entry]; [Error] }
 #       verifies before opening; reconciles $DestDir against the archive ($PreserveNames survive the prune);
@@ -126,6 +129,40 @@ function ConvertTo-LokiRuntimeVersion {
     return (New-Object System.Version -ArgumentList ($parts.ToArray()))
 }
 
+function Get-LokiEngineExpectedSet {
+    <#
+        The relative paths that may legitimately exist in engine-offline\: everything the pinned archive produces,
+        plus the verified archive itself (the chain back to the pin) and the operator-staged Microsoft runtime.
+
+        This is ONE definition on purpose (CLAUDE.md section 2). The expand uses it to decide what to PRUNE and the
+        load-time verify uses it to decide what is UNEXPECTED -- the same question asked twice. Were they allowed to
+        drift, `loki setup` would delete a file `loki doctor` calls fine, or bless one setup removes.
+
+        Pure and table-tested: it takes entry NAMES, not a live ZipArchive, so the interesting rules (a directory
+        entry produces no file; Windows paths compare case-insensitively) are testable without a zip on disk.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][string[]]$EntryNames,
+        [Parameter(Mandatory = $true)][string]$ArchiveFileName,
+        [string[]]$PreserveNames = @()
+    )
+    $set = New-Object System.Collections.Generic.HashSet[string] ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($n in $EntryNames) {
+        if ([string]::IsNullOrWhiteSpace($n)) { continue }
+        # A directory entry ('bin/') creates no file, so it must not become an expected FILE path. This mirrors
+        # ZipArchiveEntry.Name being empty for exactly those entries.
+        if ($n -match '[\\/]$') { continue }
+        [void]$set.Add(($n -replace '/', '\'))
+    }
+    [void]$set.Add($ArchiveFileName)
+    foreach ($p in $PreserveNames) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$p)) { [void]$set.Add([string]$p) }
+    }
+    # Leading comma: a HashSet is IEnumerable, so PowerShell would otherwise unroll it into loose strings and the
+    # caller would get an object[] with no .Contains(). (return $set is the bug; return , $set is the fix.)
+    return , $set
+}
+
 function Expand-LokiVerifiedArchive {
     <#
         Expand the pinned archive into $DestDir and RECONCILE $DestDir against it.
@@ -183,8 +220,10 @@ function Expand-LokiVerifiedArchive {
 
         New-Item -ItemType Directory -Force -Path $staging | Out-Null
 
-        # The set of relative paths the pinned archive legitimately produces (case-insensitive: Windows paths are).
-        $keep = New-Object System.Collections.Generic.HashSet[string] ([StringComparer]::OrdinalIgnoreCase)
+        # What may legitimately end up in $DestDir -- archive contents + the archive itself + the preserved runtime.
+        # Shared with the load-time verify so the two can never disagree (Get-LokiEngineExpectedSet).
+        $keep = Get-LokiEngineExpectedSet -EntryNames @($zip.Entries | ForEach-Object { [string]$_.FullName }) `
+            -ArchiveFileName (Split-Path -Leaf $ArchivePath) -PreserveNames $PreserveNames
         $count = 0
         foreach ($entry in $zip.Entries) {
             $rel = ([string]$entry.FullName) -replace '/', '\'
@@ -198,7 +237,6 @@ function Expand-LokiVerifiedArchive {
                 New-Item -ItemType Directory -Force -Path $parent | Out-Null
             }
             [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $target, $true)
-            [void]$keep.Add($rel)
             $count++
         }
 
@@ -209,15 +247,12 @@ function Expand-LokiVerifiedArchive {
 
         # Carry over what legitimately lives next to the engine but is NOT in the archive: the verified archive itself
         # (it is the chain back to the pin) and the caller's preserved names (the operator-staged Microsoft runtime).
-        # Copy, never move: until the swap succeeds, $DestDir must remain exactly as it was.
-        [void]$keep.Add((Split-Path -Leaf $ArchivePath))
+        # Copy, never move: until the swap succeeds, $DestDir must remain exactly as it was. ($keep already contains
+        # these names -- Get-LokiEngineExpectedSet put them there; this list is only what to physically carry over.)
         $carry = New-Object System.Collections.Generic.List[string]
         $carry.Add((Split-Path -Leaf $ArchivePath))
         foreach ($n in $PreserveNames) {
-            if (-not [string]::IsNullOrWhiteSpace([string]$n)) {
-                [void]$keep.Add([string]$n)
-                $carry.Add([string]$n)
-            }
+            if (-not [string]::IsNullOrWhiteSpace([string]$n)) { $carry.Add([string]$n) }
         }
         foreach ($n in $carry) {
             $from = Join-Path $destFull $n

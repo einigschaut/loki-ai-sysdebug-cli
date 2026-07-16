@@ -9,6 +9,9 @@
 #   * models are DATA: nothing here (or in the engine) ever executes them; the engine must verify a model's hash
 #     before loading it (load-time verify, ADR-0012).
 # Contract:
+#   Get-LokiModelLayout -AppRoot <dir> -> [hashtable]{ Dir; ManifestPath }  (pure path math; the models\ sibling of
+#       engine-offline\, DESIGN.md section 2.2). The counterpart of Get-LokiEngineLayout -- so where the tiers live is
+#       stated once, not re-spelled by every command that needs them.
 #   Get-LokiModelManifest -Path <psd1> -> [object[]] validated model entries (throws fail-closed on any bad entry).
 #   Get-LokiModelDownloadPlan -Models <entries> -SelectedIds <string[]> -DestDir <dir> -> [pscustomobject[]]
 #       { Id; Model; Url; Sha256; SizeBytes; DestPath }  (throws on an unknown id).
@@ -16,6 +19,18 @@
 Set-StrictMode -Version Latest
 
 $script:LokiModelRequiredKeys = @('Id', 'Model', 'Tier', 'License', 'Url', 'FileName', 'Sha256', 'SizeBytes', 'ResidentGB', 'ContextTokens')
+
+function Get-LokiModelLayout {
+    # Pure path math -- models\ is a SIBLING of engine-offline\, not a child: the tiers are pinned and verified on
+    # their own lifecycle, and living under engine-offline\ would mean the next `loki setup` reconcile deletes them
+    # (ADR-0012 section 2b -- measured, not reasoned: it reported Pruned: 2).
+    param([Parameter(Mandatory = $true)][string]$AppRoot)
+    $dir = Join-Path $AppRoot 'models'
+    return @{
+        Dir          = $dir
+        ManifestPath = (Join-Path $dir 'manifest.psd1')
+    }
+}
 
 function Get-LokiModelManifest {
     param([Parameter(Mandatory = $true)][string]$Path)

@@ -9,10 +9,53 @@ function Get-LokiCmdMeta_doctor {
         Name     = 'doctor'
         Group    = 'Health'
         Summary  = 'doctor.summary'
-        Usage    = 'loki doctor [--footprint]'
-        Examples = @('loki doctor', 'loki doctor --footprint')
-        Flags    = @( @{ Flag = '--footprint'; Desc = 'Prove zero host-profile footprint (isolated write-probe + before/after diff)' } )
+        Usage    = 'loki doctor [--footprint] [--engine]'
+        Examples = @('loki doctor', 'loki doctor --footprint', 'loki doctor --engine')
+        Flags    = @(
+            @{ Flag = '--footprint'; Desc = 'Prove zero host-profile footprint (isolated write-probe + before/after diff)' },
+            @{ Flag = '--engine'; Desc = 'Verify the offline engine and models against their pinned hashes (hashes every installed model)' }
+        )
     }
+}
+
+function Write-LokiDoctorReport {
+    # Renders an ordered list of check objects (the shape lib/posture.ps1 and lib/integrity.ps1 both produce) plus the
+    # footer. Shared by `loki doctor` and `loki doctor --engine`: the two reports differ in what they CHECK, not in
+    # what a check looks like.
+    param([Parameter(Mandatory = $true)][AllowEmptyCollection()]$Checks)
+
+    $okCount = 0
+    $warnCount = 0
+    $failCount = 0
+
+    foreach ($c in $Checks) {
+        $status = Get-LokiText ('doctor.status.' + $c.Severity)
+        $label = Get-LokiText $c.LabelKey
+        $detail = $c.DetailRaw
+        if ($null -ne $c.DetailKey) {
+            $detail = Get-LokiText $c.DetailKey -ArgumentList $c.DetailArgs
+        }
+        $line = "[{0}] {1,-26} {2}" -f $status, $label, $detail
+
+        if ($c.Severity -eq 'ok') {
+            $okCount++
+            Write-LokiOk $line
+        }
+        elseif ($c.Severity -eq 'fail') {
+            $failCount++
+            Write-LokiErr $line
+        }
+        else {
+            # 'warn' AND 'unknown' both render as a warning and both count toward the footer's
+            # warning bucket -- there is no separate "unknown" exit code/footer slot (CLAUDE.md §4
+            # keeps the exit-code set stable), and an undetermined check is not a clean "OK" either.
+            $warnCount++
+            Write-LokiWarn $line
+        }
+    }
+
+    Write-LokiLine ''
+    Write-LokiLine (Get-LokiText 'doctor.footer' -ArgumentList @($okCount, $warnCount, $failCount))
 }
 
 function Invoke-LokiCmd_doctor {
@@ -46,6 +89,28 @@ function Invoke-LokiCmd_doctor {
         return (Get-LokiExitCode 'Ok')
     }
 
+    # --engine mode (ADR-0014): the load-time integrity chain, as a read-only report. It is opt-in rather than part of
+    # the default `loki doctor` because it hashes every installed model -- seconds for nano, about a minute for a
+    # 19 GB tier on USB. The default doctor must stay instant; an operator asking THIS question is asking for the cost.
+    if (@($Context.Args) -contains '--engine') {
+        $engineData = Get-LokiEngineManifest -Path (Join-Path $Context.AppRoot 'engine\manifest.psd1')
+        $models = Get-LokiModelManifest -Path (Get-LokiModelLayout -AppRoot $Context.AppRoot).ManifestPath
+
+        Write-LokiHeading (Get-LokiText 'integrity.heading')
+        Write-LokiLine ''
+        Write-LokiLine (Get-LokiText 'integrity.hashingNote')
+        Write-LokiLine ''
+
+        $report = Get-LokiEngineReport -AppRoot $Context.AppRoot -Engine $engineData.Engine `
+            -Runtime $engineData.Runtime -Models $models
+        $checks = ConvertTo-LokiIntegrityChecks -Report $report
+        Write-LokiDoctorReport -Checks $checks
+
+        # NOT Get-LokiDoctorExitCode: this report distinguishes "the stick is wrong" (1) from "the stick is
+        # incomplete" (5), which a single fail/not-fail verdict cannot express. See Get-LokiIntegrityExitCode.
+        return (Get-LokiIntegrityExitCode -Report $report)
+    }
+
     $envPath = Join-Path $Context.AppRoot 'home\.env'
     $configPath = Join-Path $Context.AppRoot 'loki.config.json'
     $cfg = Read-LokiConfig -Path $configPath
@@ -59,38 +124,7 @@ function Invoke-LokiCmd_doctor {
     Write-LokiHeading 'loki doctor'
     Write-LokiLine ''
 
-    $okCount = 0
-    $warnCount = 0
-    $failCount = 0
-
-    foreach ($c in $checks) {
-        $status = Get-LokiText ('doctor.status.' + $c.Severity)
-        $label = Get-LokiText $c.LabelKey
-        $detail = $c.DetailRaw
-        if ($null -ne $c.DetailKey) {
-            $detail = Get-LokiText $c.DetailKey -ArgumentList $c.DetailArgs
-        }
-        $line = "[{0}] {1,-26} {2}" -f $status, $label, $detail
-
-        if ($c.Severity -eq 'ok') {
-            $okCount++
-            Write-LokiOk $line
-        }
-        elseif ($c.Severity -eq 'fail') {
-            $failCount++
-            Write-LokiErr $line
-        }
-        else {
-            # 'warn' AND 'unknown' both render as a warning and both count toward the footer's
-            # warning bucket -- there is no separate "unknown" exit code/footer slot (CLAUDE.md §4
-            # keeps the exit-code set stable), and an undetermined check is not a clean "OK" either.
-            $warnCount++
-            Write-LokiWarn $line
-        }
-    }
-
-    Write-LokiLine ''
-    Write-LokiLine (Get-LokiText 'doctor.footer' -ArgumentList @($okCount, $warnCount, $failCount))
+    Write-LokiDoctorReport -Checks $checks
 
     return (Get-LokiDoctorExitCode -Checks $checks)
 }
