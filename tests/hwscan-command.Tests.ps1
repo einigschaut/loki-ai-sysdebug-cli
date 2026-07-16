@@ -1,7 +1,7 @@
 # tests/hwscan-command.Tests.ps1 -- Command `loki hwscan`: metadata, registry, arg parsing, exit codes (CLAUDE.md 5/6).
 # A lib and a command share the name, so the command tests live here and the lib tests in tests/hwscan.Tests.ps1 --
 # same split as auth / auth-command.
-# The hardware probe is Mocked: these tests pin the WIRING (profile -> budget -> installed -> selection -> exit code)
+# The hardware probe is Mocked: these tests pin the WIRING (profile -> limits -> installed -> selection -> exit code)
 # deterministically, on any machine, including a CI runner whose real RAM would otherwise decide the outcome.
 Set-StrictMode -Version Latest
 
@@ -22,6 +22,16 @@ BeforeAll {
         return @{ AppRoot = $script:SrcRoot; Version = 'test'; Args = $CmdArgs; Flags = @{}; Registry = @() }
     }
 
+    # Numbers render in the AMBIENT culture, while Get-LokiText pins only the TEXT locale (measured: a de-DE box
+    # renders 38.4 as "38,4" inside an otherwise English message). A hard-coded '.' in an expectation is therefore
+    # green on a CI runner (en-US) and red on a German dev box -- the exact non-determinism CLAUDE.md section 10
+    # forbids. Formatting the expectation the way the product does keeps these tests about the RULE, not the
+    # separator. (The mixed-locale rendering itself is a separate finding; it belongs to lib/i18n.ps1, not here.)
+    function global:Format-HwNum {
+        param([double]$N)
+        return ('{0}' -f $N)
+    }
+
     function global:Invoke-HwscanCommand {
         param([Parameter(Mandatory = $true)][hashtable]$Context)
         $swErr = New-Object System.IO.StringWriter
@@ -40,6 +50,7 @@ BeforeAll {
 AfterAll {
     Remove-Item Function:\New-TestHwContext -ErrorAction SilentlyContinue
     Remove-Item Function:\Invoke-HwscanCommand -ErrorAction SilentlyContinue
+    Remove-Item Function:\Format-HwNum -ErrorAction SilentlyContinue
 }
 
 Describe 'Command hwscan' {
@@ -47,12 +58,14 @@ Describe 'Command hwscan' {
     BeforeAll {
         # A big, healthy host by default. Every test that cares overrides this.
         # CpuCores is deliberately 12, NOT 16: with 16 the CPU line rendered "(16 threads)" and a '*16*' assertion on
-        # the RESERVE (also 16 on this host) passed against the CPU line instead -- the reserve could be deleted from
-        # the report entirely and the suite stayed green. Found by adversarial review; keep these values distinct.
+        # a memory figure passed against the CPU line instead -- the figure could be deleted from the report entirely
+        # and the suite stayed green. Found by adversarial review; keep these values distinct.
         Mock Get-LokiHardwareProfile { @{ TotalRamGB = 64.0; AvailableRamGB = 60.0; CpuName = 'Test CPU'; CpuCores = 12; Is64BitOs = $true } }
+        # Mirrors the real manifest's shape, Default flag included -- the picker's whole rule turns on it (ADR-0017).
         Mock Get-LokiInstalledTiers { , @(
-                @{ Id = 'nano'; Model = 'Qwen3-1.7B'; ResidentGB = 2.5; FileName = 'n.gguf'; SizeBytes = 1 }
-                @{ Id = 'mid'; Model = 'Qwen3-8B'; ResidentGB = 7.0; FileName = 'm.gguf'; SizeBytes = 1 }
+                @{ Id = 'nano'; Model = 'Qwen3-1.7B'; ResidentGB = 2.5; FileName = 'n.gguf'; SizeBytes = 1; Default = $false }
+                @{ Id = 'small'; Model = 'Qwen3-4B'; ResidentGB = 4.5; FileName = 's.gguf'; SizeBytes = 1; Default = $true }
+                @{ Id = 'mid'; Model = 'Qwen3-8B'; ResidentGB = 7.0; FileName = 'm.gguf'; SizeBytes = 1; Default = $false }
             ) }
     }
 
@@ -75,14 +88,30 @@ Describe 'Command hwscan' {
         It 'a healthy host -> Ok, and it names the tier it would run' {
             $r = Invoke-HwscanCommand -Context (New-TestHwContext)
             $r.Code | Should -Be (Get-LokiExitCode 'Ok')
-            $r.AllText | Should -BeLike '*Qwen3-8B*'      # strongest that fits, not just any
+            $r.AllText | Should -BeLike '*Qwen3-4B*'
         }
 
-        It 'shows the budget AND the reserve, so the number is explainable rather than magic' {
-            # Asserts the RENDERED line, not two loose numbers: '*16*' alone used to be satisfied by the CPU mock's
-            # "(16 threads)" and proved nothing about the reserve (adversarial review, proven by mutation).
+        It 'BREAK-THE-GUARD: a bigger tier that fits is offered but NOT auto-selected (ADR-0017)' {
+            # On a 64 GB host with 60 free, mid clears both guards. Picking it would be the old "biggest that fits"
+            # rule, which hands a big machine a model that runs at a crawl on CPU. It must be listed as fitting and
+            # still not be the answer.
             $r = Invoke-HwscanCommand -Context (New-TestHwContext)
-            $r.AllText | Should -BeLike '*44 GB for a model (16 GB stays reserved*'   # 60 available - 25% of 64
+            $r.AllText | Should -BeLike '*Would run: small*'
+            $r.AllText | Should -Not -BeLike '*Would run: mid*'
+            $r.AllText | Should -BeLike '*mid*fits now*'      # offered, so the operator can choose it
+        }
+
+        It 'shows BOTH ceilings, so the verdict is explainable rather than magic' {
+            # Asserts the RENDERED line, not two loose numbers: a bare '*38*' would be satisfied by any other figure
+            # in the report and prove nothing (adversarial review, proven by mutation).
+            $r = Invoke-HwscanCommand -Context (New-TestHwContext)
+            $r.AllText | Should -BeLike "*up to $(Format-HwNum 38.4) GB on this machine; $(Format-HwNum 58.5) GB is free enough right now*"
+        }
+
+        It 'each tier carries its own verdict, not just the winner' {
+            $r = Invoke-HwscanCommand -Context (New-TestHwContext)
+            $r.AllText | Should -BeLike '*nano*fits now*'
+            $r.AllText | Should -BeLike '*small*fits now*'
         }
 
         It 'writes NOTHING -- measured, not asserted: it is a read-only report' {
@@ -96,26 +125,87 @@ Describe 'Command hwscan' {
         }
     }
 
-    Context 'exit codes' {
-        It 'a thrashing host -> OfflineEngineMissing with a reason, not a crash' {
-            Mock Get-LokiHardwareProfile { @{ TotalRamGB = 8.0; AvailableRamGB = 4.5; CpuName = 'Small'; CpuCores = 2; Is64BitOs = $true } }
+    Context 'guidance (ADR-0017: a refusal that names what to do about it)' {
+        It 'a tier blocked only by BUSY memory says how much to free AND who is holding it' {
+            # This is the whole point of the loosened rule: "no" was never the useful answer. 16 GB total -> cap 9.6,
+            # so mid (7.0) is permitted here; 5 GB available -> usable 3.5, so it needs 3.5 GB more free.
+            Mock Get-LokiHardwareProfile { @{ TotalRamGB = 16.0; AvailableRamGB = 5.0; CpuName = 'Busy'; CpuCores = 8; Is64BitOs = $true } }
             $r = Invoke-HwscanCommand -Context (New-TestHwContext)
-            $r.Code | Should -Be (Get-LokiExitCode 'OfflineEngineMissing')
+            $r.Code | Should -Be (Get-LokiExitCode 'Ok')          # nano still fits, so this is an answer, not a failure
+            $r.AllText | Should -BeLike '*Would run: nano*'
+            $r.AllText | Should -BeLike "*mid*needs $(Format-HwNum 3.5) GB more free*"
+            $r.AllText | Should -BeLike '*Biggest memory holders right now*'
         }
 
-        It 'REGRESSION: below the 2 GB floor it names raw collection, not the impossible "download a smaller tier"' {
-            # DESIGN.md 3.2 requires the floor to give a STATED REASON. The budget was computed and then discarded --
-            # Ok/Reason were never read -- so the operator was told to fetch a smaller tier, which cannot help: below
-            # the floor no tier applies at all. Found by adversarial review; the floor was effectively dead code.
-            Mock Get-LokiHardwareProfile { @{ TotalRamGB = 32.0; AvailableRamGB = 9.0; CpuName = 'Busy'; CpuCores = 8; Is64BitOs = $true } }
+        It 'BREAK-THE-GUARD: no guidance block on a host where everything already fits (it would be noise)' {
+            $r = Invoke-HwscanCommand -Context (New-TestHwContext)
+            $r.AllText | Should -Not -BeLike '*Biggest memory holders*'
+        }
+
+        It 'REGRESSION: --model gets no unasked-for guidance about a DIFFERENT tier' {
+            # Found by running the real report, not by a unit test: `--model max-ceiling` answered "freeing memory
+            # will not help" and then appended "Free 3.55 GB to unlock large-longctx". Both sentences were true, about
+            # different tiers, and together they read as a contradiction. The operator who names a tier has chosen.
+            Mock Get-LokiHardwareProfile { @{ TotalRamGB = 16.0; AvailableRamGB = 5.0; CpuName = 'Busy'; CpuCores = 8; Is64BitOs = $true } }
+            $r = Invoke-HwscanCommand -Context (New-TestHwContext -CmdArgs @('--model', 'nano'))
+            $r.Code | Should -Be (Get-LokiExitCode 'Ok')
+            $r.AllText | Should -Not -BeLike '*Biggest memory holders*'
+            $r.AllText | Should -Not -BeLike '*to unlock*'
+        }
+
+        It 'names the CHEAPEST tier to unlock when several are within reach' {
+            # 16 GB total -> cap 9.6; 5 GB available -> usable 3.5. Both small (4.5) and mid (7.0) are blocked only by
+            # busy memory; the hint must name the one that is 1 GB away, not the one that is 3.5 GB away.
+            Mock Get-LokiHardwareProfile { @{ TotalRamGB = 16.0; AvailableRamGB = 5.0; CpuName = 'Busy'; CpuCores = 8; Is64BitOs = $true } }
+            $r = Invoke-HwscanCommand -Context (New-TestHwContext)
+            $r.AllText | Should -BeLike "*Free $(Format-HwNum 1) GB to unlock `"small`"*"
+            $r.AllText | Should -Not -BeLike '*to unlock "mid"*'
+        }
+
+        It 'a tier too big for the MACHINE is never presented as "free some memory"' {
+            # 8 GB total -> cap 4.8, so mid (7.0) can never run here. Telling the operator to close programs would
+            # send them after memory that could never be enough.
+            Mock Get-LokiHardwareProfile { @{ TotalRamGB = 8.0; AvailableRamGB = 7.0; CpuName = 'Small'; CpuCores = 2; Is64BitOs = $true } }
+            $r = Invoke-HwscanCommand -Context (New-TestHwContext)
+            $r.AllText | Should -BeLike '*mid*too big for this machine*'
+            $r.AllText | Should -Not -BeLike '*mid*needs*more free*'
+        }
+    }
+
+    Context 'exit codes' {
+        It 'a genuinely thrashing host -> OfflineEngineMissing with a reason, not a crash' {
+            # 8 GB total, 2.5 free -> usable 1.0; even nano needs freeing, and mid is over the cap. Nothing fits NOW.
+            Mock Get-LokiHardwareProfile { @{ TotalRamGB = 8.0; AvailableRamGB = 2.5; CpuName = 'Small'; CpuCores = 2; Is64BitOs = $true } }
+            $r = Invoke-HwscanCommand -Context (New-TestHwContext)
+            $r.Code | Should -Be (Get-LokiExitCode 'OfflineEngineMissing')
+            $r.AllText | Should -BeLike '*freeing memory would change that*'
+        }
+
+        It 'REGRESSION: a host too small for ANY model names raw collection, not the impossible "download a smaller tier"' {
+            # DESIGN.md 3.2 requires this to give a STATED REASON. The old rule ASSERTED that below a fixed budget
+            # floor nothing could help; this CHECKS it against the catalogue, because "fetch a smaller tier" is
+            # either the right advice or advice that cannot possibly work.
+            # 4 GB total -> cap 2.4 GB: even the catalogue's smallest tier (2.5 GB) is over it, permanently.
+            Mock Get-LokiHardwareProfile { @{ TotalRamGB = 4.0; AvailableRamGB = 3.5; CpuName = 'Tiny'; CpuCores = 2; Is64BitOs = $true } }
             $r = Invoke-HwscanCommand -Context (New-TestHwContext)
             $r.Code | Should -Be (Get-LokiExitCode 'OfflineEngineMissing')
             $r.AllText | Should -BeLike '*raw diagnostic dump*'
-            $r.AllText | Should -Not -BeLike '*add a smaller tier*'
+            $r.AllText | Should -Not -BeLike '*loki setup*'
+        }
+
+        It 'a stick missing the tier this host COULD run is told to fetch it, not to give up' {
+            # The other side of the same coin, and the reason the check above must be a check and not an assertion:
+            # only 'mid' is on the stick and it is over this box's cap -- but the catalogue's nano would run here.
+            Mock Get-LokiInstalledTiers { , @(@{ Id = 'mid'; Model = 'Qwen3-8B'; ResidentGB = 7.0; FileName = 'm.gguf'; SizeBytes = 1; Default = $false }) }
+            Mock Get-LokiHardwareProfile { @{ TotalRamGB = 8.0; AvailableRamGB = 7.0; CpuName = 'Small'; CpuCores = 2; Is64BitOs = $true } }
+            $r = Invoke-HwscanCommand -Context (New-TestHwContext)
+            $r.Code | Should -Be (Get-LokiExitCode 'OfflineEngineMissing')
+            $r.AllText | Should -BeLike '*loki setup*'
+            $r.AllText | Should -Not -BeLike '*raw diagnostic dump*'
         }
 
         It 'BREAK-THE-GUARD: available > total (a lying probe) is refused, not budgeted' {
-            # 4 GB total / 64 GB available would otherwise budget 60 GB and pick a 24 GB model for a 4 GB box.
+            # 4 GB total / 64 GB available would otherwise clear a 24 GB model for a 4 GB box.
             Mock Get-LokiHardwareProfile { @{ TotalRamGB = 4.0; AvailableRamGB = 64.0; CpuName = 'Liar'; CpuCores = 2; Is64BitOs = $true } }
             $r = Invoke-HwscanCommand -Context (New-TestHwContext)
             $r.Code | Should -Be (Get-LokiExitCode 'OfflineEngineMissing')
@@ -144,15 +234,31 @@ Describe 'Command hwscan' {
             $r.AllText | Should -BeLike '*Qwen3-1.7B*'
         }
 
+        It '--model reaches ABOVE the recommendation -- the ceiling only binds the automatic pick' {
+            # The "switch, with guidance" half of ADR-0017: a ceiling the operator cannot cross is not a default.
+            $r = Invoke-HwscanCommand -Context (New-TestHwContext -CmdArgs @('--model', 'mid'))
+            $r.Code | Should -Be (Get-LokiExitCode 'Ok')
+            $r.AllText | Should -BeLike '*Would run: mid*'
+        }
+
         It 'the --model=nano form works too (not just the space-separated one)' {
             $r = Invoke-HwscanCommand -Context (New-TestHwContext -CmdArgs @('--model=nano'))
             $r.Code | Should -Be (Get-LokiExitCode 'Ok')
         }
 
-        It 'BREAK-THE-GUARD: a tier that does not fit is refused -> OfflineEngineMissing' {
+        It 'BREAK-THE-GUARD: a tier too big for the machine is refused -> OfflineEngineMissing' {
             Mock Get-LokiHardwareProfile { @{ TotalRamGB = 8.0; AvailableRamGB = 7.0; CpuName = 'Small'; CpuCores = 2; Is64BitOs = $true } }
             $r = Invoke-HwscanCommand -Context (New-TestHwContext -CmdArgs @('--model', 'mid'))
             $r.Code | Should -Be (Get-LokiExitCode 'OfflineEngineMissing')
+            $r.AllText | Should -BeLike '*Freeing memory will not help*'
+        }
+
+        It 'BREAK-THE-GUARD: a tier blocked only by busy memory gets the OTHER refusal, with the number' {
+            Mock Get-LokiHardwareProfile { @{ TotalRamGB = 16.0; AvailableRamGB = 5.0; CpuName = 'Busy'; CpuCores = 8; Is64BitOs = $true } }
+            $r = Invoke-HwscanCommand -Context (New-TestHwContext -CmdArgs @('--model', 'mid'))
+            $r.Code | Should -Be (Get-LokiExitCode 'OfflineEngineMissing')
+            $r.AllText | Should -BeLike "*$(Format-HwNum 3.5) GB more free memory*"
+            $r.AllText | Should -Not -BeLike '*Freeing memory will not help*'
         }
 
         It '--force runs it anyway and WARNS -- the swap risk is never silent' {
@@ -175,7 +281,7 @@ Describe 'Command hwscan' {
             $r = Invoke-HwscanCommand -Context (New-TestHwContext -CmdArgs @('--model', 'mid', '--force'))
             $r.Code | Should -Be (Get-LokiExitCode 'Ok')
             $r.AllText | Should -BeLike '*risk cannot be judged*'
-            $r.AllText | Should -Not -BeLike '*is free*'
+            $r.AllText | Should -Not -BeLike '*is free enough*'
         }
 
         It 'REGRESSION: --force without --model -> Usage, never a silently ignored flag' {

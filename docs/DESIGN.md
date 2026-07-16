@@ -216,28 +216,55 @@ Loki's own orphaned server instance (identified by port/PID marker), never a
 `llama-server` the user started themselves.
 
 **Hardware-adaptive model tiers.** A hardware scan measures total and *available*
-RAM (the number that matters on an already-struggling machine) and picks the
-strongest tier that fits with a safety reserve, never trusting the engine's own
-memory-mapping to fail gracefully if a model is too large for the host:
+RAM (the number that matters on an already-struggling machine) and decides what may
+run here, never trusting the engine's own memory-mapping to fail gracefully if a
+model is too large for the host. **Two independent guards** (ADR-0017), because they
+answer two different questions:
 
 ```
-reserve = max(4 GB, 25% of total RAM)      # the host keeps >= 4 GB AND >= 25%
-budget  = available RAM - reserve
-choose the largest tier whose resident size <= budget
-budget < ~2 GB → no LLM; `loki collect` (raw dump) only, with a stated reason
+thrash guard    resident + 1.5 GB <= available RAM     don't take what isn't there
+ballast guard   resident <= 60% of TOTAL RAM           don't dominate the machine you came to help
 ```
 
-| Tier | Resident (approx.) | Min. host RAM | Offline capability |
+The 1.5 GB headroom is **absolute, not a percentage**: what an OS needs in order not
+to page does not grow with the size of the memory bank. The ballast cap *is*
+proportional, because "am I too big a burden on this machine" genuinely is. Their
+**order matters**: ballast is decided first, since failing it is permanent (no amount
+of closing programs helps) while failing the thrash guard is a "close something and
+retry". Reporting the wrong one sends the operator after memory that could never be
+enough.
+
+*Available* already includes the standby cache — the "modern OS frees memory on
+demand" effect is counted, not ignored. What is deliberately **not** counted is
+Windows paging out somebody else's working set to make room: that *is* the ballast,
+so the operator is told what is holding memory instead of having their browser
+silently made slow.
+
+| Tier | Resident (approx.) | Min. host RAM¹ | Offline capability |
 |---|---|---|---|
-| 1.7B | ~2.5 GB | 4 GB | analysis + playbook routing |
-| 4B | ~4 GB | 8 GB | analysis + routing |
-| 8B | ~6.5 GB | 16 GB | + free agent loop (usable floor) |
-| 14B | ~10.5 GB | 24–32 GB | + agent loop (tolerable planning) |
-| 32B | ~23 GB | 48 GB | deep mode (patient, high quality) |
+| 1.7B | ~2.5 GB | 4.2 GB | analysis + playbook routing |
+| 4B | ~4 GB | 6.7 GB | analysis + routing |
+| 8B | ~6.5 GB | 10.8 GB | + free agent loop (usable floor) |
+| 14B | ~10.5 GB | 17.5 GB | + agent loop (tolerable planning) |
+| 32B | ~23 GB | 38.3 GB | deep mode (patient, high quality) |
 
-A manual override (`--model <tier>`, `--force` to exceed budget with a warning) is
-always available; the first response is timed and a persistently slow tier triggers a
-suggestion to downgrade.
+¹ *Derived*, not declared: `resident / 0.6`, straight out of the ballast guard. It is
+the RAM below which a tier can never run here, however idle the box is.
+
+**The default is the recommended tier, not the largest that fits.** RAM is not the
+only capacity: the 32B tier runs at ~1–2 tok/s on CPU, so "biggest that fits" would
+hand a 128 GB server a model that technically runs and practically doesn't. The
+model catalog's `Default` flag already encodes a balance of quality against speed,
+and a memory figure does not get to overrule it. Anything larger is *offered* by the
+report — never auto-selected.
+
+Every "no" is actionable rather than final: each tier is reported as **fits /
+needs N GB more free / too big for this machine**, and when freeing memory would
+change the answer, the biggest memory holders are named. A manual override
+(`--model <tier>`, `--force` to run it anyway with a warning) is always available;
+the first response is timed and a persistently slow tier triggers a suggestion to
+downgrade. If no catalog tier can run at all, that is a stated answer pointing at
+`loki collect` (raw dump) — checked against the catalog, never assumed.
 
 **Two maturity levels in the same harness**, reflecting what small CPU models can
 actually do reliably:

@@ -262,12 +262,37 @@ Describe 'Resolve-LokiEnginePreflight (may we start?)' {
 
     It 'refuses a model that does not fit THIS machine, whatever the setup machine decided' {
         # The tier was chosen where the stick was prepared. The RAM is re-measured here because the stick was carried.
+        # 4 GB total -> the ballast cap is 2.4 GB, so nano's 2.5 GB is too much for this box permanently.
         $s = New-AgentStick
         Mock Get-LokiHardwareProfile { @{ TotalRamGB = 4.0; AvailableRamGB = 1.5; CpuName = 'x'; CpuCores = 2; Is64BitOs = $true } }
         $r = Resolve-LokiEnginePreflight -AppRoot $s.AppRoot -Engine $s.Engine -Runtime $s.Runtime -Model $s.Model
         $r.Ok | Should -BeFalse
         $r.Reason | Should -Be 'insufficient-ram'
+        $r.Verdict | Should -Be 'too-big'
         $r.NeedGB | Should -Be 2.5
+    }
+
+    It 'a model blocked only by BUSY memory is refused differently from one too big for the box (ADR-0017)' {
+        # Same refusal, different advice: this one says "close something and retry", and carries the number to close.
+        # A harness that collapsed the two would send the operator after memory that could never be enough.
+        $s = New-AgentStick
+        Mock Get-LokiHardwareProfile { @{ TotalRamGB = 16.0; AvailableRamGB = 3.0; CpuName = 'x'; CpuCores = 8; Is64BitOs = $true } }
+        $r = Resolve-LokiEnginePreflight -AppRoot $s.AppRoot -Engine $s.Engine -Runtime $s.Runtime -Model $s.Model
+        $r.Ok | Should -BeFalse
+        $r.Reason | Should -Be 'insufficient-ram'
+        $r.Verdict | Should -Be 'fits-if-freed'
+        $r.NeedFreeGB | Should -Be 1.0      # 2.5 + 1.5 - 3.0
+    }
+
+    It 'an unreadable machine is refused as unknown, not as "this machine has no RAM"' {
+        # Get-LokiHardwareProfile's contract is that a field may be $null. A [double] cast would turn that into 0.0
+        # and report a plausible-looking lie about the host instead of admitting the probe failed.
+        $s = New-AgentStick
+        Mock Get-LokiHardwareProfile { @{ TotalRamGB = $null; AvailableRamGB = $null; CpuName = $null; CpuCores = $null; Is64BitOs = $true } }
+        $r = Resolve-LokiEnginePreflight -AppRoot $s.AppRoot -Engine $s.Engine -Runtime $s.Runtime -Model $s.Model
+        $r.Ok | Should -BeFalse
+        $r.Reason | Should -Be 'insufficient-ram'
+        $r.Verdict | Should -Be 'ram-unknown'
     }
 
     It 'the RAM check is LIVE, not a value stored at setup time' {
