@@ -39,8 +39,9 @@ function Invoke-LokiCmd_setup {
     # ---- Selection first --------------------------------------------------------------------------------------------
     # Everything the user picks is resolved and validated BEFORE any network work: an unknown tier id must cost a usage
     # error, not an engine download followed by a usage error.
-    $models = Get-LokiModelManifest -Path (Join-Path $Context.AppRoot 'models\manifest.psd1')
-    $destDir = Join-Path $Context.AppRoot 'models'
+    $modelLayout = Get-LokiModelLayout -AppRoot $Context.AppRoot
+    $models = Get-LokiModelManifest -Path $modelLayout.ManifestPath
+    $destDir = $modelLayout.Dir
 
     # Always show the catalog (sizes let the user pick to fit their stick + RAM -- the whole point of the picker).
     Write-LokiHeading (Get-LokiText 'setup.heading')

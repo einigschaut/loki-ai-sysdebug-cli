@@ -9,6 +9,9 @@
 #   * models are DATA: nothing here (or in the engine) ever executes them; the engine must verify a model's hash
 #     before loading it (load-time verify, ADR-0012).
 # Contract:
+#   Get-LokiModelLayout -AppRoot <dir> -> [hashtable]{ Dir; ManifestPath }  (pure path math; the models\ sibling of
+#       engine-offline\, DESIGN.md section 2.2). The counterpart of Get-LokiEngineLayout -- so where the tiers live is
+#       stated once, not re-spelled by every command that needs them.
 #   Get-LokiModelManifest -Path <psd1> -> [object[]] validated model entries (throws fail-closed on any bad entry).
 #   Get-LokiModelDownloadPlan -Models <entries> -SelectedIds <string[]> -DestDir <dir> -> [pscustomobject[]]
 #       { Id; Model; Url; Sha256; SizeBytes; DestPath }  (throws on an unknown id).
@@ -16,6 +19,20 @@
 Set-StrictMode -Version Latest
 
 $script:LokiModelRequiredKeys = @('Id', 'Model', 'Tier', 'License', 'Url', 'FileName', 'Sha256', 'SizeBytes', 'ResidentGB', 'ContextTokens')
+
+function Get-LokiModelLayout {
+    # Path math only -- it reads no manifest and touches no file. (Join-Path is provider-aware, so it is not strictly
+    # pure: an AppRoot on a drive that does not exist throws. Every caller passes a real AppRoot.)
+    # models\ is a SIBLING of engine-offline\, not a child: the tiers are pinned and verified on
+    # their own lifecycle, and living under engine-offline\ would mean the next `loki setup` reconcile deletes them
+    # (ADR-0012 section 2b -- measured, not reasoned: it reported Pruned: 2).
+    param([Parameter(Mandatory = $true)][string]$AppRoot)
+    $dir = Join-Path $AppRoot 'models'
+    return @{
+        Dir          = $dir
+        ManifestPath = (Join-Path $dir 'manifest.psd1')
+    }
+}
 
 function Get-LokiModelManifest {
     param([Parameter(Mandatory = $true)][string]$Path)
@@ -34,7 +51,10 @@ function Get-LokiModelManifest {
         # Filename comes from the (trusted) manifest but is validated anyway (defense in depth): safe charset, no
         # path separators, and NOT an all-dots name ('.'/'..') or a reserved device name -> no traversal / odd target.
         $fn = [string]$m.FileName
-        if ($fn -notmatch '^[A-Za-z0-9._-]+$') { throw "Model '$id': FileName has unsafe characters." }
+        # -cnotmatch, not -notmatch: case-insensitive matching folds by CURRENT CULTURE, and in tr-TR 'I' becomes the
+        # dotless 'i' (U+0131), outside [A-Za-z]. Our own 'Qwen3-4B-Instruct-2507-Q4_K_M.gguf' would be rejected as
+        # unsafe on a Turkish machine. The class is explicitly cased, so a case-sensitive match is correct here.
+        if ($fn -cnotmatch '^[A-Za-z0-9._-]+$') { throw "Model '$id': FileName has unsafe characters." }
         $fnBase = (($fn.ToUpperInvariant()) -split '\.')[0]
         if (($fn -match '^\.+$') -or ($fnBase -match '^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$')) { throw "Model '$id': FileName is a reserved or invalid name." }
         if ([long]$m.SizeBytes -le 0) { throw "Model '$id': SizeBytes must be a positive integer." }

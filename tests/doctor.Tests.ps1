@@ -21,7 +21,13 @@ BeforeAll {
     . "$PSScriptRoot\..\src\lib\env-isolate.ps1"
     . "$PSScriptRoot\..\src\lib\footprint.ps1"
     . "$PSScriptRoot\..\src\lib\registry.ps1"
+    . "$PSScriptRoot\..\src\lib\download.ps1"     # --engine mode: Test-LokiFileHash, the primitive the chain rests on
+    . "$PSScriptRoot\..\src\lib\engine.ps1"
+    . "$PSScriptRoot\..\src\lib\models.ps1"
+    . "$PSScriptRoot\..\src\lib\integrity.ps1"
     . "$PSScriptRoot\..\src\commands\doctor.ps1"
+    Add-Type -AssemblyName System.IO.Compression
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
     Initialize-LokiUi -NoColor
     Initialize-LokiI18n -AppRoot (Resolve-Path "$PSScriptRoot\..\src").Path -Locale 'en' | Out-Null
 
@@ -38,6 +44,77 @@ BeforeAll {
     function global:New-TestDoctorContext {
         param([Parameter(Mandatory = $true)][string]$AppRoot, [string[]]$CmdArgs = @())
         return @{ AppRoot = $AppRoot; Version = 'test'; Args = $CmdArgs; Flags = @{}; Registry = @() }
+    }
+
+    # Builds an AppRoot laid out like a prepared stick for `doctor --engine`: real manifests, a real archive in
+    # engine-offline\ with its contents expanded next to it, and a real model file at its pinned hash. Real files
+    # throughout -- the thing under test IS the filesystem interaction.
+    function global:New-TestEngineStick {
+        param([switch]$NoEngine, [switch]$NoModel, [switch]$NoRuntime)
+        $root = New-TestDoctorAppRoot
+        New-Item -ItemType Directory -Force -Path (Join-Path $root 'engine') | Out-Null
+        New-Item -ItemType Directory -Force -Path (Join-Path $root 'models') | Out-Null
+
+        # --- the engine archive + its expanded contents
+        $engineDir = Join-Path $root 'engine-offline'
+        $zipPath = Join-Path $script:RootTmp ([System.Guid]::NewGuid().ToString('N') + '.zip')
+        $zip = [System.IO.Compression.ZipFile]::Open($zipPath, [System.IO.Compression.ZipArchiveMode]::Create)
+        foreach ($n in @('llama-server.exe', 'ggml-base.dll')) {
+            $e = $zip.CreateEntry($n)
+            $sw = New-Object System.IO.StreamWriter($e.Open())
+            $sw.Write("bytes-of-$n")
+            $sw.Dispose()
+        }
+        $zip.Dispose()
+        $zipHash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        if (-not $NoEngine) {
+            New-Item -ItemType Directory -Force -Path $engineDir | Out-Null
+            Copy-Item -LiteralPath $zipPath -Destination (Join-Path $engineDir 'engine.zip') -Force
+            foreach ($n in @('llama-server.exe', 'ggml-base.dll')) {
+                [System.IO.File]::WriteAllText((Join-Path $engineDir $n), "bytes-of-$n")
+            }
+            # A staged MSVC runtime, so a "clean stick" is genuinely clean: without one the engine could not start
+            # here and the report would (correctly) not be green. kernel32.dll is a real versioned binary present on
+            # every Windows host, paired with a MinVersion of 1.0 below -- so this does not depend on whatever VC++
+            # runtime the CI machine happens to have.
+            if (-not $NoRuntime) {
+                Copy-Item -LiteralPath (Join-Path $env:SystemRoot 'System32\kernel32.dll') `
+                    -Destination (Join-Path $engineDir 'VCRUNTIME140.dll') -Force
+            }
+        }
+        [System.IO.File]::WriteAllText((Join-Path $root 'engine\manifest.psd1'), @"
+@{
+    Engine  = @{
+        Id = 'llama.cpp'; Version = 'b10038'; Platform = 'win-cpu-x64'; License = 'MIT'
+        Url = 'https://example.invalid/engine.zip'; FileName = 'engine.zip'
+        Sha256 = '$zipHash'; SizeBytes = $((Get-Item -LiteralPath $zipPath).Length); ServerExe = 'llama-server.exe'
+    }
+    Runtime = @{
+        Files = @('VCRUNTIME140.dll'); MinVersion = '1.0'
+        RegistryKey = 'HKLM:\SOFTWARE\Loki\DoesNotExist\Ever'
+    }
+}
+"@, (New-Object System.Text.UTF8Encoding($false)))
+
+        # --- one model tier, present at its pinned hash
+        $modelPath = Join-Path $root 'models\nano.gguf'
+        [System.IO.File]::WriteAllText($modelPath, 'model-weights')
+        $modelHash = (Get-FileHash -LiteralPath $modelPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $modelSize = (Get-Item -LiteralPath $modelPath).Length
+        if ($NoModel) { [System.IO.File]::Delete($modelPath) }
+        [System.IO.File]::WriteAllText((Join-Path $root 'models\manifest.psd1'), @"
+@{
+    Models = @(
+        @{
+            Id = 'nano'; Model = 'Test-1.7B'; Tier = 'Nano'; License = 'Apache-2.0'
+            Url = 'https://example.invalid/nano.gguf'; FileName = 'nano.gguf'
+            Sha256 = '$modelHash'; SizeBytes = $modelSize; ResidentGB = 2.5; ContextTokens = 32768
+            Default = `$true
+        }
+    )
+}
+"@, (New-Object System.Text.UTF8Encoding($false)))
+        return $root
     }
 
     # Calls Invoke-LokiCmd_doctor and returns exit code, stdout text (stream 6), stderr text, and the
@@ -69,7 +146,86 @@ AfterAll {
     if (Test-Path -LiteralPath $script:RootTmp) { Remove-Item -LiteralPath $script:RootTmp -Recurse -Force }
     Remove-Item Function:\New-TestDoctorAppRoot -ErrorAction SilentlyContinue
     Remove-Item Function:\New-TestDoctorContext -ErrorAction SilentlyContinue
+    Remove-Item Function:\New-TestEngineStick -ErrorAction SilentlyContinue
     Remove-Item Function:\Invoke-DoctorCommand -ErrorAction SilentlyContinue
+}
+
+Describe 'loki doctor --engine (ADR-0014)' {
+
+    It 'a stick setup produced verifies clean' {
+        $r = Invoke-DoctorCommand -Context (New-TestDoctorContext -AppRoot (New-TestEngineStick) -CmdArgs @('--engine'))
+        $r.Code | Should -Be 0
+        $r.AllText | Should -Match 'verified against the pin'
+    }
+
+    It 'no engine on the stick -> OfflineEngineMissing(5), not a generic error' {
+        # ADR-0014 section 8: a fresh stick is not a broken stick. 5 says "run loki setup", which is actionable.
+        $r = Invoke-DoctorCommand -Context (New-TestDoctorContext -AppRoot (New-TestEngineStick -NoEngine) -CmdArgs @('--engine'))
+        $r.Code | Should -Be 5
+    }
+
+    It 'BREAK-THE-GUARD: a tampered engine file -> GeneralError(1), and it must NOT look like "not installed"' {
+        # The distinction is the point: a script must be able to tell "expected on a fresh stick" (5) from
+        # "the engine on this stick does not match the pin" (1). If this ever returns 5, tampering looks routine.
+        $root = New-TestEngineStick
+        [System.IO.File]::WriteAllText((Join-Path $root 'engine-offline\llama-server.exe'), 'EVIL')
+        $r = Invoke-DoctorCommand -Context (New-TestDoctorContext -AppRoot $root -CmdArgs @('--engine'))
+        $r.Code | Should -Be 1
+        $r.AllText | Should -Match 'llama-server\.exe'
+    }
+
+    It 'BREAK-THE-GUARD: a planted dll the pinned build does not contain -> GeneralError(1)' {
+        $root = New-TestEngineStick
+        [System.IO.File]::WriteAllText((Join-Path $root 'engine-offline\ggml-cpu-haswell.dll'), 'PLANTED')
+        $r = Invoke-DoctorCommand -Context (New-TestDoctorContext -AppRoot $root -CmdArgs @('--engine'))
+        $r.Code | Should -Be 1
+        $r.AllText | Should -Match 'ggml-cpu-haswell\.dll'
+    }
+
+    It 'BREAK-THE-GUARD: a swapped model -> GeneralError(1) and the tier is named' {
+        $root = New-TestEngineStick
+        [System.IO.File]::WriteAllText((Join-Path $root 'models\nano.gguf'), 'EVIL-weights')
+        $r = Invoke-DoctorCommand -Context (New-TestDoctorContext -AppRoot $root -CmdArgs @('--engine'))
+        $r.Code | Should -Be 1
+        $r.AllText | Should -Match 'nano'
+    }
+
+    It 'a stick with no model tiers is a warning, not a failure (setup lets you pick a subset)' {
+        $r = Invoke-DoctorCommand -Context (New-TestDoctorContext -AppRoot (New-TestEngineStick -NoModel) -CmdArgs @('--engine'))
+        $r.Code | Should -Be 0
+        $r.AllText | Should -Match 'no model tiers'
+    }
+
+    It 'a good engine with no MSVC runtime -> OfflineEngineMissing(5): incomplete, NOT untrustworthy' {
+        # The engine here matches its pin perfectly. It simply cannot start without the runtime, and that is a
+        # `--stage-runtime` problem, not a tampering signal. Returning 1 here would cry wolf.
+        $r = Invoke-DoctorCommand -Context (New-TestDoctorContext -AppRoot (New-TestEngineStick -NoRuntime) -CmdArgs @('--engine'))
+        $r.Code | Should -Be 5
+        $r.AllText | Should -Match 'verified against the pin'
+    }
+
+    It 'says up front that it hashes every model (the cost is stated, not sprung)' {
+        $r = Invoke-DoctorCommand -Context (New-TestDoctorContext -AppRoot (New-TestEngineStick) -CmdArgs @('--engine'))
+        $r.AllText | Should -Match 'hashed'
+    }
+
+    It 'writes nothing to the stick it is inspecting' {
+        $root = New-TestEngineStick
+        # A directory's LastWriteTime is deliberately NOT snapshotted: NTFS updates directory timestamps LAZILY, so
+        # the `before` reading can catch a value that has not been flushed yet and then "change" on its own with
+        # nothing having written anything. That made this test flaky -- green locally, red on CI, where the engine
+        # directory's mtime moved by 8ms mid-run. Directories are still snapshotted by PATH, so a created or removed
+        # directory is caught; for files, size and mtime are both compared, which is what "writes nothing" means.
+        $snapshot = {
+            @(Get-ChildItem -LiteralPath $root -Recurse -Force | ForEach-Object {
+                    if ($_.PSIsContainer) { '{0}|dir' -f $_.FullName }
+                    else { '{0}|{1}|{2}' -f $_.FullName, $_.Length, $_.LastWriteTimeUtc.Ticks }
+                }) -join "`n"
+        }
+        $before = & $snapshot
+        Invoke-DoctorCommand -Context (New-TestDoctorContext -AppRoot $root -CmdArgs @('--engine')) | Out-Null
+        (& $snapshot) | Should -Be $before
+    }
 }
 
 Describe 'Command doctor' {

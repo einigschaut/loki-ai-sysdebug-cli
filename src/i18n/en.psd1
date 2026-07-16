@@ -65,6 +65,9 @@
     'doctor.check.deviceguard'  = 'Device Guard / WDAC'
     'doctor.check.applocker'    = 'AppLocker'
     'doctor.check.volume'       = 'Volume'
+    'doctor.check.engine'       = 'Offline engine'
+    'doctor.check.runtime'      = 'MSVC runtime'
+    'doctor.check.models'       = 'Offline model'
 
     'doctor.status.ok'          = 'OK'
     'doctor.status.warn'        = 'WARN'
@@ -80,6 +83,27 @@
     'doctor.volume.plain'           = 'not on an encrypted removable volume'
 
     'doctor.footer'             = '{0} OK, {1} warning(s), {2} failure(s)'
+
+    # loki doctor --engine (ADR-0014): the load-time integrity chain as a read-only report.
+    'integrity.heading'                 = 'loki doctor --engine - offline engine integrity'
+    'integrity.hashingNote'             = 'Verifying against the pinned hashes. Every installed model is hashed, which takes a while for the large tiers.'
+    'integrity.engine.verified'         = 'verified against the pin ({0} files, build {1})'
+    'integrity.engine.notInstalled'     = 'not installed - run loki setup on the setup machine'
+    'integrity.engine.archiveMissing'   = 'the pinned archive is gone - integrity cannot be established; re-run loki setup'
+    'integrity.engine.archiveMismatch'  = 'the archive does NOT match the pinned hash - do not trust this stick; re-run loki setup'
+    'integrity.engine.fileMismatch'     = '{0} file(s) do NOT match the pinned build: {1}'
+    'integrity.engine.unexpectedFile'   = '{0} file(s) the pinned build does not contain: {1}'
+    'integrity.engine.fileMissing'      = '{0} file(s) from the pinned build are missing: {1}'
+    'integrity.engine.error'            = 'integrity could not be established ({0})'
+    'integrity.runtime.ok'             = 'present and recent enough ({0}, {1})'
+    'integrity.runtime.notInstalled'   = 'not on this machine - stage it onto the stick on the setup machine (loki setup --stage-runtime), or install the Microsoft Visual C++ Redistributable here'
+    'integrity.runtime.signature'      = 'the staged {0} is not a valid Microsoft-signed binary ({1}) - do not trust this stick'
+    'integrity.runtime.tooOld'         = 'too old: {0} ({2}), below the required {1}'
+    'integrity.runtime.partiallyStaged' = 'incompletely staged - missing: {0}. The staged files shadow the system ones, so the engine would load a mixed set'
+    'integrity.runtime.unknown'         = 'could not be determined ({0})'
+    'integrity.model.verified'          = '{0}: verified against the pin'
+    'integrity.model.mismatch'          = '{0}: does NOT match the pinned hash - do not load it'
+    'integrity.model.noneInstalled'     = 'no model tiers on this stick - add one with loki setup'
 
     'footprint.heading'         = 'loki doctor --footprint'
     'footprint.probeVerified'   = 'Isolation probe verified: the env-var redirect held - the isolated writes landed on the stick, not the host.'

@@ -64,8 +64,9 @@ function Invoke-LokiCmd_hwscan {
         Write-LokiLine (Get-LokiText 'hwscan.budget' -ArgumentList @($budget.BudgetGB, $budget.ReserveGB))
     }
 
-    $models = Get-LokiModelManifest -Path (Join-Path $Context.AppRoot 'models\manifest.psd1')
-    $installed = Get-LokiInstalledTiers -Models $models -ModelsDir (Join-Path $Context.AppRoot 'models')
+    $modelLayout = Get-LokiModelLayout -AppRoot $Context.AppRoot
+    $models = Get-LokiModelManifest -Path $modelLayout.ManifestPath
+    $installed = Get-LokiInstalledTiers -Models $models -ModelsDir $modelLayout.Dir
     Write-LokiLine (Get-LokiText 'hwscan.installed' -ArgumentList @(@($installed).Count, @($models).Count))
     foreach ($t in @($installed)) {
         Write-LokiLine (Get-LokiText 'hwscan.tierRow' -ArgumentList @([string]$t.Id, [string]$t.Model, $t.ResidentGB))

@@ -65,6 +65,9 @@
     'doctor.check.deviceguard'  = 'Device Guard / WDAC'
     'doctor.check.applocker'    = 'AppLocker'
     'doctor.check.volume'       = 'Volume'
+    'doctor.check.engine'       = 'Offline-Engine'
+    'doctor.check.runtime'      = 'MSVC-Runtime'
+    'doctor.check.models'       = 'Offline-Modell'
 
     'doctor.status.ok'          = 'OK'
     'doctor.status.warn'        = 'WARN'
@@ -80,6 +83,27 @@
     'doctor.volume.plain'           = 'kein verschlüsselter Wechseldatenträger'
 
     'doctor.footer'             = '{0} OK, {1} Warnung(en), {2} Fehler'
+
+    # loki doctor --engine (ADR-0014): die Integritaetskette zur Ladezeit als reiner Lese-Report.
+    'integrity.heading'                 = 'loki doctor --engine - Integritaet der Offline-Engine'
+    'integrity.hashingNote'             = 'Pruefung gegen die gepinnten Hashes. Jedes installierte Modell wird gehasht - bei den grossen Stufen dauert das eine Weile.'
+    'integrity.engine.verified'         = 'gegen den Pin geprueft ({0} Dateien, Build {1})'
+    'integrity.engine.notInstalled'     = 'nicht installiert - loki setup auf dem Einrichte-Rechner ausfuehren'
+    'integrity.engine.archiveMissing'   = 'das gepinnte Archiv fehlt - Integritaet nicht nachweisbar; loki setup erneut ausfuehren'
+    'integrity.engine.archiveMismatch'  = 'das Archiv passt NICHT zum gepinnten Hash - diesem Stick nicht trauen; loki setup erneut ausfuehren'
+    'integrity.engine.fileMismatch'     = '{0} Datei(en) passen NICHT zum gepinnten Build: {1}'
+    'integrity.engine.unexpectedFile'   = '{0} Datei(en), die der gepinnte Build nicht enthaelt: {1}'
+    'integrity.engine.fileMissing'      = '{0} Datei(en) des gepinnten Builds fehlen: {1}'
+    'integrity.engine.error'            = 'Integritaet nicht nachweisbar ({0})'
+    'integrity.runtime.ok'             = 'vorhanden und aktuell genug ({0}, {1})'
+    'integrity.runtime.notInstalled'   = 'auf diesem Rechner nicht vorhanden - auf dem Einrichte-Rechner auf den Stick legen (loki setup --stage-runtime), oder das Microsoft Visual C++ Redistributable hier installieren'
+    'integrity.runtime.signature'      = 'die bereitgestellte {0} ist keine gueltig Microsoft-signierte Binaerdatei ({1}) - diesem Stick nicht trauen'
+    'integrity.runtime.tooOld'         = 'zu alt: {0} ({2}), unter den geforderten {1}'
+    'integrity.runtime.partiallyStaged' = 'unvollstaendig bereitgestellt - es fehlen: {0}. Die bereitgestellten Dateien verdecken die des Systems, die Engine wuerde also einen gemischten Satz laden'
+    'integrity.runtime.unknown'         = 'nicht ermittelbar ({0})'
+    'integrity.model.verified'          = '{0}: gegen den Pin geprueft'
+    'integrity.model.mismatch'          = '{0}: passt NICHT zum gepinnten Hash - nicht laden'
+    'integrity.model.noneInstalled'     = 'keine Modellstufen auf diesem Stick - mit loki setup hinzufuegen'
 
     'footprint.heading'         = 'loki doctor --footprint'
     'footprint.probeVerified'   = 'Isolations-Probe bestätigt: die Env-Var-Umleitung greift - die isolierten Writes landeten auf dem Stick, nicht im Host.'
