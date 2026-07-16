@@ -1,8 +1,7 @@
-# tests/models.Tests.ps1 -- offline model acquisition (security core, CLAUDE.md section 5/6, ADR-0011).
-# Covers the pure/testable surface of lib/models.ps1 and the REAL src/models/manifest.psd1: manifest validation
-# (fail-closed on http/bad-hash/traversal/dup), SHA256 verification, the download plan, and -- the key security
-# property -- that a verified download keeps a matching file and DELETES a mismatching one (nothing unverified
-# survives). The real network fetch (Get-LokiHttpFile) is Mocked; verification runs against real local temp files.
+# tests/models.Tests.ps1 -- the offline MODEL catalog (security core, CLAUDE.md section 5/6, ADR-0011).
+# Covers lib/models.ps1 and the REAL src/models/manifest.psd1: fail-closed manifest validation (http / bad hash /
+# traversal / reserved name / dup id / non-positive size) and the download plan. The verified fetch itself lives in
+# lib/download.ps1 and is covered by tests/download.Tests.ps1 -- one test file per module, same split as the code.
 Set-StrictMode -Version Latest
 
 BeforeAll {
@@ -11,12 +10,6 @@ BeforeAll {
     $script:ManifestPath = (Resolve-Path "$PSScriptRoot\..\src\models\manifest.psd1").Path
     $script:RootTmp = Join-Path ([System.IO.Path]::GetTempPath()) ("loki-models-" + [System.Guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Force -Path $script:RootTmp | Out-Null
-
-    # Deterministic known bytes + their real SHA256 (computed, not hardcoded) -- the "good" download.
-    $script:GoodBytes = 'loki-verified-model-bytes-v1'
-    $seed = Join-Path $script:RootTmp 'seed.bin'
-    [System.IO.File]::WriteAllText($seed, $script:GoodBytes, [System.Text.Encoding]::ASCII)
-    $script:GoodHash = (Get-FileHash -LiteralPath $seed -Algorithm SHA256).Hash
 
     function global:New-ModelsCaseDir {
         $d = Join-Path $script:RootTmp ([System.Guid]::NewGuid().ToString('N'))
@@ -98,25 +91,6 @@ Describe 'Get-LokiModelManifest (real manifest + fail-closed validation)' {
     }
 }
 
-Describe 'Test-LokiFileHash' {
-
-    It 'true for a matching file, false for a wrong hash, false for a missing file' {
-        $d = New-ModelsCaseDir
-        $f = Join-Path $d 'a.bin'
-        [System.IO.File]::WriteAllText($f, $script:GoodBytes, [System.Text.Encoding]::ASCII)
-        Test-LokiFileHash -Path $f -ExpectedSha256 $script:GoodHash | Should -BeTrue
-        Test-LokiFileHash -Path $f -ExpectedSha256 ('b' * 64) | Should -BeFalse
-        Test-LokiFileHash -Path (Join-Path $d 'missing.bin') -ExpectedSha256 $script:GoodHash | Should -BeFalse
-    }
-
-    It 'is case-insensitive on the hex' {
-        $d = New-ModelsCaseDir
-        $f = Join-Path $d 'a.bin'
-        [System.IO.File]::WriteAllText($f, $script:GoodBytes, [System.Text.Encoding]::ASCII)
-        Test-LokiFileHash -Path $f -ExpectedSha256 ($script:GoodHash.ToLower()) | Should -BeTrue
-    }
-}
-
 Describe 'Get-LokiModelDownloadPlan' {
 
     It 'maps selected ids to url + sha256 + dest path; throws on an unknown id' {
@@ -126,61 +100,5 @@ Describe 'Get-LokiModelDownloadPlan' {
         $plan[0].DestPath | Should -BeLike '*\models\Qwen3-4B-Instruct-2507-Q4_K_M.gguf'
         $plan[0].Url | Should -Match '^https://'
         { Get-LokiModelDownloadPlan -Models $models -SelectedIds @('does-not-exist') -DestDir 'C:\x' } | Should -Throw
-    }
-}
-
-Describe 'Invoke-LokiVerifiedDownload (integrity gate; network Mocked)' {
-
-    It 'refuses a non-https url without downloading' {
-        Mock Get-LokiHttpFile { throw 'must not download for non-https' }
-        $d = New-ModelsCaseDir
-        $r = Invoke-LokiVerifiedDownload -Url 'http://example.com/m.gguf' -ExpectedSha256 $script:GoodHash -DestPath (Join-Path $d 'm.gguf')
-        $r.Ok | Should -BeFalse
-        $r.Reason | Should -Be 'not-https'
-    }
-
-    It 'downloads + verifies a matching file -> Ok, file present, no .part left' {
-        Mock Get-LokiHttpFile { [System.IO.File]::WriteAllText($OutFile, $script:GoodBytes, [System.Text.Encoding]::ASCII) }
-        $d = New-ModelsCaseDir
-        $dest = Join-Path $d 'm.gguf'
-        $r = Invoke-LokiVerifiedDownload -Url 'https://example.com/m.gguf' -ExpectedSha256 $script:GoodHash -DestPath $dest
-        $r.Ok | Should -BeTrue
-        Test-Path -LiteralPath $dest | Should -BeTrue
-        Test-Path -LiteralPath ($dest + '.part') | Should -BeFalse
-    }
-
-    It 'BREAK-THE-GUARD: a tampered download (hash mismatch) is DELETED and never kept' {
-        Mock Get-LokiHttpFile { [System.IO.File]::WriteAllText($OutFile, 'TAMPERED-BYTES', [System.Text.Encoding]::ASCII) }
-        $d = New-ModelsCaseDir
-        $dest = Join-Path $d 'm.gguf'
-        $r = Invoke-LokiVerifiedDownload -Url 'https://example.com/m.gguf' -ExpectedSha256 $script:GoodHash -DestPath $dest
-        $r.Ok | Should -BeFalse
-        $r.Reason | Should -Be 'hash-mismatch'
-        Test-Path -LiteralPath $dest | Should -BeFalse            # nothing unverified at the destination
-        Test-Path -LiteralPath ($dest + '.part') | Should -BeFalse # and no partial left behind
-    }
-
-    It 'skips an already-present, already-verified file (no re-download)' {
-        Mock Get-LokiHttpFile { throw 'should not be called when already verified' }
-        $d = New-ModelsCaseDir
-        $dest = Join-Path $d 'm.gguf'
-        [System.IO.File]::WriteAllText($dest, $script:GoodBytes, [System.Text.Encoding]::ASCII)
-        $r = Invoke-LokiVerifiedDownload -Url 'https://example.com/m.gguf' -ExpectedSha256 $script:GoodHash -DestPath $dest
-        $r.Ok | Should -BeTrue
-        $r.Skipped | Should -BeTrue
-        Should -Invoke Get-LokiHttpFile -Times 0 -Exactly
-    }
-
-    It 'a download error AFTER a partial write -> Ok=$false, the partial is cleaned up' {
-        # The mock writes a .part (like a real interrupted transfer) THEN throws, so the catch-block cleanup is
-        # actually exercised (not a no-op that would pass even if cleanup were removed).
-        Mock Get-LokiHttpFile { [System.IO.File]::WriteAllText($OutFile, 'partial-bytes', [System.Text.Encoding]::ASCII); throw 'network down' }
-        $d = New-ModelsCaseDir
-        $dest = Join-Path $d 'm.gguf'
-        $r = Invoke-LokiVerifiedDownload -Url 'https://example.com/m.gguf' -ExpectedSha256 $script:GoodHash -DestPath $dest
-        $r.Ok | Should -BeFalse
-        $r.Reason | Should -Be 'download-failed'
-        Test-Path -LiteralPath ($dest + '.part') | Should -BeFalse
-        Test-Path -LiteralPath $dest | Should -BeFalse
     }
 }
