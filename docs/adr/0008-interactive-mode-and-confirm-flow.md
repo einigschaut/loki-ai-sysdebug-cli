@@ -64,14 +64,21 @@ security core `src/lib/claude.ps1`; `src/commands/chat.ps1` is thin wiring.
   (parent-env `interactive` cannot flip a headless build), and the interactive invocation shape (no `-p`,
   `LOKI_HOOK_MODE=interactive`, secret out of argv). `tests/chat.Tests.ps1` tests the command's guards and its
   result -> exit-code mapping with the spawn mocked.
-- **Pending live end-to-end gate (NOT satisfied by unit tests).** The enforcement, mode logic, and argv/env
-  construction are unit-tested and reviewed, but two things can only be confirmed on a real terminal:
-  1. That an interactive TUI spawned via `ProcessStartInfo` (inherited console, no redirection) renders and
-     accepts input correctly when launched from `loki chat`.
-  2. That a hook `ask` in interactive mode actually surfaces Claude Code's confirmation prompt, and that
-     answering it gates the mutation as intended (accept -> runs, decline -> blocked).
-  Until confirmed, `loki chat` is **enforcement-complete + adversarially unit-tested, but the interactive spawn
-  and the live confirm prompt are unverified**. This mirrors the ADR-0007 live gate.
+- **Live gate — the decision path is now verified (2026-07-15); only the terminal-bound parts remain.** The
+  enforcement, mode logic, and argv/env construction are unit-tested and reviewed. The **"hook fires and gates the
+  mutation"** half is now **live-verified against the real `claude` CLI**: a
+  mode-probe hook run against `claude` v2.1.147 with `LOKI_HOOK_MODE=interactive` confirmed `read -> allow` (a
+  `Get-Date` actually ran) and
+  `mutate -> ask` (a `Set-Content` was gated — surfaced as a permission denial in `-p`, the file was **not** created,
+  reason `loki-ask-mutation-requires-confirm`). So the `read`/`allow` + `mutate`/`ask` decision path is confirmed end
+  to end. What still can **only** be confirmed by a human on a real interactive terminal (not by unit tests):
+  1. That an interactive TUI spawned via `ProcessStartInfo` (inherited console, no redirection) renders and accepts
+     input correctly when launched from `loki chat`.
+  2. The **human side** of the confirm prompt: that Claude Code's interactive `ask` prompt renders and that answering
+     it gates the mutation as intended (accept -> runs, decline -> blocked). The gate DECISION is verified above; the
+     interactive rendering + the human "yes"/"no" is what is open.
+  So `loki chat` is **enforcement-complete, adversarially unit-tested, and the gate decision is live-verified** — only
+  the interactive spawn rendering and the human confirm step are unverified. This mirrors the ADR-0007 live gate.
 - **Hardening from the mandatory 3-vote adversarial review (all fixed + regression-tested).** Opening the
   mutate path exposed gaps the read-only headless path had hidden:
   1. The ADR-0007 secret-target / UNC / control-char denies only screened `read`, so a `mutate` referencing the
