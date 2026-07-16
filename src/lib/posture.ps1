@@ -9,13 +9,16 @@
 #                             namespace is unavailable (most consumer machines).
 #       AppLocker           : 'rules' (effective rule collections present) | 'none' | 'unknown' (AppLocker
 #                             cmdlet/service unavailable, e.g. non-Enterprise SKU).
+#   Test-LokiElevated ()                                 -> $true | $false | $null
+#     Read-only, NEVER throws. $null means "cannot tell", NOT "no" -- measured: under ConstrainedLanguage the check
+#     itself throws (IsInRole is not a core type), so a CL host can only ever answer "unknown".
 #   Get-LokiVolumePosture -Path <string>                 -> [pscustomobject]{ Drive; Removable; BitLockerOn }
 #     Read-only, no admin required, NEVER throws (also for a non-existent path).
 #       Drive       : drive letter (e.g. 'C:') derived purely from the path string (no filesystem access
 #                     needed to resolve it -> also works for a not-yet-existing path). $null if unresolvable.
 #       Removable   : Win32_LogicalDisk.DriveType -eq 2 -> $true, else $false; $null if the drive can't be queried.
 #       BitLockerOn : Get-BitLockerVolume.ProtectionStatus -eq 'On'/'Off'; $null if the BitLocker cmdlet/volume
-#                     is unavailable (module not installed, non-NTFS volume, etc.).
+#                     is unavailable (module not installed, non-NTFS volume, not elevated, etc.).
 #   ConvertTo-LokiDoctorChecks -HostPosture <o> -VolumePosture <o> -AuthStatus <o> -> [pscustomobject[]]
 #     PURE interpreter (no i18n calls, no environment calls -> fully unit-testable). Maps the three input
 #     objects to an ORDERED list of checks: @{ Id; Severity ('ok'|'warn'|'fail'|'unknown'); LabelKey;
@@ -28,6 +31,26 @@
 # wrapped in its own try/catch with a sentinel ($null / 'unknown') on failure, so a locked-down host
 # (missing module, no namespace, non-admin) degrades to "unknown", never to a crash.
 Set-StrictMode -Version Latest
+
+function Test-LokiElevated {
+    <#
+        Are we running with administrative rights? Read-only, never throws.
+
+        $null means "cannot tell", NOT "no", and the distinction is measured rather than defensive: under
+        ConstrainedLanguage this check THROWS ("Method invocation is supported only on core types in this language
+        mode" -- IsInRole is not a core type). `loki doctor` is the command that DIAGNOSES ConstrainedLanguage, so
+        it has to keep working on exactly the hosts where this cannot answer.
+    #>
+    try {
+        $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+        $principal = New-Object System.Security.Principal.WindowsPrincipal($identity)
+        if ($principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)) { return $true }
+        return $false
+    }
+    catch {
+        return $null
+    }
+}
 
 function Get-LokiHostPosture {
     $languageMode = $ExecutionContext.SessionState.LanguageMode.ToString()
@@ -111,8 +134,19 @@ function Get-LokiVolumePosture {
         }
     }
 
+    # Get-BitLockerVolume needs elevation, and asking without it is not merely useless -- it is SLOW. Measured on a
+    # non-admin host: 5021 ms, then "Access denied". Five seconds to produce the $null we could have known for free,
+    # and the single reason `loki doctor` took ~7 s. Asking only when we may ask costs ~10 ms for the same answer.
+    #
+    # Skipping on $null (= "cannot tell") is deliberate, not lazy: $null means ConstrainedLanguage, where the probe
+    # could not complete anyway -- reading .ProtectionStatus off the result object is itself blocked there. Same
+    # sentinel, no wait.
+    #
+    # NOT a CIM rewrite: root\cimv2\security\microsoftvolumeencryption\Win32_EncryptableVolume is the same provider
+    # behind the same door -- measured at 5028 ms and the identical "Access denied", so it is not the faster query it
+    # looks like. See the PR for the elevated path, which is deliberately left as it was.
     $bitLockerOn = $null
-    if ($null -ne $drive) {
+    if (($null -ne $drive) -and ((Test-LokiElevated) -eq $true)) {
         try {
             $vol = Get-BitLockerVolume -MountPoint $drive -ErrorAction Stop
             if ($null -eq $vol) {
