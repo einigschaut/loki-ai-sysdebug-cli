@@ -114,4 +114,18 @@
     'chat.engineMissing'        = 'Claude Code (the `claude` CLI) was not found. Install it to use the online engine.'
     'chat.ended'                = 'Session ended.'
     'chat.failed'               = 'The online engine could not start the interactive session.'
+
+    'setup.summary'             = 'Prepare the stick: download offline model(s) (run where you set up the stick)'
+    'setup.offline'             = 'loki setup needs internet access - run it on the machine where you prepare the stick.'
+    'setup.heading'             = 'loki setup - offline models'
+    'setup.tiersHint'           = 'Available tiers (* = recommended default):'
+    'setup.choosePrompt'        = 'Which tier(s)? ids comma-separated, or "default" / "all"'
+    'setup.badSelection'        = "Unknown tier id: '{0}'."
+    'setup.noneSelected'        = 'Nothing selected - no models downloaded.'
+    'setup.downloading'         = 'Downloading {0} (~{1} GB)...'
+    'setup.verified'            = '{0}: downloaded and verified.'
+    'setup.skipped'             = '{0}: already present and verified - skipped.'
+    'setup.verifyFailed'        = '{0}: FAILED ({1}) - not kept.'
+    'setup.done'                = 'Done - {0} model(s) ready on the stick.'
+    'setup.engineNote'          = 'Models are staged on the stick. The offline engine that runs them comes in a later version.'
 }
