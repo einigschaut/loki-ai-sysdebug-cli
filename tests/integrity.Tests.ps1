@@ -435,6 +435,17 @@ Describe 'Test-LokiMicrosoftSignature (the ONLY check available for the staged M
         $r.Reason | Should -Be 'not-microsoft-signed'
     }
 
+    It 'the Microsoft-root check does not depend on the DN''s casing (tr-TR dotless i)' {
+        # 'Microsoft' and 'Corporation' both contain an i, and -match folds case by CURRENT CULTURE: under tr-TR a DN
+        # spelled 'O=MICROSOFT CORPORATION' folds its I to the dotless i and stops matching -> a genuine Microsoft
+        # binary reported as not-microsoft-signed. We do not control third-party DN casing, so the check must not
+        # depend on it. (Asserted here at the pattern level -- forging a differently-cased real root is not possible.)
+        $pat = 'O=Microsoft Corporation'
+        foreach ($dn in @('CN=X, O=Microsoft Corporation, C=US', 'CN=X, O=MICROSOFT CORPORATION, C=US')) {
+            [regex]::IsMatch($dn, $pat, 'IgnoreCase,CultureInvariant') | Should -BeTrue
+        }
+    }
+
     It 'a file that is not a PE at all is refused (fail-closed, whatever Windows makes of it)' {
         # Windows reports UnknownError rather than NotSigned for a non-PE; the token differs, the refusal must not.
         $d = New-IntegrityCaseDir

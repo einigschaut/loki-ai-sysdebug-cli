@@ -275,7 +275,12 @@ function Test-LokiMicrosoftSignature {
         $null = $chain.Build($sig.SignerCertificate)
         if ($chain.ChainElements.Count -eq 0) { return @{ Ok = $false; Reason = 'not-microsoft-signed' } }
         $root = $chain.ChainElements[$chain.ChainElements.Count - 1].Certificate
-        if ([string]$root.Subject -notmatch 'O=Microsoft Corporation') {
+        # CultureInvariant: -notmatch folds case by the current culture, and this pattern contains an 'i'. The
+        # observed Microsoft roots are mixed-case, so identical casing matches under any culture -- but a DN spelled
+        # 'O=MICROSOFT CORPORATION' folds its 'I' to the dotless 'i' under tr-TR and stops matching, which would
+        # report a genuine Microsoft binary as not-microsoft-signed. Verified: that exact string fails -match under
+        # tr-TR and passes with CultureInvariant. We do not control third-party DN casing, so do not depend on it.
+        if (-not [regex]::IsMatch([string]$root.Subject, 'O=Microsoft Corporation', 'IgnoreCase,CultureInvariant')) {
             return @{ Ok = $false; Reason = 'not-microsoft-signed'; Signer = [string]$root.Subject }
         }
     }

@@ -71,8 +71,13 @@ function Get-LokiEngineManifest {
     $rtFiles = @($r.Files)
     if ($rtFiles.Count -eq 0) { throw 'Engine Runtime: Files must not be empty.' }
     foreach ($f in $rtFiles) {
-        # -cnotmatch for the tr-TR reason above: 'VCRUNTIME140.dll' contains an uppercase I.
-        if ([string]$f -cnotmatch '^[A-Za-z0-9._-]+\.dll$') { throw "Engine Runtime: '$f' is not a plain dll file name." }
+        # Same tr-TR problem as above ('VCRUNTIME140.dll' has an uppercase I) -- but NOT -cnotmatch here, because
+        # unlike the charset-only pattern above this one ends in a case-SPECIFIC literal: a case-sensitive match also
+        # starts rejecting 'MSVCP140.DLL', which the check accepted before and which is a perfectly valid spelling.
+        # Fixing the locale bug must not quietly tighten an unrelated rule, so keep IgnoreCase and drop the culture.
+        if (-not [regex]::IsMatch([string]$f, '^[A-Za-z0-9._-]+\.dll$', 'IgnoreCase,CultureInvariant')) {
+            throw "Engine Runtime: '$f' is not a plain dll file name."
+        }
     }
     if ($null -eq (ConvertTo-LokiRuntimeVersion -Text ([string]$r.MinVersion))) { throw 'Engine Runtime: MinVersion is not a version.' }
 

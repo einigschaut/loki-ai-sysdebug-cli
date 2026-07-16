@@ -106,6 +106,19 @@ Describe 'Get-LokiEngineManifest (real manifest + fail-closed validation)' {
         ([string]$d.Engine.Url) | Should -BeLike ('*/' + [string]$d.Engine.FileName)
     }
 
+    It 'accepts an uppercase .DLL extension (a locale fix must not tighten an unrelated rule)' {
+        # Regression: fixing the tr-TR dotless-i bug with -cnotmatch also made this check case-SENSITIVE, so
+        # 'MSVCP140.DLL' -- a perfectly valid spelling that was accepted before -- started throwing "is not a plain
+        # dll file name". The charset pattern is case-insensitive on purpose; only the CULTURE had to go.
+        $p = New-TempEngineManifest -Runtime @{ Files = @('MSVCP140.DLL', 'Vcruntime140.Dll') }
+        { Get-LokiEngineManifest -Path $p } | Should -Not -Throw
+    }
+
+    It 'still rejects a runtime entry that is not a plain dll name' {
+        $p = New-TempEngineManifest -Runtime @{ Files = @('..\evil.dll') }
+        { Get-LokiEngineManifest -Path $p } | Should -Throw
+    }
+
     It 'the shipped runtime spec names only plain dlls and a parsable MinVersion' {
         $d = Get-LokiEngineManifest -Path $script:ManifestPath
         @($d.Runtime.Files).Count | Should -BeGreaterThan 0
