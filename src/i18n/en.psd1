@@ -115,9 +115,28 @@
     'chat.ended'                = 'Session ended.'
     'chat.failed'               = 'The online engine could not start the interactive session.'
 
-    'setup.summary'             = 'Prepare the stick: download offline model(s) (run where you set up the stick)'
+    'setup.summary'             = 'Prepare the stick: download the offline engine + model(s) (run where you set up the stick)'
     'setup.offline'             = 'loki setup needs internet access - run it on the machine where you prepare the stick.'
     'setup.heading'             = 'loki setup - offline models'
+
+    'setup.engineHeading'       = 'loki setup - offline engine'
+    'setup.engineOffline'       = 'Cannot reach github.com - the offline engine is downloaded from there. Run setup on a connected machine.'
+    'setup.engineDownloading'   = 'Downloading engine {0} {1} (~{2} MB)...'
+    'setup.engineVerified'      = 'Engine {0} {1}: downloaded and verified.'
+    'setup.engineSkipped'       = 'Engine {0} {1}: already present and verified - skipped.'
+    'setup.engineFailed'        = 'Engine download FAILED ({0}) - not kept.'
+    'setup.engineExpanded'      = 'Engine unpacked ({0} files).'
+    'setup.engineExpandFailed'  = 'Engine could not be unpacked ({0}) - the engine is not usable.'
+    'setup.enginePruned'        = 'Removed {0} file(s) next to the engine that the pinned build does not contain.'
+    'setup.runtimeNotice'       = 'Staging the Microsoft C/C++ runtime from THIS machine onto the stick. These are Microsoft files under Microsoft license terms - Loki does not ship them.'
+    'setup.runtimeStaged'       = 'Runtime staged: {0} file(s), version {1} - the stick runs the engine without an install on the target.'
+    'setup.runtimePresent'      = 'Runtime already staged on the stick (version {0}).'
+    'setup.runtimeStale'        = 'The runtime staged on the stick is older than {0} (or unreadable) - the engine may fail to start on the target. Run "loki setup --stage-runtime" on an up-to-date machine to replace it.'
+    'setup.runtimeHint'         = 'The engine needs the Microsoft C/C++ runtime on the target machine. Most Windows machines have it; run "loki setup --stage-runtime" to make the stick self-sufficient.'
+    'setup.runtimeSourceMissing' = 'This machine does not have the runtime to stage ({0}). Install the Microsoft Visual C++ Redistributable here, then run setup again.'
+    'setup.runtimeTooOld'       = "This machine's runtime is too old to stage (found {0}, need {1} or newer). Update the Microsoft Visual C++ Redistributable here, then run setup again."
+    'setup.runtimeUnreadable'   = 'Could not read the runtime version of {0} - nothing staged.'
+    'setup.runtimeStageFailed'  = 'Could not stage the runtime ({0}) - nothing staged.'
     'setup.tiersHint'           = 'Available tiers (* = recommended default):'
     'setup.choosePrompt'        = 'Which tier(s)? ids comma-separated, or "default" / "all"'
     'setup.badSelection'        = "Unknown tier id: '{0}'."
@@ -127,5 +146,5 @@
     'setup.skipped'             = '{0}: already present and verified - skipped.'
     'setup.verifyFailed'        = '{0}: FAILED ({1}) - not kept.'
     'setup.done'                = 'Done - {0} model(s) ready on the stick.'
-    'setup.engineNote'          = 'Models are staged on the stick. The offline engine that runs them comes in a later version.'
+    'setup.engineNote'          = 'Engine and models are on the stick. Running them (the offline session) comes in a later version.'
 }
