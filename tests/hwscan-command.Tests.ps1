@@ -22,16 +22,6 @@ BeforeAll {
         return @{ AppRoot = $script:SrcRoot; Version = 'test'; Args = $CmdArgs; Flags = @{}; Registry = @() }
     }
 
-    # Numbers render in the AMBIENT culture, while Get-LokiText pins only the TEXT locale (measured: a de-DE box
-    # renders 38.4 as "38,4" inside an otherwise English message). A hard-coded '.' in an expectation is therefore
-    # green on a CI runner (en-US) and red on a German dev box -- the exact non-determinism CLAUDE.md section 10
-    # forbids. Formatting the expectation the way the product does keeps these tests about the RULE, not the
-    # separator. (The mixed-locale rendering itself is a separate finding; it belongs to lib/i18n.ps1, not here.)
-    function global:Format-HwNum {
-        param([double]$N)
-        return ('{0}' -f $N)
-    }
-
     function global:Invoke-HwscanCommand {
         param([Parameter(Mandatory = $true)][hashtable]$Context)
         $swErr = New-Object System.IO.StringWriter
@@ -50,7 +40,6 @@ BeforeAll {
 AfterAll {
     Remove-Item Function:\New-TestHwContext -ErrorAction SilentlyContinue
     Remove-Item Function:\Invoke-HwscanCommand -ErrorAction SilentlyContinue
-    Remove-Item Function:\Format-HwNum -ErrorAction SilentlyContinue
 }
 
 Describe 'Command hwscan' {
@@ -105,7 +94,7 @@ Describe 'Command hwscan' {
             # Asserts the RENDERED line, not two loose numbers: a bare '*38*' would be satisfied by any other figure
             # in the report and prove nothing (adversarial review, proven by mutation).
             $r = Invoke-HwscanCommand -Context (New-TestHwContext)
-            $r.AllText | Should -BeLike "*up to $(Format-HwNum 38.4) GB on this machine; $(Format-HwNum 58.5) GB is free enough right now*"
+            $r.AllText | Should -BeLike '*up to 38.4 GB on this machine; 58.5 GB is free enough right now*'
         }
 
         It 'each tier carries its own verdict, not just the winner' {
@@ -133,7 +122,7 @@ Describe 'Command hwscan' {
             $r = Invoke-HwscanCommand -Context (New-TestHwContext)
             $r.Code | Should -Be (Get-LokiExitCode 'Ok')          # nano still fits, so this is an answer, not a failure
             $r.AllText | Should -BeLike '*Would run: nano*'
-            $r.AllText | Should -BeLike "*mid*needs $(Format-HwNum 3.5) GB more free*"
+            $r.AllText | Should -BeLike '*mid*needs 3.5 GB more free*'
             $r.AllText | Should -BeLike '*Biggest memory holders right now*'
         }
 
@@ -158,7 +147,7 @@ Describe 'Command hwscan' {
             # busy memory; the hint must name the one that is 1 GB away, not the one that is 3.5 GB away.
             Mock Get-LokiHardwareProfile { @{ TotalRamGB = 16.0; AvailableRamGB = 5.0; CpuName = 'Busy'; CpuCores = 8; Is64BitOs = $true } }
             $r = Invoke-HwscanCommand -Context (New-TestHwContext)
-            $r.AllText | Should -BeLike "*Free $(Format-HwNum 1) GB to unlock `"small`"*"
+            $r.AllText | Should -BeLike '*Free 1 GB to unlock "small"*'
             $r.AllText | Should -Not -BeLike '*to unlock "mid"*'
         }
 
@@ -257,7 +246,7 @@ Describe 'Command hwscan' {
             Mock Get-LokiHardwareProfile { @{ TotalRamGB = 16.0; AvailableRamGB = 5.0; CpuName = 'Busy'; CpuCores = 8; Is64BitOs = $true } }
             $r = Invoke-HwscanCommand -Context (New-TestHwContext -CmdArgs @('--model', 'mid'))
             $r.Code | Should -Be (Get-LokiExitCode 'OfflineEngineMissing')
-            $r.AllText | Should -BeLike "*$(Format-HwNum 3.5) GB more free memory*"
+            $r.AllText | Should -BeLike '*3.5 GB more free memory*'
             $r.AllText | Should -Not -BeLike '*Freeing memory will not help*'
         }
 
