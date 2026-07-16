@@ -54,7 +54,12 @@ function Get-LokiEngineManifest {
         # Same rule as the model manifest: the value is trusted-but-validated (defense in depth) -- safe charset,
         # no separators, not an all-dots name and not a reserved device name.
         $fn = [string]$e.$nameKey
-        if ($fn -notmatch '^[A-Za-z0-9._-]+$') { throw "Engine: $nameKey has unsafe characters." }
+        # -cnotmatch, not -notmatch: PowerShell's case-INSENSITIVE match folds using the CURRENT CULTURE, and in
+        # tr-TR/az 'I' folds to the dotless 'i' (U+0131), which is not in [A-Za-z]. A Turkish-locale machine would
+        # reject our own pinned 'VCRUNTIME140.dll' / 'Qwen3-4B-Instruct-...gguf' as unsafe -- reported to the
+        # operator as a corrupt manifest on a pristine stick. The classes here are already explicitly cased, so a
+        # case-sensitive match is both correct and culture-proof.
+        if ($fn -cnotmatch '^[A-Za-z0-9._-]+$') { throw "Engine: $nameKey has unsafe characters." }
         $fnBase = (($fn.ToUpperInvariant()) -split '\.')[0]
         if (($fn -match '^\.+$') -or ($fnBase -match '^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$')) { throw "Engine: $nameKey is a reserved or invalid name." }
     }
@@ -66,7 +71,8 @@ function Get-LokiEngineManifest {
     $rtFiles = @($r.Files)
     if ($rtFiles.Count -eq 0) { throw 'Engine Runtime: Files must not be empty.' }
     foreach ($f in $rtFiles) {
-        if ([string]$f -notmatch '^[A-Za-z0-9._-]+\.dll$') { throw "Engine Runtime: '$f' is not a plain dll file name." }
+        # -cnotmatch for the tr-TR reason above: 'VCRUNTIME140.dll' contains an uppercase I.
+        if ([string]$f -cnotmatch '^[A-Za-z0-9._-]+\.dll$') { throw "Engine Runtime: '$f' is not a plain dll file name." }
     }
     if ($null -eq (ConvertTo-LokiRuntimeVersion -Text ([string]$r.MinVersion))) { throw 'Engine Runtime: MinVersion is not a version.' }
 

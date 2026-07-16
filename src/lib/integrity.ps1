@@ -116,8 +116,23 @@ function Test-LokiEngineIntegrity {
         # The reconcile: anything the pinned archive does not account for. This is the check the hashes structurally
         # cannot do, and the one that catches a planted DLL.
         $unexpected = New-Object System.Collections.Generic.List[string]
-        foreach ($f in @(Get-ChildItem -LiteralPath $dirFull -Recurse -Force -File)) {
+        foreach ($f in @(Get-ChildItem -LiteralPath $dirFull -Recurse -Force)) {
             $rel = $f.FullName.Substring($dirFull.Length).TrimStart('\')
+            if ($f.PSIsContainer) {
+                # A DIRECTORY reparse point (junction or directory symlink, neither needing admin to create) is where
+                # this enumeration STOPS: Get-ChildItem -Recurse does not descend into one under PS 5.1, so anything
+                # behind it is invisible and would be silently reported as `verified`. The pinned archive never
+                # produces a reparse point, so its mere presence is unambiguous -- report the link itself rather than
+                # pretend to analyse where it points. Plain directories are skipped: a directory holds no loadable
+                # code by itself and its files are enumerated on their own.
+                if (($f.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq [System.IO.FileAttributes]::ReparsePoint) {
+                    $unexpected.Add($rel)
+                }
+                continue
+            }
+            # NOTE: a FILE reparse point is deliberately NOT flagged here. Hashing follows the link, which is exactly
+            # what loading does, so a swapped target is caught as file-mismatch -- and flagging every file reparse
+            # point would false-alarm on a tree under OneDrive Files On-Demand, whose placeholders are reparse points.
             if (-not $expected.Contains($rel)) { $unexpected.Add($rel) }
         }
 
@@ -185,8 +200,14 @@ function Get-LokiVcRuntimeHostStatus {
         if ($null -ne $base) { $base.Dispose() }
     }
 
-    # The installer writes Installed=1. Absent means we cannot claim it is there.
-    if (($null -eq $installed) -or ([int]$installed -ne 1)) { return @{ Ok = $false; Reason = 'not-installed' } }
+    # The installer writes Installed=1 as a REG_DWORD -- but this key is on a machine we do not control, and a
+    # REG_BINARY / REG_MULTI_SZ / REG_SZ 'yes' there would make a bare [int] cast THROW, straight out through this
+    # function's own "never throws" contract and up to the dispatcher. TryParse on the string form instead: the same
+    # discipline ConvertTo-LokiRuntimeVersion already uses, for exactly this reason.
+    $installedNum = 0
+    if (($null -eq $installed) -or (-not [int]::TryParse([string]$installed, [ref]$installedNum)) -or ($installedNum -ne 1)) {
+        return @{ Ok = $false; Reason = 'not-installed' }
+    }
 
     $v = ConvertTo-LokiRuntimeVersion -Text $version
     if ($null -eq $v) { return @{ Ok = $false; Reason = 'version-unreadable' } }
@@ -194,6 +215,74 @@ function Get-LokiVcRuntimeHostStatus {
     if ($null -eq $min) { return @{ Ok = $false; Reason = 'min-version-invalid' } }
     if ($v -lt $min) { return @{ Ok = $false; Reason = 'too-old'; Version = $v.ToString() } }
     return @{ Ok = $true; Reason = 'ok'; Version = $v.ToString() }
+}
+
+function Test-LokiMicrosoftSignature {
+    <#
+        Is this file genuinely a Microsoft-signed binary, byte-for-byte as Microsoft signed it?
+
+        This is the ONLY integrity check available for the staged MSVC runtime, and it is needed because those three
+        DLLs are the one blind spot in the hash chain: they are not in the pinned archive (nothing to compare them
+        against) and -PreserveNames spares them from the reconcile, yet Windows loads them into llama-server from its
+        own directory, FIRST in the DLL search order. An adversarial review demonstrated the consequence: 64 patched
+        bytes in VCRUNTIME140.dll, engine reported `verified`, exit 0. The version resource -- the only thing that had
+        been checked -- is attacker-controlled metadata sitting inside the very file being vetted, and it still read
+        14.51 after the patch.
+
+        A signature works here where a hash cannot, and it does NOT re-open ADR-0014's no-cache argument: the trust
+        anchor is the TARGET's certificate store, not the stick, so "whoever can plant the DLL can fix the record"
+        does not apply.
+
+        Verified on the real files (2026-07-16), not recalled:
+          * the three DLLs are EMBEDDED Authenticode signed (SignatureType=Authenticode), not catalog-signed, so the
+            signature survives the copy onto the stick -- Status stays Valid on the copy. (kernel32.dll, by contrast,
+            is Catalog-signed: it validates via the machine's catalog by hash, which a copy would NOT carry to a
+            different target. That is why a catalog-signed source would be a trap, and why this is checked.)
+          * a patched byte -> Status=HashMismatch, while VersionInfo.FileVersion still read 14.51.
+          * the chain terminates at 'CN=Microsoft Root Certificate Authority 2011, O=Microsoft Corporation'.
+
+        Status='Valid' alone is NOT enough and must not be mistaken for one: it means "signed by someone the machine
+        trusts", which any attacker holding a public code-signing certificate also achieves. So the chain ROOT is
+        pinned to Microsoft's own PKI.
+    #>
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $ErrorActionPreference = 'Stop'
+
+    $sig = $null
+    # -LiteralPath, NOT -FilePath: -FilePath is wildcard-expanding, and '[' / ']' are legal Windows filename
+    # characters. A stick in a folder called 'loki [backup]' made this accuse three genuine Microsoft DLLs of being
+    # forged -- the check meant to catch a patched runtime firing on an honest one because of a folder name.
+    try { $sig = Get-AuthenticodeSignature -LiteralPath $Path }
+    catch { return @{ Ok = $false; Reason = 'signature-unreadable' } }
+    if ($null -eq $sig) { return @{ Ok = $false; Reason = 'signature-unreadable' } }
+
+    $status = [string]$sig.Status
+    if ($status -ne 'Valid') {
+        $reason = 'signature-invalid'
+        if ($status -eq 'NotSigned') { $reason = 'not-signed' }
+        elseif ($status -eq 'HashMismatch') { $reason = 'hash-mismatch' }
+        return @{ Ok = $false; Reason = $reason; Status = $status }
+    }
+    if ($null -eq $sig.SignerCertificate) { return @{ Ok = $false; Reason = 'not-signed' } }
+
+    # Walk to the root ourselves. Revocation is deliberately NOT re-checked here: Get-AuthenticodeSignature's Valid
+    # already covers trust, and Loki runs on machines with no network -- a CRL/OCSP fetch would stall the one tool
+    # someone is using because the machine is already broken.
+    $chain = $null
+    try {
+        $chain = New-Object System.Security.Cryptography.X509Certificates.X509Chain
+        $chain.ChainPolicy.RevocationMode = [System.Security.Cryptography.X509Certificates.X509RevocationMode]::NoCheck
+        $null = $chain.Build($sig.SignerCertificate)
+        if ($chain.ChainElements.Count -eq 0) { return @{ Ok = $false; Reason = 'not-microsoft-signed' } }
+        $root = $chain.ChainElements[$chain.ChainElements.Count - 1].Certificate
+        if ([string]$root.Subject -notmatch 'O=Microsoft Corporation') {
+            return @{ Ok = $false; Reason = 'not-microsoft-signed'; Signer = [string]$root.Subject }
+        }
+    }
+    catch { return @{ Ok = $false; Reason = 'signature-unreadable' } }
+    finally { if ($null -ne $chain) { $chain.Dispose() } }
+
+    return @{ Ok = $true; Reason = 'ok'; Signer = [string]$sig.SignerCertificate.Subject }
 }
 
 function Resolve-LokiVcRuntimeAvailability {
@@ -220,11 +309,23 @@ function Resolve-LokiVcRuntimeAvailability {
 
     if ($appLocal.Present) {
         $floor = Get-LokiVcRuntimeFloorCheck -Found $appLocal.Found -MinVersion $MinVersion
-        if ($floor.Ok) { return @{ Ok = $true; Reason = 'ok'; Source = 'app-local'; Version = $floor.Version } }
-        # Deliberately NOT falling back to the host: the app-local files shadow it.
-        $r = @{ Ok = $false; Reason = $floor.Reason; Source = 'app-local' }
-        if ($floor.ContainsKey('Version')) { $r['Version'] = $floor.Version }
-        return $r
+        if (-not $floor.Ok) {
+            # Deliberately NOT falling back to the host: the app-local files shadow it.
+            $r = @{ Ok = $false; Reason = $floor.Reason; Source = 'app-local' }
+            if ($floor.ContainsKey('Version')) { $r['Version'] = $floor.Version }
+            return $r
+        }
+        # The floor is a STALENESS check reading the file's own version resource -- attacker-controlled metadata.
+        # It says nothing about the bytes. These three DLLs are the only code in engine-offline\ the pinned archive
+        # cannot vouch for, and Windows loads them first; their signature is the one thing that can (see
+        # Test-LokiMicrosoftSignature). The weakest file decides, exactly as with the floor.
+        foreach ($f in @($appLocal.Found)) {
+            $sig = Test-LokiMicrosoftSignature -Path ([string]$f.Path)
+            if (-not $sig.Ok) {
+                return @{ Ok = $false; Reason = $sig.Reason; Source = 'app-local'; File = [string]$f.File }
+            }
+        }
+        return @{ Ok = $true; Reason = 'ok'; Source = 'app-local'; Version = $floor.Version }
     }
 
     if ($appLocal.Found.Count -gt 0) {
@@ -295,9 +396,15 @@ function Get-LokiIntegrityExitCode {
     <#
         PURE. The split this function encodes is the whole reason it is not just Get-LokiDoctorExitCode:
 
-          1 (GeneralError)         the stick is WRONG      -- bytes do not match the pin. Do not trust it.
-          5 (OfflineEngineMissing) the stick is INCOMPLETE -- nothing suspicious, it just is not set up yet.
+          1 (GeneralError)         the chain says WRONG, or could not be established AT ALL. Do not trust the stick.
+          5 (OfflineEngineMissing) the stick is INCOMPLETE, or something could not be DETERMINED -- nothing suspicious.
           0                        usable.
+
+        The two halves of each line matter. 1 is not only "bytes differ": archive-missing, file-missing, unsafe-entry,
+        nothing-verified and verify-failed all land here, because "we could not establish the chain" must never be
+        softer than "we established it and it is bad". 5 is not only "absent": a runtime that is too old or half
+        staged is staged-but-wrong, and an unreadable signature is undetermined -- neither suggests tampering, and
+        neither can reach 0.
 
         Collapsing those two into one code would make tampering indistinguishable from a fresh stick, and tampering
         must never look routine. A caller scripting this needs to tell "expected, run loki setup" from "this stick
@@ -322,9 +429,20 @@ function Get-LokiIntegrityExitCode {
         if ($m.Reason -eq 'mismatch') { $wrong = $true }
     }
 
-    # No runtime (or one too old / half-staged / undeterminable) means the engine cannot start here -- but nothing
-    # about it suggests the stick was altered, and `loki setup --stage-runtime` is the fix. That is 5, not 1.
-    if (-not $Report.Runtime.Ok) { $incomplete = $true }
+    # The runtime splits across BOTH buckets, so it cannot be a single not-Ok test.
+    # A staged DLL whose signature does not hold is loaded code that is not what it claims to be -- the same "do not
+    # trust this stick" as a mismatched engine file, and it must not be filed under "just not set up yet".
+    # Everything else (absent / too old / half-staged / undeterminable) means the engine cannot start here, but
+    # nothing about it suggests the stick was altered: that is 5.
+    # 'signature-unreadable' is deliberately NOT here. It means we could not DETERMINE the answer, and reporting
+    # "do not trust this stick" for that is the mirror image of the lie section 4 of ADR-0014 forbids: it is not
+    # "we verified nothing, so nothing is wrong", it is "we verified nothing, so everything is wrong". It still
+    # fails closed -- it can never reach 0 -- it just lands in INCOMPLETE(5) with an honest "could not determine".
+    $runtimeWrong = @('hash-mismatch', 'not-signed', 'not-microsoft-signed', 'signature-invalid')
+    if (-not $Report.Runtime.Ok) {
+        if ($runtimeWrong -contains $Report.Runtime.Reason) { $wrong = $true }
+        else { $incomplete = $true }
+    }
 
     if ($wrong) { return (Get-LokiExitCode 'GeneralError') }
     if ($incomplete) { return (Get-LokiExitCode 'OfflineEngineMissing') }
@@ -399,6 +517,14 @@ function ConvertTo-LokiIntegrityChecks {
         $checks.Add(@{ Id = 'runtime'; Severity = 'fail'; LabelKey = 'doctor.check.runtime'
                 DetailKey = 'integrity.runtime.partiallyStaged'
                 DetailArgs = @((@($r.Missing) -join ', ')); DetailRaw = $null
+            })
+    }
+    elseif (@('hash-mismatch', 'not-signed', 'not-microsoft-signed', 'signature-invalid') -contains $r.Reason) {
+        # Loaded code that is not what it claims to be. This must never render as a mere "unknown".
+        $checks.Add(@{ Id = 'runtime'; Severity = 'fail'; LabelKey = 'doctor.check.runtime'
+                DetailKey = 'integrity.runtime.signature'
+                DetailArgs = @((& { if ($r.ContainsKey('File')) { [string]$r.File } else { '' } }), [string]$r.Reason)
+                DetailRaw = $null
             })
     }
     else {

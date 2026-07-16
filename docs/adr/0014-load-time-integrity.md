@@ -51,12 +51,55 @@ disguise: the staged files win, the absent ones fall through to the host, and th
 the floor exists to prevent (ADR-0012 §3). `--stage-runtime` cannot create that state, but an interrupted copy or a
 deleted file can, so it is diagnosed rather than assumed away.
 
-**6. The host runtime probe reads the 64-bit registry view explicitly — WOW64 again, now in the registry.** ADR-0012
-§3b caught WOW64 redirecting `System32` to `SysWOW64`; the same redirection applies to `HKLM:\SOFTWARE\...`, which
-from a 32-bit process silently becomes `HKLM:\SOFTWARE\Wow6432Node\...`, where the **x64** runtime does not register.
-A 32-bit PowerShell would report a perfectly good runtime as absent. `Get-ItemProperty` cannot express a registry
-view, so the 64-bit view is opened through the .NET API. This also makes the manifest's `RegistryKey` field live: it
-was declared and validated by ADR-0012 and read by **nothing** until now.
+**6. The host runtime probe reads the 64-bit registry view explicitly.** `HKLM:\SOFTWARE\...` is WOW64-redirected to
+`HKLM:\SOFTWARE\Wow6432Node\...` from a 32-bit process, and `Get-ItemProperty` cannot express a view, so the 64-bit
+view is opened through the .NET API. The reason is **determinism, not repair**: an earlier draft of this ADR claimed
+a 32-bit PowerShell "would report a perfectly good runtime as absent", and adversarial review disproved it by running
+the naive path from a real 32-bit PowerShell — the x64 redistributable *does* mirror its key into the redirected
+view, which answered correctly. But the redirected view also carries an `X86` entry alongside `X64`, and the
+mirroring is an installer implementation detail, not a contract. Opening `Registry64` is what makes *"the x64
+runtime"* unambiguous by construction rather than by luck. The correction is recorded rather than quietly edited,
+because ADR-0012 opens by promising every claim was verified against the artifact and not recalled — this one was
+recalled, and a maintainer would have "fixed" other registry reads on a false premise.
+
+*Test gap, stated:* mutating `Registry64` → `Registry32` passes the whole suite, precisely because both views answer
+correctly on a real machine. The mechanism is therefore an **assumption**, not a mutation-checked guard, and cannot
+be made one without a machine where the mirroring is absent.
+
+This decision also makes the manifest's `RegistryKey` field live: it was declared and validated by ADR-0012 and read
+by **nothing** until now.
+
+**6b. The staged Microsoft runtime is verified by SIGNATURE, because it is the one blind spot a hash cannot cover.**
+The sharpest finding of the review, and it was a real hole: the three DLLs are not in the pinned archive (nothing to
+hash them against) and `-PreserveNames` spares them from the reconcile — yet Windows loads them into `llama-server`
+from its own directory, **first** in the DLL search order. That made them the highest-value plant site on the stick,
+better than a `ggml-cpu-<arch>.dll`, which at least gets hashed. A reviewer patched 64 bytes of `VCRUNTIME140.dll`
+and `doctor --engine` reported `engine=verified runtime=ok`, **exit 0**. The only gate was the version resource —
+attacker-controlled metadata inside the very file being vetted, which still read `14.51` after the patch.
+
+`Test-LokiMicrosoftSignature` closes it, and it does **not** re-open §7's no-cache argument: the trust anchor is the
+*target's* certificate store, not the stick, so "whoever can plant the DLL can fix the record" does not apply.
+Verified against the real files rather than recalled:
+
+* the three DLLs are **embedded** Authenticode-signed, so the signature survives the copy onto the stick (`Valid` on
+  the copy). This is not a given — `kernel32.dll` is **catalog**-signed, which validates by hash via the *machine's*
+  catalog and would therefore not travel to a different target. A catalog-signed source would be a trap.
+* a patched byte → `HashMismatch`, while `VersionInfo.FileVersion` still read fine.
+* the chain terminates at `CN=Microsoft Root Certificate Authority 2011, O=Microsoft Corporation`.
+* cost: ~72 ms for three files.
+
+`Status = 'Valid'` **alone is not enough** and must not be mistaken for it: it means "signed by someone this machine
+trusts", which any attacker holding a public code-signing certificate also achieves. So the chain **root** is pinned
+to Microsoft's own PKI — proven necessary by a test against a real, validly signed non-Microsoft binary found on the
+host. Revocation is deliberately not re-checked when walking to the root: `Valid` already covers trust, and a
+CRL/OCSP fetch would stall the one tool someone is running *because* the machine is broken.
+
+Two traps fixed in the same breath, both found by review, both of which turned the check into a false accusation:
+`Get-AuthenticodeSignature -FilePath` is **wildcard-expanding** (`[` and `]` are legal filename characters), so a
+stick in a folder named `loki [backup]` reported three genuine Microsoft DLLs as unverifiable → `-LiteralPath`. And
+`signature-unreadable` was filed under "do not trust this stick": *could not determine* is not *forged*, and saying
+so is the mirror image of the lie §4 forbids. It now lands in `INCOMPLETE` with an honest "could not be determined",
+and still cannot reach exit 0.
 
 **7. `loki doctor --engine` is opt-in, because honesty about cost beats a fast lie.** It hashes every installed
 model: seconds for `nano`, roughly a minute for a 19 GB tier on USB. The default `loki doctor` must stay instant, so
@@ -85,8 +128,49 @@ get a row; a stick with none gets a single line.
 * Verification costs one full read of the engine (~46 MB expanded + the 18 MB archive; well under a second) plus one
   full read of every installed model. For the harness that is a real start-up cost on the large tiers and will be
   visible; it is the price of the property and must not be silently optimized away into a cache (§7).
-* `Get-LokiModelLayout` now states where the tiers live, once, the way `Get-LokiEngineLayout` always has for the
-  engine. The asymmetry was the tell: three call sites had each re-spelled `models\manifest.psd1` by hand.
-* Reparse points are **not** specially handled. A symlink cannot defeat the hash check (hashing and loading both
-  follow it, so they see the same bytes), and a planted file behind one is still enumerated as unexpected. A junction
-  pointing out of the tree is not analysed, and this is recorded as a known limit rather than claimed as covered.
+* `Get-LokiModelLayout` now states where the tiers live, once; three call sites had each re-spelled
+  `models\manifest.psd1` by hand. This does **not** finish the job: `Get-LokiEngineLayout` locates the archive and the
+  server exe but not the engine *manifest*, so `'engine\manifest.psd1'` is still hand-spelled — and this slice added
+  the second instance of it (`setup.ps1`, `doctor.ps1`). Worth closing next time someone is in these files.
+* **A pin bump to an archive that carries directory entries would report an honest stick as tampered.** The pinned
+  `b10038` archive is flat (verified: 51 entries, 0 directory entries, no subdirectories), so nothing is wrong today.
+  But `Test-LokiArchiveEntrySafe` rejects a trailing separator via its empty-segment rule, and most zip writers *do*
+  emit directory entries — so a routine bump could turn `loki setup` into `unsafe-entry` and `doctor --engine` into
+  exit 1. The directory-entry handling in `Get-LokiEngineExpectedSet` and both zip loops is consequently **dead code**
+  today, reachable only by a caller that does not pre-gate; its unit test passes because it calls the pure function
+  directly and bypasses the gate. Left as-is rather than loosening a heavily-reviewed zip-slip gate inside this
+  slice, but recorded so the next bump is not a mystery.
+* **Known limits, stated rather than implied.** Each of these was demonstrated by adversarial review with a running
+  repro, and each is a real gap in the reconcile — the hash chain itself resisted everything thrown at it:
+  * **Alternate data streams** are not enumerated: `llama-server.exe:payload.dll` does not change the file's hash and
+    is not listed, so the stick reports `verified`. Not loadable by `ggml-base.dll`'s by-name CPU-variant lookup, so
+    it yields no code execution — but "was this stick altered?" still gets the wrong answer.
+  * **A case-variant twin** (`GGML-CPU-HASWELL.DLL` beside `ggml-cpu-haswell.dll`) on a directory flagged
+    case-sensitive is spared: the expected set is `OrdinalIgnoreCase` and the hash loop walks *archive* entries, so
+    the twin is never looked at. The loader resolves the archive-cased name, so again: wrong answer, no execution.
+  * **MAX_PATH.** PowerShell 5.1 has no long-path support, and `Test-Path` on an existing >259-character path returns
+    `$false` rather than throwing — so a deep tree reports `file-missing` (exit 1, "this stick is wrong") for files
+    that are present and correct. Reachability is low (a stick is `E:\`; it needs the tree copied somewhere deep like
+    a synced folder), but the failure mode is a confident false accusation with no mention of path length.
+  * **`loki setup`'s own temp files** (`*.part`, `*.staging`, `*.bak`) are written *inside* `engine-offline\` and are
+    not in the expected set, so a setup interrupted mid-stage leaves a leftover that this reports as
+    `unexpected-file`. Re-running `loki setup` prunes it (verified), and the message is accurate, but the exit code
+    frames a benign leftover as tampering. Staging them in a sibling directory — the way `Expand-LokiVerifiedArchive`
+    already builds its tree — is the real fix and is deliberately out of this slice's scope.
+  * **A file reparse point is deliberately not flagged** (only directory ones are). Hashing follows the link, exactly
+    as loading does, so a swapped target is caught as `file-mismatch`; flagging every file reparse point would
+    false-alarm on a tree under OneDrive Files On-Demand, whose placeholders *are* reparse points.
+  * **"Unreadable" is reported as "mismatched".** `Test-LokiFileHash` returns `$false` for a file it cannot read — a
+    deliberate ADR-0012 §4b decision, correct for *downloading*, wrong for *verifying*, where the caller must
+    distinguish "differs" from "could not be read". A file held with `FileShare.None` (a backup, VSS, a concurrent
+    setup) makes a pristine engine report `file-mismatch`. The common cases are fine (a running exe and ordinary AV
+    use `FILE_SHARE_READ`, verified), which is what makes the rare case a confident lie rather than a flaky one. This
+    is the mirror of §4's rule — *we verified nothing* rendering as *we verified it and it is wrong* — and it wants a
+    tri-state hash primitive (`match` / `differ` / `unreadable`) feeding the `unknown` severity that already exists.
+* **The threat model is narrower than it looks, and saying so is part of the deal.** The pin (`engine/manifest.psd1`)
+  and the checker (`lib/integrity.ps1`) live on the same volume as the thing they vouch for. An attacker who can
+  write anywhere on the stick rewrites the pin or the checker and every guarantee here evaporates. So this slice's
+  real boundary is *"the app tree is trusted; `engine-offline\` may not be"* — which is worth something concrete: it
+  catches corruption, a bad pin bump, and the realistic case of an infected target machine writing to a mounted stick
+  opportunistically. It does **not** stop a Loki-aware attacker with write access to the whole stick. That is what
+  DESIGN.md §2.2's `manifest.sig` is for, and it is not built. Stated here so nobody mistakes the scope.

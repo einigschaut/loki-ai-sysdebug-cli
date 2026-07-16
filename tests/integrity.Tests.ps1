@@ -158,6 +158,33 @@ Describe 'Test-LokiEngineIntegrity' {
         $r.Unexpected | Should -Contain 'sub\evil.dll'
     }
 
+    It 'BREAK-THE-GUARD: a directory JUNCTION hiding a plant is reported (enumeration stops at reparse points)' {
+        # Adversarial review: `mklink /J` needs no admin, and Get-ChildItem -Recurse does NOT descend into a
+        # junction under PS 5.1 -- so a plant behind one was invisible and the stick reported `verified`.
+        $s = New-EngineStick -Entries @{ 'llama-server.exe' = 'MZ-server' }
+        $outside = New-IntegrityCaseDir
+        [System.IO.File]::WriteAllText((Join-Path $outside 'ggml-cpu-haswell.dll'), 'PLANTED')
+        $link = Join-Path $s.Layout.Dir 'stash'
+        & "$env:SystemRoot\System32\cmd.exe" /c mklink /J "$link" "$outside" | Out-Null
+        if (-not (Test-Path -LiteralPath $link)) { Set-ItResult -Skipped -Because 'the junction could not be created' }
+
+        # Precondition: the plant really is reachable through the stick, so this proves the reconcile, not the setup.
+        (Test-Path -LiteralPath (Join-Path $link 'ggml-cpu-haswell.dll')) | Should -BeTrue
+
+        $r = Test-LokiEngineIntegrity -Layout $s.Layout -Engine $s.Engine
+        $r.Ok | Should -BeFalse
+        $r.Reason | Should -Be 'unexpected-file'
+        $r.Unexpected | Should -Contain 'stash'
+    }
+
+    It 'a plain (non-reparse) subdirectory holding only expected files is not itself an anomaly' {
+        # Guards the fix above from over-firing: directories as such must not be flagged, or a future pinned archive
+        # with subdirectories would report every honest stick as tampered.
+        $s = New-EngineStick -Entries @{ 'llama-server.exe' = 'MZ-server'; 'sub/a.dll' = 'a-bytes' }
+        $r = Test-LokiEngineIntegrity -Layout $s.Layout -Engine $s.Engine
+        $r.Ok | Should -BeTrue
+    }
+
     It 'a hidden planted file is still a planted file' {
         $s = New-EngineStick -Entries @{ 'llama-server.exe' = 'MZ-server' }
         $p = Join-Path $s.Layout.Dir 'quiet.dll'
@@ -219,7 +246,7 @@ Describe 'Test-LokiEngineIntegrity' {
         $r.Reason | Should -Be 'nothing-verified'
     }
 
-    It 'writes nothing (a checker you can run on a stick you distrust)' {
+    It 'writes nothing to the stick it is inspecting (a checker you can run on a stick you distrust)' {
         $s = New-EngineStick -Entries @{ 'llama-server.exe' = 'MZ-server'; 'ggml-base.dll' = 'dll-bytes' }
         # Measured before/after, not "we mocked the writer and it was not called" -- that proves the mock, not the code.
         # Directories are included (a stray staging dir is a write too); PSIsContainer guards .Length, which a
@@ -234,6 +261,30 @@ Describe 'Test-LokiEngineIntegrity' {
         Test-LokiEngineIntegrity -Layout $s.Layout -Engine $s.Engine | Out-Null
         $after = & $snapshot
         $after | Should -Be $before
+    }
+
+    It 'BREAK-THE-GUARD: a directory that cannot be ENUMERATED is never reported as verified' {
+        # ADR-0012 section 4b, the sharpest lesson of that slice, now guarded here: Get-ChildItem's failures are
+        # NON-TERMINATING by default, so without the function-scoped $ErrorActionPreference='Stop' the catch never
+        # fires and a directory we could not read is reported as having no unexpected files -- Ok=$true over a tree
+        # that could be hiding anything. A locked-file test canNOT cover this (.NET throws terminating regardless);
+        # only a genuinely non-terminating failure does, which is what Write-Error produces.
+        $s = New-EngineStick -Entries @{ 'llama-server.exe' = 'MZ-server' }
+        Mock Get-ChildItem { Write-Error 'Access to the path is denied.' }
+        $r = Test-LokiEngineIntegrity -Layout $s.Layout -Engine $s.Engine
+        Should -Invoke Get-ChildItem -Times 1 -Exactly   # sanity: the mock really fired, so this is not vacuous
+        $r.Ok | Should -BeFalse
+        $r.Reason | Should -Be 'verify-failed'
+    }
+
+    It 'BREAK-THE-GUARD: the verify-side zip-slip gate refuses a hostile entry name' {
+        # A hash-verified archive can still carry a hostile name, and we are about to Join-Path it onto a real
+        # directory. Verified != safe to interpret.
+        $s = New-EngineStick -Entries @{ '../evil.dll' = 'payload' } -SkipExpand
+        $r = Test-LokiEngineIntegrity -Layout $s.Layout -Engine $s.Engine
+        $r.Ok | Should -BeFalse
+        $r.Reason | Should -Be 'unsafe-entry'
+        $r.Entry | Should -Be '../evil.dll'
     }
 
     It 'releases the archive: a verify must not lock the file setup needs to replace' {
@@ -273,6 +324,128 @@ Describe 'Test-LokiModelIntegrity' {
         $r = Test-LokiModelIntegrity -Entry $entry -ModelsDir (New-IntegrityCaseDir)
         $r.Reason | Should -Be 'not-installed'
     }
+
+    It 'BREAK-THE-GUARD: a model whose presence cannot even be determined is never verified' {
+        # The same non-terminating fail-open as the engine side: without the function-scoped preference, a
+        # Test-Path that errors is swallowed and the model sails through.
+        $d = New-IntegrityCaseDir
+        [System.IO.File]::WriteAllText((Join-Path $d 'nano.gguf'), 'weights')
+        $entry = @{ Id = 'nano'; FileName = 'nano.gguf'
+            Sha256 = (Get-FileHash -LiteralPath (Join-Path $d 'nano.gguf') -Algorithm SHA256).Hash
+        }
+        Mock Test-Path { Write-Error 'Access to the path is denied.' }
+        { Test-LokiModelIntegrity -Entry $entry -ModelsDir $d } | Should -Throw
+        Should -Invoke Test-Path -Times 1 -Exactly
+    }
+}
+
+Describe 'Test-LokiMicrosoftSignature (the ONLY check available for the staged MSVC runtime)' {
+
+    BeforeAll {
+        # The real runtime DLLs are embedded-Authenticode signed, so a copy keeps a valid signature. Verified rather
+        # than assumed: if this machine lacks them the tests below Skip rather than pass silently.
+        $script:RealRuntime = Join-Path $env:SystemRoot 'System32\VCRUNTIME140.dll'
+        $script:HaveRuntime = Test-Path -LiteralPath $script:RealRuntime
+    }
+
+    It 'a genuine Microsoft binary passes, and still passes after being copied to the stick' -Skip:(-not (Test-Path (Join-Path $env:SystemRoot 'System32\VCRUNTIME140.dll'))) {
+        $d = New-IntegrityCaseDir
+        $copy = Join-Path $d 'VCRUNTIME140.dll'
+        Copy-Item -LiteralPath $script:RealRuntime -Destination $copy -Force
+        $r = Test-LokiMicrosoftSignature -Path $copy
+        $r.Ok | Should -BeTrue
+        $r.Reason | Should -Be 'ok'
+    }
+
+    It 'BREAK-THE-GUARD: patched bytes are caught although the version resource still reads fine' -Skip:(-not (Test-Path (Join-Path $env:SystemRoot 'System32\VCRUNTIME140.dll'))) {
+        # This is the exact attack an adversarial review landed: 64 bytes of code replaced, version untouched, and
+        # the old version-only check reported the engine as verified with exit 0.
+        $d = New-IntegrityCaseDir
+        $copy = Join-Path $d 'VCRUNTIME140.dll'
+        Copy-Item -LiteralPath $script:RealRuntime -Destination $copy -Force
+        $bytes = [System.IO.File]::ReadAllBytes($copy)
+        for ($i = 0; $i -lt 64; $i++) { $bytes[0x1200 + $i] = 0x90 }
+        [System.IO.File]::WriteAllBytes($copy, $bytes)
+
+        # The metadata the floor check reads is STILL intact -- that is the whole point.
+        [string](Get-Item -LiteralPath $copy).VersionInfo.FileVersion | Should -Not -BeNullOrEmpty
+
+        $r = Test-LokiMicrosoftSignature -Path $copy
+        $r.Ok | Should -BeFalse
+        $r.Reason | Should -Be 'hash-mismatch'
+    }
+
+    It 'BREAK-THE-GUARD: a real, valid PE that is simply NOT signed is refused' -Skip:(-not (Test-Path (Join-Path $env:SystemRoot 'System32\VCRUNTIME140.dll'))) {
+        # A genuine PE with its certificate-table entry zeroed: structurally valid, just unsigned. This is the
+        # attacker's other option once patching is caught -- ship your own DLL rather than tamper with Microsoft's.
+        $d = New-IntegrityCaseDir
+        $p = Join-Path $d 'VCRUNTIME140.dll'
+        Copy-Item -LiteralPath $script:RealRuntime -Destination $p -Force
+        $b = [System.IO.File]::ReadAllBytes($p)
+        $pe = [BitConverter]::ToInt32($b, 0x3C)
+        $magic = [BitConverter]::ToUInt16($b, $pe + 24)
+        $dd = if ($magic -eq 0x20b) { $pe + 24 + 112 } else { $pe + 24 + 96 }   # PE32+ vs PE32 data-directory offset
+        $certOff = $dd + 4 * 8                                                   # directory entry 4 = certificate table
+        for ($i = 0; $i -lt 8; $i++) { $b[$certOff + $i] = 0 }
+        [System.IO.File]::WriteAllBytes($p, $b)
+
+        $r = Test-LokiMicrosoftSignature -Path $p
+        $r.Ok | Should -BeFalse
+        $r.Reason | Should -Be 'not-signed'
+    }
+
+    It 'BREAK-THE-GUARD: a genuine DLL in a path containing [brackets] is not accused of being forged' -Skip:(-not (Test-Path (Join-Path $env:SystemRoot 'System32\VCRUNTIME140.dll'))) {
+        # Adversarial review: Get-AuthenticodeSignature -FilePath is WILDCARD-expanding, and [ ] are legal Windows
+        # filename characters. A stick in 'loki [backup]' made this report three real Microsoft DLLs as unverifiable
+        # -- exit 1, "do not trust this stick", on a perfectly honest stick.
+        $d = Join-Path $script:RootTmp ('loki [backup] ' + [System.Guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Force -Path $d | Out-Null
+        $p = Join-Path $d 'VCRUNTIME140.dll'
+        Copy-Item -LiteralPath $script:RealRuntime -Destination $p -Force
+        $r = Test-LokiMicrosoftSignature -Path $p
+        $r.Ok | Should -BeTrue
+        $r.Reason | Should -Be 'ok'
+    }
+
+    It 'BREAK-THE-GUARD: a VALIDLY signed binary from a non-Microsoft publisher is refused' {
+        # The one that makes pinning the root necessary rather than decorative: Status='Valid' only means "signed by
+        # someone this machine trusts", which any attacker holding a public code-signing certificate also achieves.
+        # So we need a real file that is genuinely Valid but not Microsoft's -- found on the host rather than
+        # hardcoded, and skipped honestly when the host has none.
+        $victim = $null
+        foreach ($dir in @($env:ProgramFiles, ${env:ProgramFiles(x86)})) {
+            if ($victim -or (-not $dir) -or (-not (Test-Path -LiteralPath $dir))) { continue }
+            foreach ($f in @(Get-ChildItem -LiteralPath $dir -Recurse -Include *.dll, *.exe -File -ErrorAction SilentlyContinue | Select-Object -First 400)) {
+                $s = $null
+                try { $s = Get-AuthenticodeSignature -LiteralPath $f.FullName -ErrorAction Stop } catch { continue }
+                if (($s.Status -ne 'Valid') -or ($null -eq $s.SignerCertificate)) { continue }
+                if ([string]$s.SignerCertificate.Subject -match 'O=Microsoft Corporation') { continue }
+                $victim = $f.FullName
+                break
+            }
+        }
+        if (-not $victim) { Set-ItResult -Skipped -Because 'this host has no validly signed non-Microsoft binary to test with' }
+
+        # Precondition: Windows really does consider it Valid -- otherwise this proves nothing about the root pin.
+        (Get-AuthenticodeSignature -LiteralPath $victim).Status | Should -Be 'Valid'
+
+        $r = Test-LokiMicrosoftSignature -Path $victim
+        $r.Ok | Should -BeFalse
+        $r.Reason | Should -Be 'not-microsoft-signed'
+    }
+
+    It 'a file that is not a PE at all is refused (fail-closed, whatever Windows makes of it)' {
+        # Windows reports UnknownError rather than NotSigned for a non-PE; the token differs, the refusal must not.
+        $d = New-IntegrityCaseDir
+        $p = Join-Path $d 'VCRUNTIME140.dll'
+        [System.IO.File]::WriteAllText($p, 'not-a-signed-pe')
+        (Test-LokiMicrosoftSignature -Path $p).Ok | Should -BeFalse
+    }
+
+    It 'never throws on a file that is not there' {
+        { Test-LokiMicrosoftSignature -Path (Join-Path (New-IntegrityCaseDir) 'gone.dll') } | Should -Not -Throw
+        (Test-LokiMicrosoftSignature -Path (Join-Path (New-IntegrityCaseDir) 'gone.dll')).Ok | Should -BeFalse
+    }
 }
 
 Describe 'Get-LokiVcRuntimeHostStatus' {
@@ -311,15 +484,43 @@ Describe 'Resolve-LokiVcRuntimeAvailability' {
         $r.Source | Should -Be 'app-local'
     }
 
-    It 'BREAK-THE-GUARD: a too-old app-local runtime FAILS even though it shadows a host runtime that would be fine' {
+    It 'BREAK-THE-GUARD: a too-old app-local runtime FAILS even though the host leg is genuinely OK' {
         # The counter-intuitive one, and the reason this function exists: the exe directory is searched FIRST, so the
         # good system runtime is never reached. A fallback here would be a bug, not a kindness.
+        #
+        # This test was VACUOUS in review and the way it failed is worth keeping: it used -MinVersion 9999.0, which
+        # made the HOST leg unsatisfiable too. Adding the exact forbidden fallback changed nothing, because there was
+        # no good host runtime to fall back TO -- and the host leg's Reason under that floor was 'too-old', the very
+        # token being asserted. So: mock the host probe to be genuinely OK, and use kernel32's real 10.0.x version
+        # against a 14.30 floor so the app-local leg is genuinely below it on any Windows host.
+        Mock Get-LokiVcRuntimeHostStatus { @{ Ok = $true; Reason = 'ok'; Version = '14.44' } }
         $d = New-IntegrityCaseDir
         Copy-Item -LiteralPath $script:Versioned -Destination (Join-Path $d 'VCRUNTIME140.dll') -Force
-        $r = Resolve-LokiVcRuntimeAvailability -Directory $d -Files @('VCRUNTIME140.dll') -MinVersion '9999.0' `
-            -RegistryKey 'HKLM:\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64'
+
+        # Precondition: the host really WOULD have been fine. Without this the test proves nothing again.
+        (Get-LokiVcRuntimeHostStatus -RegistryKey 'HKLM:\SOFTWARE\Whatever' -MinVersion '14.30').Ok | Should -BeTrue
+
+        $r = Resolve-LokiVcRuntimeAvailability -Directory $d -Files @('VCRUNTIME140.dll') -MinVersion '14.30' `
+            -RegistryKey 'HKLM:\SOFTWARE\Whatever'
         $r.Ok | Should -BeFalse
         $r.Reason | Should -Be 'too-old'
+        $r.Source | Should -Be 'app-local'   # the discriminator: a fallback would have made this 'host'
+    }
+
+    It 'BREAK-THE-GUARD: a staged runtime with patched bytes is refused (the review attack, end to end)' -Skip:(-not (Test-Path (Join-Path $env:SystemRoot 'System32\VCRUNTIME140.dll'))) {
+        # Adversarial review: -PreserveNames spares these from the reconcile and nothing hashed them, so patched
+        # bytes in the first DLL on llama-server's search path reported runtime=ok/app-local, exit 0.
+        $d = New-IntegrityCaseDir
+        $p = Join-Path $d 'VCRUNTIME140.dll'
+        Copy-Item -LiteralPath (Join-Path $env:SystemRoot 'System32\VCRUNTIME140.dll') -Destination $p -Force
+        $bytes = [System.IO.File]::ReadAllBytes($p)
+        for ($i = 0; $i -lt 64; $i++) { $bytes[0x1200 + $i] = 0x90 }
+        [System.IO.File]::WriteAllBytes($p, $bytes)
+
+        $r = Resolve-LokiVcRuntimeAvailability -Directory $d -Files @('VCRUNTIME140.dll') -MinVersion '14.30' `
+            -RegistryKey 'HKLM:\SOFTWARE\Loki\DoesNotExist'
+        $r.Ok | Should -BeFalse
+        $r.Reason | Should -Be 'hash-mismatch'
         $r.Source | Should -Be 'app-local'
     }
 
@@ -346,12 +547,16 @@ Describe 'Get-LokiIntegrityExitCode (pure; 1 = the stick is WRONG, 5 = the stick
 
     BeforeAll {
         function global:New-ExitReport {
-            param([string]$EngineReason = 'verified', [bool]$RuntimeOk = $true, [string[]]$ModelReasons = @('verified'))
+            param([string]$EngineReason = 'verified', [bool]$RuntimeOk = $true, [string[]]$ModelReasons = @('verified'),
+                [string]$RuntimeReason)
             $models = @()
             foreach ($m in $ModelReasons) { $models += @{ Ok = ($m -eq 'verified'); Reason = $m; Id = 't' } }
+            if (-not $PSBoundParameters.ContainsKey('RuntimeReason')) {
+                $RuntimeReason = if ($RuntimeOk) { 'ok' } else { 'not-installed' }
+            }
             return @{
                 Engine = @{ Ok = ($EngineReason -eq 'verified'); Reason = $EngineReason }
-                Runtime = @{ Ok = $RuntimeOk; Reason = (& { if ($RuntimeOk) { 'ok' } else { 'not-installed' } }); Source = 'host' }
+                Runtime = @{ Ok = $RuntimeOk; Reason = $RuntimeReason; Source = 'host' }
                 Models = $models; EngineVersion = 'b1'; MinVersion = '14.30'
             }
         }
@@ -388,6 +593,27 @@ Describe 'Get-LokiIntegrityExitCode (pure; 1 = the stick is WRONG, 5 = the stick
 
     It 'an unknown engine reason is treated as WRONG, never as fine (fail-closed on a token we do not know)' {
         Get-LokiIntegrityExitCode -Report (New-ExitReport -EngineReason 'some-future-reason') | Should -Be 1
+    }
+
+    # The runtime is the one input that lands in BOTH buckets, so it gets its own table. A staged DLL that fails its
+    # signature is loaded code that is not what it claims to be -> WRONG(1). Absent/stale/half-staged is a stick that
+    # is merely not ready -> INCOMPLETE(5). Filing a patched DLL under "not set up yet" is exactly the cry-wolf
+    # inversion this split exists to prevent.
+    It 'runtime reason <reason> -> <expected>' -ForEach @(
+        @{ reason = 'hash-mismatch'; expected = 1 }
+        @{ reason = 'not-signed'; expected = 1 }
+        @{ reason = 'not-microsoft-signed'; expected = 1 }
+        @{ reason = 'signature-invalid'; expected = 1 }
+        # NOT 1: 'could not determine' is not 'forged'. Reporting "do not trust this stick" because a signature was
+        # unreadable is the mirror of the lie ADR-0014 section 4 forbids. It still cannot reach 0.
+        @{ reason = 'signature-unreadable'; expected = 5 }
+        @{ reason = 'not-installed'; expected = 5 }
+        @{ reason = 'too-old'; expected = 5 }
+        @{ reason = 'partially-staged'; expected = 5 }
+        @{ reason = 'registry-unreadable'; expected = 5 }
+    ) {
+        $r = New-ExitReport -RuntimeOk $false -RuntimeReason $reason
+        Get-LokiIntegrityExitCode -Report $r | Should -Be $expected
     }
 }
 
