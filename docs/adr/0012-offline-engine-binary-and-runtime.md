@@ -142,7 +142,11 @@ worth keeping, because it is an argument for the practice:
 * **Load-time verification is not built yet.** The harness slice must verify the engine (and the model it loads)
   against the manifest before starting `llama-server` — otherwise the integrity chain ends at setup time and a stick
   tampered with afterwards would be trusted. Tracked as the next slice, called out here so it is not forgotten.
-* **Known drift (not fixed here to keep this PR focused):** DESIGN.md §2.2 shows the model tiers under
-  `engine-offline\`, while ADR-0011 put them in `models\`. The engine follows DESIGN.md (`engine-offline\`). Nothing
-  consumes the model path yet, so aligning it is a cheap follow-up — but it is a real inconsistency and should not
-  simply rot.
+* **`engine-offline\` is now owned by the archive, and that settles a layout question in the opposite direction to the
+  obvious one.** DESIGN.md §2.2 used to lump `llama-server + model tiers + playbooks + grammars` into
+  `engine-offline\`, while ADR-0011 put the models in `models\` — which looked like the implementation drifting from
+  the design. It is the other way round: once expansion **reconciles** the directory (decision 2b), anything in there
+  that the pinned archive does not produce is *deleted*. Laid out the way DESIGN.md described, a `loki setup` re-run
+  reports `Pruned: 2` and takes the model tiers (up to 19 GB) and the playbooks with it — verified, not reasoned.
+  So the models, playbooks and grammars are **siblings** of `engine-offline\`, each pinned and verified on its own
+  lifecycle, and DESIGN.md §2.2 has been corrected to say so and to say why. `models\` (ADR-0011) was right.
