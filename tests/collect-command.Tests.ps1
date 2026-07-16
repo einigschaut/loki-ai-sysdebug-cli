@@ -93,13 +93,28 @@ Describe 'Command collect' {
     }
 
     It 'writes only under the app root (the footprint guarantee)' {
-        $r = Invoke-CollectCommand -Context (New-TestCollectContext)
-        # Every path the command reports must sit under AppRoot. NOT asserted as "outside $env:USERPROFILE": the
-        # test's own temp AppRoot lives under the user profile on Windows, so that assertion looks like a footprint
-        # check and can never mean one. Under-AppRoot is the property that is actually load-bearing.
-        $paths = @([regex]::Matches($r.AllText, '[A-Za-z]:\\[^\s]+\.(?:json|txt)') | ForEach-Object { $_.Value })
-        @($paths).Count | Should -Be 2
-        foreach ($p in $paths) { $p | Should -Match ([regex]::Escape($script:Work)) }
+        $isolated = Join-Path ([System.IO.Path]::GetTempPath()) ("loki-iso-" + [System.Guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Force -Path $isolated | Out-Null
+        try {
+            $null = Invoke-CollectCommand -Context (New-TestCollectContext -AppRoot $isolated)
+
+            # Asserted against the FILESYSTEM, not against the printed text. The first version scraped the paths out
+            # of the command's output with a regex and passed locally, then failed on CI with "Expected 2, but got 0"
+            # -- Out-String wraps at the HOST's console width, and a CI runner (powershell.EXE -command, no real
+            # console) is narrow enough to break a long path across two lines, leaving neither half matchable.
+            # A footprint test must not depend on how wide someone's terminal is.
+            $everything = @(Get-ChildItem -LiteralPath $isolated -Recurse -File -Force)
+            @($everything).Count | Should -Be 2
+            foreach ($f in $everything) {
+                $f.DirectoryName | Should -Be (Join-Path $isolated 'reports')
+            }
+            # NOT asserted as "outside $env:USERPROFILE": the temp AppRoot above lives under the user profile on
+            # Windows, so that check would look like a footprint proof and could never be one. "Everything this run
+            # created sits under AppRoot, and nowhere else" is the property that actually carries the guarantee.
+        }
+        finally {
+            Remove-Item -LiteralPath $isolated -Recurse -Force -ErrorAction SilentlyContinue
+        }
     }
 
     It 'the JSON artifact carries the version and the schema, and no /Date(ms)/' {
