@@ -119,6 +119,29 @@
     'setup.offline'             = 'loki setup needs internet access - run it on the machine where you prepare the stick.'
     'setup.heading'             = 'loki setup - offline models'
 
+    'hwscan.summary'            = 'Check what the offline engine can run on this machine (writes nothing)'
+    'hwscan.heading'            = 'loki hwscan - offline capability'
+    'hwscan.unknown'            = 'unknown'
+    'hwscan.cpu'                = 'CPU:       {0}'
+    'hwscan.cpuThreads'         = '{0} ({1} threads)'
+    'hwscan.ram'                = 'RAM:       {0} GB total, {1} GB available'
+    'hwscan.ramUnknown'         = 'RAM could not be determined - no model can be chosen safely.'
+    'hwscan.ramUnknownFatal'    = 'Without a RAM reading Loki will not pick a model: guessing here means swapping the machine you came to fix. Use --model <tier> --force to override.'
+    'hwscan.budget'             = 'Budget:    {0} GB for a model ({1} GB stays reserved for the host)'
+    'hwscan.installed'          = 'Models:    {0} of {1} tier(s) on this stick'
+    'hwscan.tierRow'            = '    {0,-14} {1,-26} ~{2} GB resident'
+    'hwscan.selected'           = 'Would run: {0} ({1}, ~{2} GB resident)'
+    'hwscan.forced'             = 'Forced: this tier needs ~{0} GB but the budget is only {1} GB. Expect heavy swapping.'
+    'hwscan.forcedRamUnknown'   = 'Forced: this tier needs ~{0} GB. RAM could not be read, so the risk cannot be judged.'
+    'hwscan.noneInstalled'      = 'No model is on this stick. Run "loki setup" on a connected machine first.'
+    'hwscan.overrideMissing'    = "Tier '{0}' is not on this stick. Run 'loki hwscan' without --model to see what is."
+    'hwscan.overrideTooLarge'   = "Tier '{0}' needs ~{1} GB but the budget is only {2} GB. Pick a smaller tier, or add --force to run it anyway."
+    'hwscan.nothingFits'        = 'No installed model fits in a budget of {0} GB. Free some memory, or add a smaller tier with "loki setup".'
+    'hwscan.budgetTooSmall'     = 'This machine has too little memory free for any model ({0} GB budget). Nothing to download would help - collect a raw diagnostic dump instead, or free some memory and try again.'
+    'hwscan.badArg'             = "Unknown argument: '{0}'."
+    'hwscan.modelNeedsValue'    = '--model needs a tier id, e.g. "loki hwscan --model mid".'
+    'hwscan.forceNeedsModel'    = '--force only applies to --model, e.g. "loki hwscan --model mid --force". On its own it would change nothing.'
+
     'setup.engineHeading'       = 'loki setup - offline engine'
     'setup.engineOffline'       = 'Cannot reach github.com - the offline engine is downloaded from there. Run setup on a connected machine.'
     'setup.engineDownloading'   = 'Downloading engine {0} {1} (~{2} MB)...'

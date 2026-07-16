@@ -15,7 +15,7 @@
 # ASCII-only file -> no BOM (CLAUDE.md section 1).
 Set-StrictMode -Version Latest
 
-$script:LokiModelRequiredKeys = @('Id', 'Model', 'Tier', 'License', 'Url', 'FileName', 'Sha256', 'SizeBytes', 'MinRamGB', 'ContextTokens')
+$script:LokiModelRequiredKeys = @('Id', 'Model', 'Tier', 'License', 'Url', 'FileName', 'Sha256', 'SizeBytes', 'ResidentGB', 'ContextTokens')
 
 function Get-LokiModelManifest {
     param([Parameter(Mandatory = $true)][string]$Path)
@@ -38,6 +38,12 @@ function Get-LokiModelManifest {
         $fnBase = (($fn.ToUpperInvariant()) -split '\.')[0]
         if (($fn -match '^\.+$') -or ($fnBase -match '^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$')) { throw "Model '$id': FileName is a reserved or invalid name." }
         if ([long]$m.SizeBytes -le 0) { throw "Model '$id': SizeBytes must be a positive integer." }
+        # ResidentGB is what the tier selection budgets against (DESIGN.md section 3.2 / ADR-0013). A value at or below
+        # the weights on disk cannot be right -- the weights alone are resident, plus KV cache -- and an under-stated
+        # figure is the dangerous direction: it makes a model that does not fit look like it does, and the host swaps.
+        $residentGB = [double]$m.ResidentGB
+        if ($residentGB -le 0) { throw "Model '$id': ResidentGB must be a positive number." }
+        if ($residentGB -lt ([double]$m.SizeBytes / 1GB)) { throw "Model '$id': ResidentGB is smaller than the weights on disk." }
         if ($seen.ContainsKey($id)) { throw "Model manifest: duplicate id '$id'." }
         $seen[$id] = $true
     }
