@@ -22,16 +22,63 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
+      # This step, not the tests, has been the flakiest part of CI: a run on `main` died here with
+      #   Set-PSRepository : No repository with the name 'PSGallery' was found.
+      # BEFORE a single test executed, and a plain re-run of the same commit went green. The runner image does not
+      # guarantee the PSGallery registration is present.
+      #
+      # A bare retry would NOT have fixed that: the registration was missing, not flaky, so retrying the same
+      # Set-PSRepository just fails identically. It has to be re-created (Register-PSRepository -Default), and the
+      # retry is for the genuinely transient half -- the gallery downloads.
+      #
+      # Trusting the repo is NOT optional and cannot simply be made non-fatal (measured): -Force does not bypass the
+      # untrusted-source prompt, and this shell is `powershell -command` with no console, so the prompt fails with
+      # "Windows PowerShell is in NonInteractive mode. Read and Prompt functionality is not available."
       - name: Install modules (Pester 5 + PSScriptAnalyzer)
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
           [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
-          Install-Module Pester           -MinimumVersion 5.5.0  -Scope CurrentUser -Force -SkipPublisherCheck
-          Install-Module PSScriptAnalyzer -MinimumVersion 1.21.0 -Scope CurrentUser -Force
-          Write-Host ("Pester:          " + (Get-Module -ListAvailable Pester           | Sort-Object Version -Descending | Select-Object -First 1).Version)
-          Write-Host ("PSScriptAnalyzer: " + (Get-Module -ListAvailable PSScriptAnalyzer | Sort-Object Version -Descending | Select-Object -First 1).Version)
+
+          function Invoke-CiRetry {
+            param([string]$What, [scriptblock]$Action, [int]$Attempts = 3)
+            for ($i = 1; $i -le $Attempts; $i++) {
+              try { & $Action; return }
+              catch {
+                if ($i -eq $Attempts) { throw ("{0}: failed after {1} attempts -- {2}" -f $What, $Attempts, $_.Exception.Message) }
+                Write-Host ("{0}: attempt {1}/{2} failed ({3}); retrying in {4}s" -f $What, $i, $Attempts, $_.Exception.Message, (5 * $i))
+                Start-Sleep -Seconds (5 * $i)
+              }
+            }
+          }
+
+          Invoke-CiRetry 'PSGallery registration' {
+            # Measured: Get-PSRepository on a missing name returns nothing rather than throwing, so this is a safe test.
+            if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) {
+              Write-Host 'PSGallery is not registered on this runner -- re-creating the default registration.'
+              Register-PSRepository -Default -ErrorAction Stop
+            }
+            Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction Stop
+          }
+
+          Invoke-CiRetry 'Install Pester' {
+            Install-Module Pester -MinimumVersion 5.5.0 -Scope CurrentUser -Force -SkipPublisherCheck -ErrorAction Stop
+          }
+          Invoke-CiRetry 'Install PSScriptAnalyzer' {
+            Install-Module PSScriptAnalyzer -MinimumVersion 1.21.0 -Scope CurrentUser -Force -ErrorAction Stop
+          }
+
+          # ASSERT, do not merely report. The old step printed the version, so an absent module rendered a blank line
+          # here and surfaced later as a confusing test error instead of failing where the cause actually was.
+          foreach ($m in @(
+              @{ Name = 'Pester'; Min = '5.5.0' },
+              @{ Name = 'PSScriptAnalyzer'; Min = '1.21.0' }
+            )) {
+            $found = Get-Module -ListAvailable $m.Name | Sort-Object Version -Descending | Select-Object -First 1
+            if ($null -eq $found) { throw ("{0} is still not available after a successful install" -f $m.Name) }
+            if ($found.Version -lt [version]$m.Min) { throw ("{0} {1} is older than the required {2}" -f $m.Name, $found.Version, $m.Min) }
+            Write-Host ("{0,-17} {1}" -f ($m.Name + ':'), $found.Version)
+          }
 
       - name: Checks (lint + structure gate + Pester)
         shell: powershell
