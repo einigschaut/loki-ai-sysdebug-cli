@@ -81,6 +81,13 @@
 
     'doctor.footer'             = '{0} OK, {1} warning(s), {2} failure(s)'
 
+    'footprint.heading'         = 'loki doctor --footprint'
+    'footprint.probeVerified'   = 'Isolation probe verified: the env-var redirect held - the isolated writes landed on the stick, not the host.'
+    'footprint.clean'           = 'Clean for this probe: the env-var redirect held, no isolated write reached the host profile. (Does not cover Known-Folder-API writes - see ADR-0010.)'
+    'footprint.leaked'          = 'FOOTPRINT: an isolated write leaked to the host profile ({0}). The redirect is not holding.'
+    'footprint.observed'        = 'Note: watched host location(s) changed during the probe (possibly unrelated activity): {0}'
+    'footprint.probeFailed'     = 'Could not run the isolation probe - footprint result is inconclusive.'
+
     'ask.usage'                 = 'Usage: loki ask <question>'
     'ask.offline'               = 'loki ask needs network access (the online engine is unreachable). Use the offline path instead.'
     'ask.working'               = 'Asking the online engine (read-only diagnosis)...'

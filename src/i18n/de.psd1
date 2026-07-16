@@ -81,6 +81,13 @@
 
     'doctor.footer'             = '{0} OK, {1} Warnung(en), {2} Fehler'
 
+    'footprint.heading'         = 'loki doctor --footprint'
+    'footprint.probeVerified'   = 'Isolations-Probe bestätigt: die Env-Var-Umleitung greift - die isolierten Writes landeten auf dem Stick, nicht im Host.'
+    'footprint.clean'           = 'Sauber für diese Probe: die Env-Var-Umleitung greift, kein isolierter Write hat das Host-Profil erreicht. (Deckt keine Known-Folder-API-Writes ab - siehe ADR-0010.)'
+    'footprint.leaked'          = 'FOOTPRINT: ein isolierter Write ist ins Host-Profil gelangt ({0}). Die Umleitung greift nicht.'
+    'footprint.observed'        = 'Hinweis: beobachtete Host-Ort(e) haben sich während der Probe geändert (evtl. fremde Aktivität): {0}'
+    'footprint.probeFailed'     = 'Isolations-Probe konnte nicht ausgeführt werden - Footprint-Ergebnis nicht aussagekräftig.'
+
     'ask.usage'                 = 'Verwendung: loki ask <Frage>'
     'ask.offline'               = 'loki ask benötigt Netzzugang (Online-Engine nicht erreichbar). Nutze stattdessen den Offline-Pfad.'
     'ask.working'               = 'Frage an die Online-Engine (read-only Diagnose)...'
