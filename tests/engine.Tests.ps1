@@ -302,6 +302,29 @@ Describe 'Expand-LokiVerifiedArchive (integrity + zip-slip)' {
         Test-Path -LiteralPath $archiveInDest | Should -BeTrue
     }
 
+    It 'REGRESSION: a failure during the swap leaves the OLD tree intact (not pruned-and-half-moved)' {
+        # An earlier version pruned the destination and then moved files in one by one, so a failure in between left a
+        # tree that was both pruned AND half-populated -- worse than doing nothing, while the ADR claimed the
+        # destination was untouched. Adversarial review reproduced it. Now the new tree is built in a sibling and
+        # swapped in, so a failure at the swap must leave the old tree exactly as it was.
+        $v1 = New-TestZip @{ 'llama-server.exe' = 'V1'; 'ggml-base.dll' = 'V1' }
+        $dest = New-EngineCaseDir
+        (Expand-LokiVerifiedArchive -ArchivePath $v1.Path -DestDir $dest -ExpectedSha256 $v1.Hash).Ok | Should -BeTrue
+        $orphan = Join-Path $dest 'ggml-cpu-zen4.dll'
+        [System.IO.File]::WriteAllText($orphan, 'ORPHAN', [System.Text.Encoding]::ASCII)
+
+        $v2 = New-TestZip @{ 'llama-server.exe' = 'V2' }
+        Mock Move-Item { throw 'simulated swap failure' } -ParameterFilter { $LiteralPath -eq (Resolve-Path -LiteralPath $dest).ProviderPath }
+
+        $r = Expand-LokiVerifiedArchive -ArchivePath $v2.Path -DestDir $dest -ExpectedSha256 $v2.Hash
+        $r.Ok | Should -BeFalse
+        $r.Reason | Should -Be 'expand-failed'
+        # The old tree is untouched: nothing pruned, nothing replaced, no .new-/.old- leftovers.
+        Get-Content -LiteralPath (Join-Path $dest 'llama-server.exe') -Raw -Encoding UTF8 | Should -BeLike 'V1*'
+        Test-Path -LiteralPath $orphan | Should -BeTrue
+        @(Get-ChildItem -LiteralPath (Split-Path -Parent $dest) -Directory -Force | Where-Object { $_.Name -like '*.new-*' -or $_.Name -like '*.old-*' }).Count | Should -Be 0
+    }
+
     It 'BREAK-THE-GUARD: a zip-slip entry aborts the expansion and writes NOTHING' {
         # A verified archive can still be hostile in principle -- the entry gate is the second line of defence.
         $z = New-TestZip @{ 'good.txt' = 'fine'; '../evil.txt' = 'pwned' }
@@ -395,7 +418,60 @@ Describe 'Copy-LokiVcRuntimeAppLocal (fail-closed staging)' {
         Test-Path -LiteralPath (Join-Path $dest 'VCRUNTIME140.dll') | Should -BeFalse
     }
 
-    It 'REGRESSION: a copy failure partway through leaves the destination UNCHANGED (no mixed set)' {
+    It 'REGRESSION: a failure in the MOVE phase is rolled back -- no mixed set, no leftovers' {
+        # The previous version of this test only ever tripped the dest-locked pre-flight, so it stayed green even with
+        # the entire staging+move mechanism deleted (proven by mutation in adversarial review). This one drives the
+        # move phase itself: the first file lands, the second fails, and the first MUST be put back.
+        $src = New-EngineCaseDir
+        foreach ($n in @('VCRUNTIME140.dll', 'MSVCP140.dll')) {
+            Copy-Item -LiteralPath $script:VersionedSource -Destination (Join-Path $src $n) -Force
+        }
+        $dest = New-EngineCaseDir
+        [System.IO.File]::WriteAllText((Join-Path $dest 'VCRUNTIME140.dll'), 'old-v1', [System.Text.Encoding]::ASCII)
+        [System.IO.File]::WriteAllText((Join-Path $dest 'MSVCP140.dll'), 'old-v2', [System.Text.Encoding]::ASCII)
+
+        # Fail only the move that puts a .staging file into place, and only for the second file. Everything else does
+        # the real thing via [IO.File] -- NOT by calling back into Move-Item, which would re-enter this mock.
+        $script:MoveCount = 0
+        Mock Move-Item {
+            if ($LiteralPath -like '*.staging') {
+                $script:MoveCount++
+                if ($script:MoveCount -ge 2) { throw 'simulated move failure' }
+            }
+            if (Test-Path -LiteralPath $Destination) { [System.IO.File]::Delete($Destination) }
+            [System.IO.File]::Move($LiteralPath, $Destination)
+        }
+
+        $r = Copy-LokiVcRuntimeAppLocal -SourceDir $src -DestDir $dest -Files @('VCRUNTIME140.dll', 'MSVCP140.dll') -MinVersion '1.0'
+        $r.Ok | Should -BeFalse
+        $r.Reason | Should -Be 'copy-failed'
+        # Both originals are back: the landed file was un-done, not left as half a runtime.
+        Get-Content -LiteralPath (Join-Path $dest 'VCRUNTIME140.dll') -Raw -Encoding UTF8 | Should -BeLike 'old-v1*'
+        Get-Content -LiteralPath (Join-Path $dest 'MSVCP140.dll') -Raw -Encoding UTF8 | Should -BeLike 'old-v2*'
+        @(Get-ChildItem -LiteralPath $dest -Force | Where-Object { $_.Name -like '*.staging' -or $_.Name -like '*.bak' }).Count | Should -Be 0
+    }
+
+    It 'REGRESSION: a NON-TERMINATING copy failure is not reported as success, whatever the caller''s $ErrorActionPreference' {
+        # Copy-Item/Move-Item failures are non-terminating by DEFAULT, so a catch block only fires if the preference
+        # says Stop. The library must not depend on its caller for that: adversarial review proved the whole suite was
+        # exercising the fail-OPEN configuration, where these functions returned Ok=$true over files they never wrote.
+        # Write-Error here is exactly a non-terminating failure -- the case a locked-file test can never reach,
+        # because .NET throws terminating exceptions regardless of the preference.
+        $ErrorActionPreference = 'Continue'
+        # Build the fixture BEFORE mocking Copy-Item, or the mock eats the fixture too and the function would fail
+        # with 'source-missing' -- green for the wrong reason, which is the trap this whole test exists to avoid.
+        $src = New-EngineCaseDir
+        Copy-Item -LiteralPath $script:VersionedSource -Destination (Join-Path $src 'VCRUNTIME140.dll') -Force
+        $dest = New-EngineCaseDir
+
+        Mock Copy-Item { Write-Error 'simulated non-terminating copy failure' }
+        $r = Copy-LokiVcRuntimeAppLocal -SourceDir $src -DestDir $dest -Files @('VCRUNTIME140.dll') -MinVersion '1.0'
+        $r.Ok | Should -BeFalse
+        $r.Reason | Should -Be 'copy-failed'   # pins WHY: it got past the source + floor checks and the copy failed
+        Test-Path -LiteralPath (Join-Path $dest 'VCRUNTIME140.dll') | Should -BeFalse
+    }
+
+    It 'REGRESSION: a locked destination is refused before anything is copied' {
         # Found by adversarial review, reproduced: file 1 landed, file 2 threw, and the "fail-closed" return left a
         # new VCRUNTIME140 next to a stale MSVCP140 -- exactly the mixed set the module says it refuses.
         # Trigger here is the real one: an existing destination file held open (llama-server running from the stick).

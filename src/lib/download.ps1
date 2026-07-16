@@ -22,7 +22,11 @@ function Test-LokiFileHash {
         [Parameter(Mandatory = $true)][string]$ExpectedSha256
     )
     if (-not (Test-Path -LiteralPath $Path)) { return $false }
-    $actual = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
+    # A file we cannot READ is a file we cannot prove matches -> $false, never an exception escaping into a caller
+    # that is trying to decide whether something is trustworthy. (Get-FileHash throws on a locked file, and callers
+    # run with $ErrorActionPreference='Stop', so without this the throw would blow past their fail-closed handling.)
+    try { $actual = (Get-FileHash -LiteralPath $Path -Algorithm SHA256 -ErrorAction Stop).Hash }
+    catch { return $false }
     return ([string]$actual -ieq [string]$ExpectedSha256)
 }
 
@@ -48,6 +52,12 @@ function Invoke-LokiVerifiedDownload {
         [Parameter(Mandatory = $true)][string]$ExpectedSha256,
         [Parameter(Mandatory = $true)][string]$DestPath
     )
+    # Set INSIDE the function (function-scoped, so it neither leaks to the caller nor depends on them): Copy-Item /
+    # Move-Item / Remove-Item failures are NON-terminating by default, so without this the catch blocks below never
+    # fire and this function reports Ok=$true 'verified' while the stale bytes are still on disk. Proven, not
+    # theoretical -- adversarial review reproduced exactly that with a locked destination.
+    $ErrorActionPreference = 'Stop'
+
     # HTTPS only -- never fetch over plaintext (integrity + no downgrade).
     if ($Url -notmatch '^https://') { return @{ Ok = $false; Reason = 'not-https' } }
     # Idempotent / resumable across runs: an already-present, already-verified file is a no-op.
@@ -56,7 +66,12 @@ function Invoke-LokiVerifiedDownload {
     # Past this point the destination is absent or does NOT match the pin. Drop a non-matching file NOW rather than
     # only on the success path: otherwise a failed download leaves the stale/tampered file sitting there, and
     # "an unverified download is never kept" would be false the moment the network drops.
-    if (Test-Path -LiteralPath $DestPath) { Remove-Item -LiteralPath $DestPath -Force -ErrorAction SilentlyContinue }
+    # No -ErrorAction SilentlyContinue here: if the stale file CANNOT be removed we must say so, not carry on and
+    # later report success over bytes we never replaced.
+    if (Test-Path -LiteralPath $DestPath) {
+        try { Remove-Item -LiteralPath $DestPath -Force }
+        catch { return @{ Ok = $false; Reason = 'dest-locked'; Error = $_.Exception.Message } }
+    }
 
     $dir = Split-Path -Parent $DestPath
     if (-not [string]::IsNullOrEmpty($dir) -and -not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
@@ -77,8 +92,16 @@ function Invoke-LokiVerifiedDownload {
         return @{ Ok = $false; Reason = 'hash-mismatch' }
     }
 
-    # Verified -> atomically replace any stale file at the destination.
-    if (Test-Path -LiteralPath $DestPath) { Remove-Item -LiteralPath $DestPath -Force -ErrorAction SilentlyContinue }
-    Move-Item -LiteralPath $tmp -Destination $DestPath -Force
+    # Verified -> move into place. This move is the ONLY thing that makes the file real, so a failure here must be
+    # reported as a failure: returning 'verified' while the move silently failed is the worst possible lie this
+    # module could tell.
+    try {
+        if (Test-Path -LiteralPath $DestPath) { Remove-Item -LiteralPath $DestPath -Force }
+        Move-Item -LiteralPath $tmp -Destination $DestPath -Force
+    }
+    catch {
+        Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+        return @{ Ok = $false; Reason = 'move-failed'; Error = $_.Exception.Message }
+    }
     return @{ Ok = $true; Reason = 'verified' }
 }

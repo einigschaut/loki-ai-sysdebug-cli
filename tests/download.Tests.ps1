@@ -103,6 +103,28 @@ Describe 'Invoke-LokiVerifiedDownload (integrity gate; network Mocked)' {
         Test-Path -LiteralPath $dest | Should -BeFalse
     }
 
+    It 'REGRESSION: reports FAILURE (not "verified") when the destination cannot actually be replaced' {
+        # The worst lie this module could tell. Move-Item's failure is non-terminating, so before the function set
+        # $ErrorActionPreference itself, this returned Ok=$true Reason='verified' with the stale bytes still on disk --
+        # reproduced by adversarial review, and the same logic already sits on main in the model download path.
+        # Runs under 'Continue' on purpose: the guard must not depend on the caller's preference.
+        $ErrorActionPreference = 'Continue'
+        Mock Get-LokiHttpFile { [System.IO.File]::WriteAllText($OutFile, $script:GoodBytes, [System.Text.Encoding]::ASCII) }
+        $d = New-DownloadCaseDir
+        $dest = Join-Path $d 'm.bin'
+        [System.IO.File]::WriteAllText($dest, 'STALE-UNVERIFIED-BYTES', [System.Text.Encoding]::ASCII)
+        $hold = [System.IO.File]::Open($dest, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+        try {
+            $r = Invoke-LokiVerifiedDownload -Url 'https://example.com/m.bin' -ExpectedSha256 $script:GoodHash -DestPath $dest
+            $r.Ok | Should -BeFalse
+            $r.Reason | Should -Be 'dest-locked'
+        }
+        finally { $hold.Close() }
+        # And it did not silently leave the caller believing the stale bytes were the verified ones.
+        Get-Content -LiteralPath $dest -Raw -Encoding UTF8 | Should -BeLike 'STALE-UNVERIFIED-BYTES*'
+        Test-Path -LiteralPath ($dest + '.part') | Should -BeFalse
+    }
+
     It 'a download error AFTER a partial write -> Ok=$false, the partial is cleaned up' {
         # The mock writes a .part (like a real interrupted transfer) THEN throws, so the catch-block cleanup is
         # actually exercised (not a no-op that would pass even if cleanup were removed).

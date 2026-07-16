@@ -12,12 +12,21 @@
 # opt-in operator action (`--stage-runtime`) that copies the files from the operator's OWN machine to their OWN stick.
 # Contract:
 #   Get-LokiEngineManifest -Path <psd1> -> [hashtable]{ Engine; Runtime }  (throws fail-closed on any bad field).
-#   Get-LokiEngineLayout -AppRoot <dir> -> [hashtable]{ Dir; ArchivePath; ServerExePath }  (pure; touches no disk).
+#   Get-LokiEngineLayout -AppRoot <dir> -Engine <manifest.Engine> -> [hashtable]{ Dir; ArchivePath; ServerExePath }
+#       (pure; touches no disk).
 #   Test-LokiArchiveEntrySafe -EntryName <string> -> [bool]  (pure predicate; the zip-slip gate).
-#   ConvertTo-LokiRuntimeVersion -Text <string> -> [version] or $null  (pure; parses '14.51.36247.0' / 'v14.51.36247.00').
-#   Expand-LokiVerifiedArchive -ArchivePath -DestDir -ExpectedSha256 -> [hashtable]{ Ok; Reason; [Count] }
+#   ConvertTo-LokiRuntimeVersion -Text <string> -> [version] or $null  (pure; parses '14.51.36247.0' / 'v14.51.36247.00';
+#       $null -- never a throw -- on anything unparsable, so callers can fail closed).
+#   Expand-LokiVerifiedArchive -ArchivePath -DestDir -ExpectedSha256 [-PreserveNames <string[]>]
+#       -> [hashtable]{ Ok; Reason; [Count]; [Pruned]; [Entry]; [Error] }
+#       verifies before opening; reconciles $DestDir against the archive ($PreserveNames survive the prune);
+#       on ANY failure $DestDir is left as it was.
 #   Get-LokiVcRuntimeStatus -Directory <dir> -Files <string[]> -> [hashtable]{ Present; Found; Missing }
-#   Copy-LokiVcRuntimeAppLocal -SourceDir -DestDir -Files -MinVersion -> [hashtable]{ Ok; Reason; [Staged]; [Version] }
+#       PRESENCE only -- it does not judge versions; pair it with Get-LokiVcRuntimeFloorCheck.
+#   Get-LokiVcRuntimeFloorCheck -Found <entries> -MinVersion <string> -> [hashtable]{ Ok; Reason; [Version]; [File] }
+#       the MinVersion floor, in one place, used by BOTH the staging and the reporting path.
+#   Copy-LokiVcRuntimeAppLocal -SourceDir -DestDir -Files -MinVersion -> [hashtable]{ Ok; Reason; [Staged]; [Version]; [Missing]; [File] }
+#       fail-closed + rolled back: on any failure nothing is staged.
 # ASCII-only file -> no BOM (CLAUDE.md section 1).
 Set-StrictMode -Version Latest
 
@@ -131,8 +140,11 @@ function Expand-LokiVerifiedArchive {
         $PreserveNames are the files that legitimately live next to the engine but are NOT in the archive -- the
         operator-staged Microsoft runtime. Without them the prune would silently delete the staged runtime.
 
-        Expansion goes through a staging directory so a per-entry failure (long path, device name, full disk) cannot
-        leave a half-extracted tree: on any failure $DestDir is untouched.
+        The new tree is built COMPLETELY in a sibling directory and swapped in by two directory renames. That is what
+        makes "on any failure $DestDir is as it was" a mechanism rather than a promise: an earlier version pruned the
+        destination and then moved files in one at a time, so a failure in between left a tree that was both pruned and
+        half-populated -- worse than doing nothing. Renaming a directory also fails cleanly and atomically when any
+        file inside is locked (llama-server running from the stick), instead of failing halfway.
     #>
     param(
         [Parameter(Mandatory = $true)][string]$ArchivePath,
@@ -140,14 +152,25 @@ function Expand-LokiVerifiedArchive {
         [Parameter(Mandatory = $true)][string]$ExpectedSha256,
         [string[]]$PreserveNames = @()
     )
+    # Function-scoped (does not leak to the caller, does not depend on them): Copy-Item / Move-Item / Remove-Item
+    # failures are NON-terminating by default, so without this the catch below never fires and this function reports
+    # Ok=$true 'expanded' over a tree it never actually wrote. Reproduced by adversarial review, not theoretical.
+    $ErrorActionPreference = 'Stop'
+
     # Never open an archive we have not verified -- the pinned hash is the only reason we trust its contents.
     if (-not (Test-LokiFileHash -Path $ArchivePath -ExpectedSha256 $ExpectedSha256)) {
         return @{ Ok = $false; Reason = 'archive-unverified' }
     }
     Add-Type -AssemblyName System.IO.Compression.FileSystem
 
+    if (-not (Test-Path -LiteralPath $DestDir)) { New-Item -ItemType Directory -Force -Path $DestDir | Out-Null }
+    $destFull = (Resolve-Path -LiteralPath $DestDir).ProviderPath
+    $suffix = [System.Guid]::NewGuid().ToString('N')
+    $staging = $destFull + '.new-' + $suffix       # sibling, same volume -> the swap is a rename, not a copy
+    $retired = $destFull + '.old-' + $suffix
+
     $zip = $null
-    $staging = $null
+    $swapped = $false
     try {
         $zip = [System.IO.Compression.ZipFile]::OpenRead($ArchivePath)
 
@@ -158,12 +181,6 @@ function Expand-LokiVerifiedArchive {
             }
         }
 
-        if (-not (Test-Path -LiteralPath $DestDir)) { New-Item -ItemType Directory -Force -Path $DestDir | Out-Null }
-        $destFull = (Resolve-Path -LiteralPath $DestDir).ProviderPath
-
-        # Staging lives INSIDE the destination so the later moves stay on one volume (fast, no cross-device copy).
-        $stagingName = '.staging-' + ([System.Guid]::NewGuid().ToString('N'))
-        $staging = Join-Path $destFull $stagingName
         New-Item -ItemType Directory -Force -Path $staging | Out-Null
 
         # The set of relative paths the pinned archive legitimately produces (case-insensitive: Windows paths are).
@@ -185,43 +202,56 @@ function Expand-LokiVerifiedArchive {
             $count++
         }
 
-        # Everything extracted cleanly -> reconcile the real tree. Keep: what the archive produces, the verified
-        # archive itself (it is the chain back to the pin), and the caller's preserved names (staged MS runtime).
+        # Release the archive BEFORE the swap: we still hold it open, and the rename of a directory containing an
+        # open file fails.
+        $zip.Dispose()
+        $zip = $null
+
+        # Carry over what legitimately lives next to the engine but is NOT in the archive: the verified archive itself
+        # (it is the chain back to the pin) and the caller's preserved names (the operator-staged Microsoft runtime).
+        # Copy, never move: until the swap succeeds, $DestDir must remain exactly as it was.
         [void]$keep.Add((Split-Path -Leaf $ArchivePath))
+        $carry = New-Object System.Collections.Generic.List[string]
+        $carry.Add((Split-Path -Leaf $ArchivePath))
         foreach ($n in $PreserveNames) {
-            if (-not [string]::IsNullOrWhiteSpace([string]$n)) { [void]$keep.Add([string]$n) }
+            if (-not [string]::IsNullOrWhiteSpace([string]$n)) {
+                [void]$keep.Add([string]$n)
+                $carry.Add([string]$n)
+            }
+        }
+        foreach ($n in $carry) {
+            $from = Join-Path $destFull $n
+            if (Test-Path -LiteralPath $from) { Copy-Item -LiteralPath $from -Destination (Join-Path $staging $n) -Force }
         }
 
+        # Anything in the old tree the pinned archive does not account for is dropped by the swap -- count it so the
+        # operator is told rather than left guessing.
         $pruned = 0
-        foreach ($f in @(Get-ChildItem -LiteralPath $destFull -Recurse -Force -File -ErrorAction SilentlyContinue)) {
+        foreach ($f in @(Get-ChildItem -LiteralPath $destFull -Recurse -Force -File)) {
             $rel = $f.FullName.Substring($destFull.Length).TrimStart('\')
-            if ($rel.StartsWith($stagingName, [StringComparison]::OrdinalIgnoreCase)) { continue }
-            if (-not $keep.Contains($rel)) {
-                Remove-Item -LiteralPath $f.FullName -Force -ErrorAction SilentlyContinue
-                $pruned++
-            }
+            if (-not $keep.Contains($rel)) { $pruned++ }
         }
 
-        # Move the freshly extracted tree into place (overwriting the pinned names).
-        foreach ($f in @(Get-ChildItem -LiteralPath $staging -Recurse -Force -File)) {
-            $rel = $f.FullName.Substring($staging.Length).TrimStart('\')
-            $target = Join-Path $destFull $rel
-            $parent = Split-Path -Parent $target
-            if (-not [string]::IsNullOrEmpty($parent) -and -not (Test-Path -LiteralPath $parent)) {
-                New-Item -ItemType Directory -Force -Path $parent | Out-Null
-            }
-            Move-Item -LiteralPath $f.FullName -Destination $target -Force
-        }
+        # The swap. Between these two renames $DestDir does not exist; the restore in the catch puts it back.
+        Move-Item -LiteralPath $destFull -Destination $retired -Force
+        $swapped = $true
+        Move-Item -LiteralPath $staging -Destination $destFull -Force
+        $swapped = $false
 
+        Remove-Item -LiteralPath $retired -Recurse -Force -ErrorAction SilentlyContinue
         return @{ Ok = $true; Reason = 'expanded'; Count = $count; Pruned = $pruned }
     }
     catch {
+        # Put the original tree back if we died between the two renames.
+        if ($swapped -and (Test-Path -LiteralPath $retired) -and -not (Test-Path -LiteralPath $destFull)) {
+            Move-Item -LiteralPath $retired -Destination $destFull -Force -ErrorAction SilentlyContinue
+        }
         return @{ Ok = $false; Reason = 'expand-failed'; Error = $_.Exception.Message }
     }
     finally {
         if ($null -ne $zip) { $zip.Dispose() }
-        if (($null -ne $staging) -and (Test-Path -LiteralPath $staging)) {
-            Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
+        foreach ($leftover in @($staging, $retired)) {
+            if (Test-Path -LiteralPath $leftover) { Remove-Item -LiteralPath $leftover -Recurse -Force -ErrorAction SilentlyContinue }
         }
     }
 }
@@ -296,6 +326,10 @@ function Copy-LokiVcRuntimeAppLocal {
         [Parameter(Mandatory = $true)][string[]]$Files,
         [Parameter(Mandatory = $true)][string]$MinVersion
     )
+    # Function-scoped: without it Copy-Item / Move-Item failures are non-terminating, the catch blocks never fire, and
+    # this returns Ok=$true 'staged' over files it never wrote (reproduced by adversarial review).
+    $ErrorActionPreference = 'Stop'
+
     $status = Get-LokiVcRuntimeStatus -Directory $SourceDir -Files $Files
     if (-not $status.Present) {
         return @{ Ok = $false; Reason = 'source-missing'; Missing = @($status.Missing) }
@@ -337,17 +371,39 @@ function Copy-LokiVcRuntimeAppLocal {
         return @{ Ok = $false; Reason = 'copy-failed'; Error = $_.Exception.Message }
     }
 
+    # Move each staged copy into place, remembering what it displaced. A failure partway through must UN-DO the moves
+    # that already landed -- otherwise the destination holds a new VCRUNTIME140 next to a stale MSVCP140, which is
+    # exactly the mixed set this function exists to refuse. (The pre-flight above makes this rare, not impossible: it
+    # is a check, not a lock.)
     $staged = New-Object System.Collections.Generic.List[string]
+    $done = New-Object System.Collections.Generic.List[object]
     foreach ($p in $pending) {
+        $backup = $null
         try {
+            if (Test-Path -LiteralPath $p.Target) {
+                $backup = $p.Target + '.bak'
+                Move-Item -LiteralPath $p.Target -Destination $backup -Force
+            }
             Move-Item -LiteralPath $p.Tmp -Destination $p.Target -Force
+            $done.Add([pscustomobject]@{ Target = $p.Target; Backup = $backup })
             $staged.Add([string]$p.File)
         }
         catch {
-            # Should be unreachable after the write pre-flight; clean up what has not landed and report honestly.
+            # Roll back: restore this file, then every file we had already replaced.
+            if (($null -ne $backup) -and (Test-Path -LiteralPath $backup)) {
+                Move-Item -LiteralPath $backup -Destination $p.Target -Force -ErrorAction SilentlyContinue
+            }
+            foreach ($d in $done) {
+                if ($null -ne $d.Backup) { Move-Item -LiteralPath $d.Backup -Destination $d.Target -Force -ErrorAction SilentlyContinue }
+                else { Remove-Item -LiteralPath $d.Target -Force -ErrorAction SilentlyContinue }
+            }
             foreach ($q in $pending) { Remove-Item -LiteralPath $q.Tmp -Force -ErrorAction SilentlyContinue }
             return @{ Ok = $false; Reason = 'copy-failed'; File = [string]$p.File; Error = $_.Exception.Message }
         }
+    }
+    # Committed -- drop the displaced originals.
+    foreach ($d in $done) {
+        if ($null -ne $d.Backup) { Remove-Item -LiteralPath $d.Backup -Force -ErrorAction SilentlyContinue }
     }
     return @{ Ok = $true; Reason = 'staged'; Staged = $staged.ToArray(); Version = [string]$floor.Version }
 }

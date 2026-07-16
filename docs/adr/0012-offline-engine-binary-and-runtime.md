@@ -41,8 +41,12 @@ sits on the stick. Nothing in this slice executes the engine.
 **2. Zip-slip is gated separately from the hash.** A verified archive could still, in principle, carry a hostile entry
 name. `Test-LokiArchiveEntrySafe` (pure, table-tested) rejects rooted, traversing, drive-qualified, ADS (`:`),
 wildcard, control-character, empty-segment, trailing-dot/space and reserved-device-name entries. **All** entries are
-validated before **any** byte is written. Expansion additionally goes through a staging directory and only moves into
-place once every entry extracted, so no failure mode (long path, full disk) can leave a half-extracted tree.
+validated before **any** byte is written. The new tree is then built **completely in a sibling directory** and swapped
+in by two directory renames, so no failure mode (long path, full disk, a locked file because `llama-server` is running)
+can leave a half-extracted tree — on any failure the destination is as it was. An earlier version of this slice pruned
+the destination and *then* moved files in one at a time; a failure in between left a tree that was both pruned and
+half-populated — worse than doing nothing, while the prose claimed the destination was untouched. It is documented
+here because the lesson generalises: **a rollback you did not build is not a property you may claim.**
 
 **2b. Expansion RECONCILES the engine directory against the pinned archive.** Overwriting only the names the archive
 contains is not enough, and this is the subtle one: a planted `ggml-cpu-<arch>.dll` would survive the very `loki setup`
@@ -81,6 +85,17 @@ independent adversarial reviewers found the same hole here: presence-only report
 runtime when asked to stage it, yet reported that same 14.0 runtime already on the stick as fine — a green check
 followed by the exact failure the floor exists to prevent. The weakest file in the set decides.
 
+**4b. Every function whose safety rests on a `catch` sets `$ErrorActionPreference = 'Stop'` itself.** This is the
+sharpest lesson of the slice. `Copy-Item` / `Move-Item` / `Remove-Item` failures are **non-terminating by default**, so
+a `try/catch` around them is decorative unless the preference says otherwise. The dispatcher sets it globally, which is
+why this never showed in production — but the libraries were being *tested* without it, so the suite was exercising the
+fail-**open** configuration. Reproduced: with a locked destination, `Invoke-LokiVerifiedDownload` returned
+`Ok=$true, Reason='verified'` while the stale, unverified bytes were still on disk. The preference is now set
+**inside** each such function (function-scoped: it neither leaks to the caller nor depends on them), and a regression
+test drives a genuinely non-terminating failure (`Write-Error`) — a locked-file test cannot cover this, because .NET
+throws terminating exceptions regardless of the preference. Related: `Test-LokiFileHash` returns `$false` for a file it
+cannot read, rather than letting `Get-FileHash`'s exception escape into a caller that is trying to fail closed.
+
 **5. The verified-download primitive moved to `src/lib/download.ps1`.** It now has two consumers (models and the
 engine), and CLAUDE.md §2 requires shared logic to have exactly one home. The functions moved verbatim
 (`Test-LokiFileHash`, `Get-LokiHttpFile`, `Invoke-LokiVerifiedDownload`); `lib/models.ps1` keeps the model manifest and
@@ -92,6 +107,20 @@ step, then the models. Picking no model is a legitimate outcome (engine-only sti
 
 **7. Each step probes its own host.** The engine comes from `github.com`, the models from `huggingface.co`. A network
 that permits one and blocks the other must fail fast and say which — a single up-front probe cannot express that.
+
+## On the review that produced this ADR
+
+Three adversarial reviewers with different lenses (integrity / filesystem / honesty) reviewed this slice. The record is
+worth keeping, because it is an argument for the practice:
+
+* The **zip-slip gate survived** ~40 proven attack attempts — the thing most likely to be reached for as "the security
+  bit" was not where the bugs were.
+* The **honesty lens found the most severe defect** (the fail-open above) — not by attacking the code, but by checking
+  whether the comments were true. Two of the fixes written *in response to the first two reviews* were themselves
+  wrong, and one of the regression tests written to prove a fix was **vacuous**: it stayed green with the entire
+  mechanism deleted, because it only ever tripped an earlier guard.
+* Consequently every new guard here is **mutation-checked**: green against the real code, red once the mechanism it
+  claims to test is removed. A guard without that check is an assumption, not a test.
 
 ## Consequences
 
