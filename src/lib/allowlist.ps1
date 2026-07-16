@@ -109,7 +109,14 @@ function Get-LokiCommandClass {
         $isRead = $false
 
         # (b) the first token matches a curated read-only pattern.
-        if ($first -match '^Get-[A-Za-z][A-Za-z0-9]*$') {
+        # CultureInvariant is load-bearing, not decoration: -match folds case using the CURRENT CULTURE, and in
+        # tr-TR/az 'I' folds to the dotless 'i' (U+0131), which is NOT in [A-Za-z]. On a Turkish host 'Get-ChildItem'
+        # / 'Get-CimInstance' / 'Get-Item' therefore stopped matching and were classified 'mutate' -- Loki's own
+        # read-only diagnostics denied on the machine it was brought to diagnose. Case-insensitivity itself is
+        # INTENDED here (PowerShell command names are case-insensitive: 'get-process' is a legal invocation), so
+        # -cmatch would be the wrong fix -- it would reject the lowercase spelling instead. Keep IgnoreCase, drop the
+        # culture. Verified in a real tr-TR process, before and after.
+        if ([regex]::IsMatch($first, '^Get-[A-Za-z][A-Za-z0-9]*$', 'IgnoreCase,CultureInvariant')) {
             # Any Get-* cmdlet, any arguments -- Get is the read verb. See KNOWN RESIDUAL in header.
             $isRead = $true
         }

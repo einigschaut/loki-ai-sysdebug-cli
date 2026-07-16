@@ -146,7 +146,14 @@ function Resolve-LokiCommandDecision {
         # The Get-* naming-convention branch is the ONLY read path trusted by convention rather than by an explicit
         # name (ADR-0006 residual). Verify at runtime that the name really resolves to a Cmdlet -- a hijacking
         # Function/Alias/Application earlier on PATH, or an unresolvable name, is NOT provably safe -> downgrade.
-        if ($first -match '^Get-[A-Za-z][A-Za-z0-9]*$') {
+        #
+        # CultureInvariant, and this is the SECURITY-relevant half of the pair (the other is lib/allowlist.ps1's
+        # identical pattern): this regex decides whether the runtime check RUNS AT ALL. -match folds case by the
+        # current culture, so under tr-TR 'Get-ChildItem' stops matching and the Cmdlet verification is SILENTLY
+        # SKIPPED -- a hijacking Function named Get-ChildItem would then stay 'read'. Today the two patterns fail
+        # together (the classifier never calls this 'read'), so the pair is consistent and fails closed; fixing only
+        # ONE of them would open exactly that hole. They must stay identical -- if you touch one, touch both.
+        if ([regex]::IsMatch($first, '^Get-[A-Za-z][A-Za-z0-9]*$', 'IgnoreCase,CultureInvariant')) {
             $resolved = Get-Command -Name $first -ErrorAction SilentlyContinue | Select-Object -First 1
             if ($null -eq $resolved) {
                 $class = 'mutate'; $reason = 'read-downgraded-unresolved'
