@@ -87,6 +87,7 @@ SmartScreen (though it does not clear a WDAC allow-list).
 ├── bin\claude.exe        Claude Code engine (native binary)
 ├── home\                 USERPROFILE of the child process (.claude\, .env, …)
 ├── engine-offline\       the pinned llama.cpp build ONLY — owned by the archive (see below)
+├── engine-staging\       scratch space for `loki setup` on its way into engine-offline\ (see below)
 ├── models\               the pinned GGUF tiers (own lifecycle, own hashes)
 ├── playbooks\, grammars\ assets for the offline engine
 ├── tools\                bundled read-only diagnostic tools (on PATH)
@@ -108,6 +109,18 @@ separately, on their own lifecycle, and putting them under `engine-offline\` wou
 `Pruned: 2` and the models are gone. The only exceptions the reconcile spares are the verified
 archive itself (the chain back to the pin) and the operator-staged Microsoft runtime, which is
 passed in explicitly.
+
+**`engine-staging\` exists so that rule can stay absolute.** Everything setup writes on its way
+into `engine-offline\` is unverified while it is being written — the `.part` of a download, the
+`.staging` copy of a runtime DLL, the `.bak` of the file it displaces. Written *inside*
+`engine-offline\`, those temporaries are indistinguishable from a planted file: the reconcile
+called them out, so a `loki setup` killed mid-download (Ctrl-C on 200 MB over a slow link) made
+the next `loki doctor --engine` report the stick as tampered with. Reproduced, then fixed by
+moving them out — **not** by teaching the reconcile to ignore `*.part`/`*.staging`/`*.bak`, which
+would have handed an attacker a naming convention: `evil.dll.bak` sits in `llama-server.exe`'s DLL
+search path exactly like `evil.dll` does. A sibling, not a child, for the same reason the models
+are (a child would be pruned), and on the same volume so committing a staged file stays a rename
+rather than a copy. It is scratch space: nothing in it is trusted, and nothing is left in it.
 
 ### Contracts-first, one truth per concept
 

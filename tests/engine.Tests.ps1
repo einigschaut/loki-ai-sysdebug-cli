@@ -168,6 +168,16 @@ Describe 'Get-LokiEngineLayout (pure)' {
         $l.ArchivePath | Should -Be 'C:\stick\engine-offline\e.zip'
         $l.ServerExePath | Should -Be 'C:\stick\engine-offline\llama-server.exe'
     }
+
+    It 'puts the staging area OUTSIDE the verified directory, on the same volume' {
+        # Both halves are load-bearing. Inside Dir, every temporary reads as a planted file to the reconcile
+        # (lib/integrity.ps1). On another volume, committing a staged file would silently become a copy instead of a
+        # rename -- so a sibling under AppRoot, and the test says so rather than just pinning a string.
+        $l = Get-LokiEngineLayout -AppRoot 'C:\stick' -Engine @{ FileName = 'e.zip'; ServerExe = 'llama-server.exe' }
+        $l.StagingDir | Should -Be 'C:\stick\engine-staging'
+        $l.StagingDir.StartsWith($l.Dir, [System.StringComparison]::OrdinalIgnoreCase) | Should -BeFalse
+        (Split-Path -Qualifier $l.StagingDir) | Should -Be (Split-Path -Qualifier $l.Dir)
+    }
 }
 
 Describe 'Test-LokiArchiveEntrySafe (the zip-slip gate; pure + table-tested)' {
@@ -401,18 +411,60 @@ Describe 'Copy-LokiVcRuntimeAppLocal (fail-closed staging)' {
         $src = New-EngineCaseDir
         Copy-Item -LiteralPath $script:VersionedSource -Destination (Join-Path $src 'VCRUNTIME140.dll') -Force
         $dest = New-EngineCaseDir
-        $r = Copy-LokiVcRuntimeAppLocal -SourceDir $src -DestDir $dest -Files @('VCRUNTIME140.dll') -MinVersion '1.0'
+        $stage = New-EngineCaseDir
+        $r = Copy-LokiVcRuntimeAppLocal -SourceDir $src -DestDir $dest -Files @('VCRUNTIME140.dll') -MinVersion '1.0' -StagingDir $stage
         $r.Ok | Should -BeTrue
         $r.Reason | Should -Be 'staged'
         @($r.Staged).Count | Should -Be 1
         Test-Path -LiteralPath (Join-Path $dest 'VCRUNTIME140.dll') | Should -BeTrue
     }
 
+    It 'the temporaries never land in verified space -- observed WHERE THEY ARE WRITTEN, not after the fact' {
+        # The defect: engine-offline\ is reconciled against the pinned archive, so a .staging/.bak written there is
+        # indistinguishable from a planted file, and a hard-killed setup made `loki doctor --engine` report tampering.
+        #
+        # Inspecting $dest after the call CANNOT catch that, and the first version of this test made exactly that
+        # mistake: the temporaries are transient, the happy path deletes them, so the end state looks identical
+        # whether they were staged in verified space or not. Mutation proved it -- staging back into $dest left the
+        # test green. The leftovers only exist mid-flight or after a kill, which is precisely why the defect survived
+        # review in the first place. So watch the writes themselves.
+        $src = New-EngineCaseDir
+        Copy-Item -LiteralPath $script:VersionedSource -Destination (Join-Path $src 'VCRUNTIME140.dll') -Force
+        $dest = New-EngineCaseDir
+        [System.IO.File]::WriteAllText((Join-Path $dest 'VCRUNTIME140.dll'), 'old-one', [System.Text.Encoding]::ASCII)
+        $stage = New-EngineCaseDir
+
+        # Fixtures BEFORE the mocks, or the mock eats the fixture and this fails as 'source-missing' -- green for the
+        # wrong reason. Both mocks do the real thing via [IO.File], never by re-entering the cmdlet they replace.
+        $script:Writes = New-Object System.Collections.Generic.List[string]
+        Mock Copy-Item {
+            $script:Writes.Add([string]$Destination)
+            [System.IO.File]::Copy($LiteralPath, $Destination, $true)
+        }
+        Mock Move-Item {
+            $script:Writes.Add([string]$Destination)
+            if (Test-Path -LiteralPath $Destination) { [System.IO.File]::Delete($Destination) }
+            [System.IO.File]::Move($LiteralPath, $Destination)
+        }
+
+        $r = Copy-LokiVcRuntimeAppLocal -SourceDir $src -DestDir $dest -Files @('VCRUNTIME140.dll') -MinVersion '1.0' -StagingDir $stage
+        $r.Ok | Should -BeTrue
+
+        $temps = @($script:Writes | Where-Object { $_ -like '*.staging' -or $_ -like '*.bak' })
+        # Not vacuous: temporaries really were written. Without this, deleting the whole staging mechanism would pass.
+        $temps.Count | Should -BeGreaterThan 1
+        foreach ($t in $temps) { $t | Should -BeLike ($stage + '*') }
+
+        # End state, for completeness: the runtime landed and the staging area is not a junk drawer.
+        @(Get-ChildItem -LiteralPath $dest -Force | ForEach-Object { $_.Name }) | Should -Be @('VCRUNTIME140.dll')
+        @(Get-ChildItem -LiteralPath $stage -Force).Count | Should -Be 0
+    }
+
     It 'BREAK-THE-GUARD: refuses and copies NOTHING when a required file is missing at the source' {
         $src = New-EngineCaseDir
         Copy-Item -LiteralPath $script:VersionedSource -Destination (Join-Path $src 'VCRUNTIME140.dll') -Force
         $dest = New-EngineCaseDir
-        $r = Copy-LokiVcRuntimeAppLocal -SourceDir $src -DestDir $dest -Files @('VCRUNTIME140.dll', 'MSVCP140.dll') -MinVersion '1.0'
+        $r = Copy-LokiVcRuntimeAppLocal -SourceDir $src -DestDir $dest -Files @('VCRUNTIME140.dll', 'MSVCP140.dll') -MinVersion '1.0' -StagingDir (New-EngineCaseDir)
         $r.Ok | Should -BeFalse
         $r.Reason | Should -Be 'source-missing'
         @($r.Missing) | Should -Contain 'MSVCP140.dll'
@@ -424,7 +476,7 @@ Describe 'Copy-LokiVcRuntimeAppLocal (fail-closed staging)' {
         $src = New-EngineCaseDir
         Copy-Item -LiteralPath $script:VersionedSource -Destination (Join-Path $src 'VCRUNTIME140.dll') -Force
         $dest = New-EngineCaseDir
-        $r = Copy-LokiVcRuntimeAppLocal -SourceDir $src -DestDir $dest -Files @('VCRUNTIME140.dll') -MinVersion '9999.0'
+        $r = Copy-LokiVcRuntimeAppLocal -SourceDir $src -DestDir $dest -Files @('VCRUNTIME140.dll') -MinVersion '9999.0' -StagingDir (New-EngineCaseDir)
         $r.Ok | Should -BeFalse
         $r.Reason | Should -Be 'too-old'
         $r.MinVersion | Should -Be '9999.0'
@@ -440,6 +492,7 @@ Describe 'Copy-LokiVcRuntimeAppLocal (fail-closed staging)' {
             Copy-Item -LiteralPath $script:VersionedSource -Destination (Join-Path $src $n) -Force
         }
         $dest = New-EngineCaseDir
+        $stage = New-EngineCaseDir
         [System.IO.File]::WriteAllText((Join-Path $dest 'VCRUNTIME140.dll'), 'old-v1', [System.Text.Encoding]::ASCII)
         [System.IO.File]::WriteAllText((Join-Path $dest 'MSVCP140.dll'), 'old-v2', [System.Text.Encoding]::ASCII)
 
@@ -455,13 +508,16 @@ Describe 'Copy-LokiVcRuntimeAppLocal (fail-closed staging)' {
             [System.IO.File]::Move($LiteralPath, $Destination)
         }
 
-        $r = Copy-LokiVcRuntimeAppLocal -SourceDir $src -DestDir $dest -Files @('VCRUNTIME140.dll', 'MSVCP140.dll') -MinVersion '1.0'
+        $r = Copy-LokiVcRuntimeAppLocal -SourceDir $src -DestDir $dest -Files @('VCRUNTIME140.dll', 'MSVCP140.dll') -MinVersion '1.0' -StagingDir $stage
         $r.Ok | Should -BeFalse
         $r.Reason | Should -Be 'copy-failed'
         # Both originals are back: the landed file was un-done, not left as half a runtime.
         Get-Content -LiteralPath (Join-Path $dest 'VCRUNTIME140.dll') -Raw -Encoding UTF8 | Should -BeLike 'old-v1*'
         Get-Content -LiteralPath (Join-Path $dest 'MSVCP140.dll') -Raw -Encoding UTF8 | Should -BeLike 'old-v2*'
         @(Get-ChildItem -LiteralPath $dest -Force | Where-Object { $_.Name -like '*.staging' -or $_.Name -like '*.bak' }).Count | Should -Be 0
+        # The rollback must also un-litter the staging directory -- a .bak abandoned there is a full copy of a runtime
+        # dll left on the stick forever, and the next run would find someone else's leftovers.
+        @(Get-ChildItem -LiteralPath $stage -Force).Count | Should -Be 0
     }
 
     It 'REGRESSION: a NON-TERMINATING copy failure is not reported as success, whatever the caller''s $ErrorActionPreference' {
@@ -478,7 +534,7 @@ Describe 'Copy-LokiVcRuntimeAppLocal (fail-closed staging)' {
         $dest = New-EngineCaseDir
 
         Mock Copy-Item { Write-Error 'simulated non-terminating copy failure' }
-        $r = Copy-LokiVcRuntimeAppLocal -SourceDir $src -DestDir $dest -Files @('VCRUNTIME140.dll') -MinVersion '1.0'
+        $r = Copy-LokiVcRuntimeAppLocal -SourceDir $src -DestDir $dest -Files @('VCRUNTIME140.dll') -MinVersion '1.0' -StagingDir (New-EngineCaseDir)
         $r.Ok | Should -BeFalse
         $r.Reason | Should -Be 'copy-failed'   # pins WHY: it got past the source + floor checks and the copy failed
         Test-Path -LiteralPath (Join-Path $dest 'VCRUNTIME140.dll') | Should -BeFalse
@@ -497,7 +553,7 @@ Describe 'Copy-LokiVcRuntimeAppLocal (fail-closed staging)' {
         [System.IO.File]::WriteAllText($locked, 'stale', [System.Text.Encoding]::ASCII)
         $hold = [System.IO.File]::Open($locked, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
         try {
-            $r = Copy-LokiVcRuntimeAppLocal -SourceDir $src -DestDir $dest -Files @('VCRUNTIME140.dll', 'MSVCP140.dll') -MinVersion '1.0'
+            $r = Copy-LokiVcRuntimeAppLocal -SourceDir $src -DestDir $dest -Files @('VCRUNTIME140.dll', 'MSVCP140.dll') -MinVersion '1.0' -StagingDir (New-EngineCaseDir)
             $r.Ok | Should -BeFalse
             # Nothing new landed, and no .staging leftovers.
             Test-Path -LiteralPath (Join-Path $dest 'VCRUNTIME140.dll') | Should -BeFalse
@@ -512,7 +568,7 @@ Describe 'Copy-LokiVcRuntimeAppLocal (fail-closed staging)' {
         $src = New-EngineCaseDir
         [System.IO.File]::WriteAllText((Join-Path $src 'VCRUNTIME140.dll'), 'not-a-real-dll', [System.Text.Encoding]::ASCII)
         $dest = New-EngineCaseDir
-        $r = Copy-LokiVcRuntimeAppLocal -SourceDir $src -DestDir $dest -Files @('VCRUNTIME140.dll') -MinVersion '1.0'
+        $r = Copy-LokiVcRuntimeAppLocal -SourceDir $src -DestDir $dest -Files @('VCRUNTIME140.dll') -MinVersion '1.0' -StagingDir (New-EngineCaseDir)
         $r.Ok | Should -BeFalse
         $r.Reason | Should -Be 'version-unreadable'
         Test-Path -LiteralPath (Join-Path $dest 'VCRUNTIME140.dll') | Should -BeFalse
@@ -521,7 +577,7 @@ Describe 'Copy-LokiVcRuntimeAppLocal (fail-closed staging)' {
     It 'rejects an invalid MinVersion instead of silently staging' {
         $src = New-EngineCaseDir
         Copy-Item -LiteralPath $script:VersionedSource -Destination (Join-Path $src 'VCRUNTIME140.dll') -Force
-        $r = Copy-LokiVcRuntimeAppLocal -SourceDir $src -DestDir (New-EngineCaseDir) -Files @('VCRUNTIME140.dll') -MinVersion 'latest'
+        $r = Copy-LokiVcRuntimeAppLocal -SourceDir $src -DestDir (New-EngineCaseDir) -Files @('VCRUNTIME140.dll') -MinVersion 'latest' -StagingDir (New-EngineCaseDir)
         $r.Ok | Should -BeFalse
         $r.Reason | Should -Be 'min-version-invalid'
     }

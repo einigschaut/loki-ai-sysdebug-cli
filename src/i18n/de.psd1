@@ -91,8 +91,10 @@
     'integrity.engine.notInstalled'     = 'nicht installiert - loki setup auf dem Einrichte-Rechner ausfuehren'
     'integrity.engine.archiveMissing'   = 'das gepinnte Archiv fehlt - Integritaet nicht nachweisbar; loki setup erneut ausfuehren'
     'integrity.engine.archiveMismatch'  = 'das Archiv passt NICHT zum gepinnten Hash - diesem Stick nicht trauen; loki setup erneut ausfuehren'
+    'integrity.engine.archiveUnreadable' = 'das gepinnte Archiv war nicht LESBAR, daher konnte hier nichts geprueft werden - moeglicherweise ist der Stick defekt (oder ein Scanner haelt die Datei); Inhalt sichern und Medium pruefen'
     'integrity.engine.fileMismatch'     = '{0} Datei(en) passen NICHT zum gepinnten Build: {1}'
     'integrity.engine.unexpectedFile'   = '{0} Datei(en), die der gepinnte Build nicht enthaelt: {1}'
+    'integrity.engine.fileUnreadable'   = '{0} Datei(en) waren nicht LESBAR und konnten daher weder bestaetigt noch widerlegt werden - moeglicherweise ist der Stick defekt: {1}'
     'integrity.engine.fileMissing'      = '{0} Datei(en) des gepinnten Builds fehlen: {1}'
     'integrity.engine.error'            = 'Integritaet nicht nachweisbar ({0})'
     'integrity.runtime.ok'             = 'vorhanden und aktuell genug ({0}, {1})'
@@ -103,6 +105,7 @@
     'integrity.runtime.unknown'         = 'nicht ermittelbar ({0})'
     'integrity.model.verified'          = '{0}: gegen den Pin geprueft'
     'integrity.model.mismatch'          = '{0}: passt NICHT zum gepinnten Hash - nicht laden'
+    'integrity.model.unreadable'        = '{0}: war nicht LESBAR und konnte daher nicht geprueft werden - moeglicherweise ist der Stick defekt; mit loki setup erneut holen'
     'integrity.model.noneInstalled'     = 'keine Modellstufen auf diesem Stick - mit loki setup hinzufuegen'
 
     'footprint.heading'         = 'loki doctor --footprint'

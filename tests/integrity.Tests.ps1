@@ -232,6 +232,102 @@ Describe 'Test-LokiEngineIntegrity' {
         (Test-LokiEngineIntegrity -Layout $s.Layout -Engine $s.Engine).Reason | Should -Be 'archive-missing'
     }
 
+    It 'an UNREADABLE expanded file is reported as unreadable, NOT as tampered with' {
+        # Reproduced against the old code before this was written: a locked file came back as 'file-mismatch', i.e.
+        # "the bytes are not what the pin says". On a USB stick the overwhelmingly likely cause is a bad sector or an
+        # AV handle, and telling that operator their engine was altered sends them hunting for an attacker who is not
+        # there -- while the actual answer, "your medium is failing", goes unsaid.
+        $s = New-EngineStick -Entries @{ 'llama-server.exe' = 'MZ-server'; 'ggml-base.dll' = 'dll-bytes' }
+        $target = Join-Path $s.Layout.Dir 'ggml-base.dll'
+        $hold = [System.IO.File]::Open($target, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::None)
+        try {
+            $r = Test-LokiEngineIntegrity -Layout $s.Layout -Engine $s.Engine
+            $r.Ok | Should -BeFalse
+            $r.Reason | Should -Be 'file-unreadable'
+            $r.Unreadable | Should -Contain 'ggml-base.dll'
+            @($r.Mismatched).Count | Should -Be 0
+            # It must not be counted as verified either -- unknown is not a quiet yes.
+            $r.Checked | Should -Be 1
+        }
+        finally { $hold.Close() }
+        # The same stick verifies once the handle is gone: the case above is about readability, not a broken fixture.
+        (Test-LokiEngineIntegrity -Layout $s.Layout -Engine $s.Engine).Ok | Should -BeTrue
+    }
+
+    It 'an UNREADABLE archive is reported as unreadable, NOT as a hash mismatch' {
+        # The root of the chain, and the loudest possible lie: 'archive-mismatch' reads as "do not trust this stick".
+        $s = New-EngineStick -Entries @{ 'llama-server.exe' = 'MZ-server' }
+        $hold = [System.IO.File]::Open($s.Layout.ArchivePath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::None)
+        try {
+            $r = Test-LokiEngineIntegrity -Layout $s.Layout -Engine $s.Engine
+            $r.Ok | Should -BeFalse
+            $r.Reason | Should -Be 'archive-unreadable'
+        }
+        finally { $hold.Close() }
+    }
+
+    It 'BREAK-THE-GUARD: an unreadable file NEVER masks a tampered one' {
+        # The one thing an attacker could buy with a lock: unreadable is the softer verdict (5, not 1), so if it could
+        # outrank a real mismatch, locking one file would downgrade the report on a stick that IS altered.
+        $s = New-EngineStick -Entries @{ 'llama-server.exe' = 'MZ-server'; 'ggml-base.dll' = 'dll-bytes' }
+        [System.IO.File]::WriteAllText((Join-Path $s.Layout.Dir 'llama-server.exe'), 'EVIL')
+        $locked = Join-Path $s.Layout.Dir 'ggml-base.dll'
+        $hold = [System.IO.File]::Open($locked, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::None)
+        try {
+            $r = Test-LokiEngineIntegrity -Layout $s.Layout -Engine $s.Engine
+            $r.Reason | Should -Be 'file-mismatch'
+            $r.Mismatched | Should -Contain 'llama-server.exe'
+            # Both facts survive into the report -- the operator is not told only the scarier half.
+            $r.Unreadable | Should -Contain 'ggml-base.dll'
+        }
+        finally { $hold.Close() }
+    }
+
+    It 'BREAK-THE-GUARD: an unreadable file NEVER masks a PLANTED one' {
+        $s = New-EngineStick -Entries @{ 'llama-server.exe' = 'MZ-server'; 'ggml-base.dll' = 'dll-bytes' }
+        [System.IO.File]::WriteAllText((Join-Path $s.Layout.Dir 'ggml-cpu-haswell.dll'), 'PLANTED')
+        $locked = Join-Path $s.Layout.Dir 'ggml-base.dll'
+        $hold = [System.IO.File]::Open($locked, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::None)
+        try { (Test-LokiEngineIntegrity -Layout $s.Layout -Engine $s.Engine).Reason | Should -Be 'unexpected-file' }
+        finally { $hold.Close() }
+    }
+
+    It 'BREAK-THE-GUARD: an archive that is unreadable AND wrong still cannot pass' {
+        # Belt and braces on the softer verdict: the only property that actually matters is that neither is a pass.
+        $s = New-EngineStick -Entries @{ 'llama-server.exe' = 'MZ-server' }
+        $bad = $s.Engine.Clone()
+        $bad.Sha256 = '0' * 64
+        $hold = [System.IO.File]::Open($s.Layout.ArchivePath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::None)
+        try { (Test-LokiEngineIntegrity -Layout $s.Layout -Engine $bad).Ok | Should -BeFalse }
+        finally { $hold.Close() }
+    }
+
+    It 'setup temp files in the staging SIBLING do not make the engine look tampered with' {
+        # The defect: engine-offline\ held setup's own .part/.staging/.bak, and the reconcile -- correctly -- called
+        # them files the pinned archive does not account for. The fix moves them out, so the check keeps its meaning.
+        $s = New-EngineStick -Entries @{ 'llama-server.exe' = 'MZ-server' }
+        New-Item -ItemType Directory -Force -Path $s.Layout.StagingDir | Out-Null
+        foreach ($n in @('engine.zip.part', 'VCRUNTIME140.dll.staging', 'VCRUNTIME140.dll.bak')) {
+            [System.IO.File]::WriteAllText((Join-Path $s.Layout.StagingDir $n), 'leftover-from-a-killed-setup')
+        }
+        $r = Test-LokiEngineIntegrity -Layout $s.Layout -Engine $s.Engine
+        $r.Ok | Should -BeTrue
+        $r.Reason | Should -Be 'verified'
+    }
+
+    It 'BREAK-THE-GUARD: a .bak/.staging/.part INSIDE the engine directory is still a planted file' {
+        # The shortcut fix -- adding *.bak/*.staging/*.part to the expected set -- would have been smaller and wrong:
+        # it hands an attacker a naming convention. evil.dll.bak sits in llama-server's DLL search path exactly like
+        # evil.dll does. The suffix is not a permission.
+        foreach ($n in @('evil.dll.bak', 'evil.dll.staging', 'evil.dll.part')) {
+            $s = New-EngineStick -Entries @{ 'llama-server.exe' = 'MZ-server' }
+            [System.IO.File]::WriteAllText((Join-Path $s.Layout.Dir $n), 'PLANTED')
+            $r = Test-LokiEngineIntegrity -Layout $s.Layout -Engine $s.Engine
+            $r.Reason | Should -Be 'unexpected-file'
+            $r.Unexpected | Should -Contain $n
+        }
+    }
+
     It 'a stick with no engine at all says so (distinct from a broken one)' {
         $appRoot = New-IntegrityCaseDir
         $engine = @{ FileName = 'engine.zip'; ServerExe = 'llama-server.exe'; Sha256 = '0' * 64; Version = 'b1' }
@@ -324,6 +420,23 @@ Describe 'Test-LokiModelIntegrity' {
         $entry = @{ Id = 'max'; FileName = 'max.gguf'; Sha256 = '0' * 64 }
         $r = Test-LokiModelIntegrity -Entry $entry -ModelsDir (New-IntegrityCaseDir)
         $r.Reason | Should -Be 'not-installed'
+    }
+
+    It 'an UNREADABLE tier is not a swapped tier' {
+        # A tier is several GB on removable media -- the artifact most likely to meet a bad sector. 'mismatch' reads
+        # as "do not load it, someone swapped your model"; the honest answer is that we could not read it.
+        $d = New-IntegrityCaseDir
+        $p = Join-Path $d 'nano.gguf'
+        [System.IO.File]::WriteAllText($p, 'weights')
+        $entry = @{ Id = 'nano'; FileName = 'nano.gguf'; Sha256 = (Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash }
+        $hold = [System.IO.File]::Open($p, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::None)
+        try {
+            $r = Test-LokiModelIntegrity -Entry $entry -ModelsDir $d
+            $r.Ok | Should -BeFalse
+            $r.Reason | Should -Be 'unreadable'
+        }
+        finally { $hold.Close() }
+        (Test-LokiModelIntegrity -Entry $entry -ModelsDir $d).Ok | Should -BeTrue
     }
 
     It 'BREAK-THE-GUARD: a model whose presence cannot even be determined is never verified' {
@@ -595,9 +708,18 @@ Describe 'Get-LokiIntegrityExitCode (pure; 1 = the stick is WRONG, 5 = the stick
         # A swapped model is a "do not trust this stick" on its own.
         @{ engineReason = 'verified'; runtimeOk = $true; modelReasons = @('mismatch'); expected = 1 }
         @{ engineReason = 'verified'; runtimeOk = $true; modelReasons = @('verified', 'mismatch'); expected = 1 }
+        # UNDETERMINED: we could not read the bytes. Not 1 -- on a USB stick that is a failing medium far more often
+        # than an adversary, and 1 says "this stick has been altered". Never 0 either: nothing may load unverified.
+        @{ engineReason = 'archive-unreadable'; runtimeOk = $true; modelReasons = @('verified'); expected = 5 }
+        @{ engineReason = 'file-unreadable'; runtimeOk = $true; modelReasons = @('verified'); expected = 5 }
+        @{ engineReason = 'verified'; runtimeOk = $true; modelReasons = @('unreadable'); expected = 5 }
         # WRONG beats INCOMPLETE: if anything does not match its pin, that is the answer.
         @{ engineReason = 'file-mismatch'; runtimeOk = $false; modelReasons = @('mismatch'); expected = 1 }
         @{ engineReason = 'engine-not-installed'; runtimeOk = $false; modelReasons = @('mismatch'); expected = 1 }
+        # ...and it beats UNDETERMINED too, on both sides. This is the property a file-locking attacker would attack:
+        # if an unreadable file could soften the verdict on a stick that IS altered, the lock would be the exploit.
+        @{ engineReason = 'file-unreadable'; runtimeOk = $true; modelReasons = @('mismatch'); expected = 1 }
+        @{ engineReason = 'file-mismatch'; runtimeOk = $true; modelReasons = @('unreadable'); expected = 1 }
     ) {
         $r = New-ExitReport -EngineReason $engineReason -RuntimeOk $runtimeOk -ModelReasons $modelReasons
         Get-LokiIntegrityExitCode -Report $r | Should -Be $expected
@@ -661,9 +783,13 @@ Describe 'ConvertTo-LokiIntegrityChecks (pure)' {
         @{ reason = 'unsafe-entry'; severity = 'fail' }
         @{ reason = 'nothing-verified'; severity = 'fail' }
         @{ reason = 'verify-failed'; severity = 'fail' }
+        # 'unknown' is a different claim, not a softer 'fail': it renders as a warning and can never count as OK, but
+        # it does not tell an operator their stick was altered when all we know is that we could not read it.
+        @{ reason = 'archive-unreadable'; severity = 'unknown' }
+        @{ reason = 'file-unreadable'; severity = 'unknown' }
     ) {
         $e = @{ Ok = ($reason -eq 'verified'); Reason = $reason; Checked = 1
-            Mismatched = @('a.dll'); Unexpected = @('b.dll'); Missing = @('c.dll')
+            Mismatched = @('a.dll'); Unexpected = @('b.dll'); Missing = @('c.dll'); Unreadable = @('d.dll')
         }
         $checks = ConvertTo-LokiIntegrityChecks -Report (New-Report -Engine $e -Runtime $script:OkRuntime -Models $script:OkModels)
         $engineCheck = @($checks | Where-Object { $_.Id -eq 'engine' })[0]
@@ -681,6 +807,26 @@ Describe 'ConvertTo-LokiIntegrityChecks (pure)' {
         $checks = ConvertTo-LokiIntegrityChecks -Report $rep
         $c = @($checks | Where-Object { $_.Id -eq 'runtime' })[0]
         $c.Severity | Should -Be 'fail'
+    }
+
+    It 'an unreadable engine file names the files it could not read, so the report is actionable' {
+        # 'unknown' without the WHICH is just a shrug. The operator needs to know what to look at.
+        $e = @{ Ok = $false; Reason = 'file-unreadable'; Checked = 3
+            Mismatched = @(); Unexpected = @(); Missing = @(); Unreadable = @('ggml-base.dll', 'ggml-cpu.dll')
+        }
+        $checks = ConvertTo-LokiIntegrityChecks -Report (New-Report -Engine $e -Runtime $script:OkRuntime -Models $script:OkModels)
+        $c = @($checks | Where-Object { $_.Id -eq 'engine' })[0]
+        $c.DetailArgs[0] | Should -Be 2
+        $c.DetailArgs[1] | Should -Be 'ggml-base.dll, ggml-cpu.dll'
+    }
+
+    It 'an unreadable model reads as unknown, not as a swapped model' {
+        $rep = New-Report -Engine @{ Ok = $true; Reason = 'verified'; Checked = 1 } -Runtime $script:OkRuntime `
+            -Models @(@{ Ok = $false; Reason = 'unreadable'; Id = 'nano' })
+        $checks = ConvertTo-LokiIntegrityChecks -Report $rep
+        $c = @($checks | Where-Object { $_.Id -eq 'model:nano' })[0]
+        $c.Severity | Should -Be 'unknown'
+        $c.DetailKey | Should -Be 'integrity.model.unreadable'
     }
 
     It 'but only a warning when there is no engine to need it' {

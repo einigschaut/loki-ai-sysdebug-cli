@@ -12,8 +12,9 @@
 # opt-in operator action (`--stage-runtime`) that copies the files from the operator's OWN machine to their OWN stick.
 # Contract:
 #   Get-LokiEngineManifest -Path <psd1> -> [hashtable]{ Engine; Runtime }  (throws fail-closed on any bad field).
-#   Get-LokiEngineLayout -AppRoot <dir> -Engine <manifest.Engine> -> [hashtable]{ Dir; ArchivePath; ServerExePath }
-#       (pure; touches no disk).
+#   Get-LokiEngineLayout -AppRoot <dir> -Engine <manifest.Engine>
+#       -> [hashtable]{ Dir; ArchivePath; ServerExePath; StagingDir }  (pure; touches no disk).
+#       StagingDir is where setup's temporaries go -- a SIBLING of Dir, never inside it (see the function).
 #   Test-LokiArchiveEntrySafe -EntryName <string> -> [bool]  (pure predicate; the zip-slip gate).
 #   ConvertTo-LokiRuntimeVersion -Text <string> -> [version] or $null  (pure; parses '14.51.36247.0' / 'v14.51.36247.00';
 #       $null -- never a throw -- on anything unparsable, so callers can fail closed).
@@ -28,8 +29,10 @@
 #       PRESENCE only -- it does not judge versions; pair it with Get-LokiVcRuntimeFloorCheck.
 #   Get-LokiVcRuntimeFloorCheck -Found <entries> -MinVersion <string> -> [hashtable]{ Ok; Reason; [Version]; [File] }
 #       the MinVersion floor, in one place, used by BOTH the staging and the reporting path.
-#   Copy-LokiVcRuntimeAppLocal -SourceDir -DestDir -Files -MinVersion -> [hashtable]{ Ok; Reason; [Staged]; [Version]; [Missing]; [File] }
-#       fail-closed + rolled back: on any failure nothing is staged.
+#   Copy-LokiVcRuntimeAppLocal -SourceDir -DestDir -Files -MinVersion -StagingDir
+#       -> [hashtable]{ Ok; Reason; [Staged]; [Version]; [Missing]; [File] }
+#       fail-closed + rolled back: on any failure nothing is staged. StagingDir (mandatory, same volume as DestDir)
+#       holds the .staging/.bak temporaries so they never appear inside the verified DestDir.
 # ASCII-only file -> no BOM (CLAUDE.md section 1).
 Set-StrictMode -Version Latest
 
@@ -92,6 +95,14 @@ function Get-LokiEngineLayout {
         Dir           = $dir
         ArchivePath   = (Join-Path $dir ([string]$Engine.FileName))
         ServerExePath = (Join-Path $dir ([string]$Engine.ServerExe))
+        # A SIBLING, not a child (DESIGN.md section 2.2). Everything setup writes on its way into engine-offline\ --
+        # the .part of a download, the .staging copy of a runtime dll, the .bak of the file it displaces -- is
+        # UNVERIFIED by definition, and engine-offline\ is the one directory that holds only verified bytes. Written
+        # inside it, those temporaries are indistinguishable from a planted file to the reconcile, so a hard-killed
+        # setup made `loki doctor --engine` report tampering. Kept OUT of it, the reconcile keeps its meaning:
+        # anything the pinned archive does not account for is genuinely something that does not belong.
+        # Same volume as Dir by construction (both under AppRoot) -> committing a staged file is a rename, not a copy.
+        StagingDir    = (Join-Path $AppRoot 'engine-staging')
     }
 }
 
@@ -365,12 +376,19 @@ function Copy-LokiVcRuntimeAppLocal {
         MinVersion all abort WITHOUT copying anything. Rationale for the floor: Microsoft guarantees the redistributable
         is binary compatible back to 2015 going forward, so a newer runtime is always safe -- an older one can be
         missing exports the engine imports, which would surface as an unexplainable loader failure on the target.
+
+        StagingDir is MANDATORY on purpose. It would default naturally to DestDir -- and that default is precisely the
+        defect this parameter exists to remove (temporaries inside the verified directory read as tampering, see
+        Get-LokiEngineLayout). A default nobody has to think about is how the defect would come back, so the contract
+        makes every caller name the place. It must be on the same volume as DestDir, or each commit below degrades
+        from a rename into a copy.
     #>
     param(
         [Parameter(Mandatory = $true)][string]$SourceDir,
         [Parameter(Mandatory = $true)][string]$DestDir,
         [Parameter(Mandatory = $true)][string[]]$Files,
-        [Parameter(Mandatory = $true)][string]$MinVersion
+        [Parameter(Mandatory = $true)][string]$MinVersion,
+        [Parameter(Mandatory = $true)][string]$StagingDir
     )
     # Function-scoped: without it Copy-Item / Move-Item failures are non-terminating, the catch blocks never fire, and
     # this returns Ok=$true 'staged' over files it never wrote (reproduced by adversarial review).
@@ -401,13 +419,18 @@ function Copy-LokiVcRuntimeAppLocal {
         }
     }
 
+    if (-not (Test-Path -LiteralPath $StagingDir)) { New-Item -ItemType Directory -Force -Path $StagingDir | Out-Null }
+
     # Copy every file to a .staging name FIRST, then move them all into place. A failure partway through must leave the
     # destination as it was -- a half-staged runtime (new VCRUNTIME140, stale MSVCP140) is the mixed set we refuse.
+    # The .staging copies land in StagingDir, NOT next to their targets: DestDir is verified space (see the parameter's
+    # note). The copy is cross-volume either way -- SourceDir is System32 on the host, DestDir is the stick -- so
+    # nothing is paid for the move; the commit below is the step that gains from staging on the same volume.
     $pending = New-Object System.Collections.Generic.List[object]
     try {
         foreach ($f in $status.Found) {
             $target = Join-Path $DestDir ([string]$f.File)
-            $tmp = $target + '.staging'
+            $tmp = Join-Path $StagingDir (([string]$f.File) + '.staging')
             Copy-Item -LiteralPath ([string]$f.Path) -Destination $tmp -Force
             $pending.Add([pscustomobject]@{ Tmp = $tmp; Target = $target; File = [string]$f.File })
         }
@@ -427,7 +450,10 @@ function Copy-LokiVcRuntimeAppLocal {
         $backup = $null
         try {
             if (Test-Path -LiteralPath $p.Target) {
-                $backup = $p.Target + '.bak'
+                # Out to StagingDir as well: the displaced original is the file we are replacing BECAUSE it is not
+                # what we want loaded, and parking it in DestDir under a .bak name leaves exactly that inside the
+                # verified directory -- where the reconcile has to call it out, and rightly so.
+                $backup = Join-Path $StagingDir (([string]$p.File) + '.bak')
                 Move-Item -LiteralPath $p.Target -Destination $backup -Force
             }
             Move-Item -LiteralPath $p.Tmp -Destination $p.Target -Force
