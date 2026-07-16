@@ -48,7 +48,7 @@
     'auth.usage'                = 'Verwendung: loki auth <login|status|use|set|clear>'
 
     'status.net.online'         = 'Netz: erreichbar (Online-Engine nutzbar)'
-    'status.net.offline'        = 'Netz: nicht erreichbar - nur Offline-Pfad (collect/offline) verfügbar'
+    'status.net.offline'        = 'Netz: nicht erreichbar - die Online-Engine fällt aus. "loki collect" schreibt trotzdem einen reinen Diagnose-Dump.'
     'status.postureRollup'      = '{0} ok, {1} Warnung(en), {2} Problem(e)'
     'status.doctorHint'         = '`loki doctor` für die volle Prüfung (Auth, Host-Posture, Volume/BitLocker).'
 
@@ -170,12 +170,28 @@
     'hwscan.overrideTooBig'     = "Tier '{0}' braucht ~{1} GB - mehr als die {2} GB, die ein Modell auf diesem Rechner belegen darf. Speicher freigeben hilft nicht: nimm einen kleineren Tier oder --force."
     'hwscan.nothingFitsNow'     = 'Gerade passt kein installiertes Modell - mit freiem Speicher würde sich das ändern.'
     'hwscan.addSmallerTier'     = 'Kein installiertes Modell läuft auf diesem Rechner. Tier "{0}" würde laufen - mit "loki setup" an einem verbundenen Rechner nachladen.'
-    'hwscan.machineTooSmall'    = 'Kein Modell aus dem Katalog läuft auf diesem Rechner. Kein Download hilft hier - nimm stattdessen einen reinen Diagnose-Dump auf.'
+    'hwscan.machineTooSmall'    = 'Kein Modell aus dem Katalog läuft auf diesem Rechner. Kein Download hilft hier - nimm stattdessen mit "loki collect" einen reinen Diagnose-Dump auf.'
     'hwscan.freeHint'           = 'Gib {0} GB frei, um "{1}" zu ermöglichen. Größte Speicherhalter gerade (Näherungswerte):'
     'hwscan.consumerRow'        = '    {0,-22} {1,3} Prozess(e)   ~{2} GB'
     'hwscan.badArg'             = "Unbekanntes Argument: '{0}'."
     'hwscan.modelNeedsValue'    = '--model braucht eine Tier-Id, z. B. "loki hwscan --model mid".'
     'hwscan.forceNeedsModel'    = '--force gilt nur zusammen mit --model, z. B. "loki hwscan --model mid --force". Allein würde es nichts ändern.'
+
+    'collect.summary'           = 'Reinen Diagnose-Dump schreiben (ohne Netz, Modell oder Adminrechte)'
+    'collect.heading'           = 'loki collect - reiner Diagnose-Dump'
+    'collect.working'           = 'Sammle Daten. Ein, zwei Batterien brauchen auf einem ausgelasteten Rechner rund eine Sekunde.'
+    'collect.batteryOk'         = '{0,-10} {1,5} ms'
+    'collect.batteryFailed'     = '{0,-10} {1,5} ms  {2}: {3}'
+    'collect.status.timeout'    = 'Zeitüberschreitung'
+    'collect.status.failed'     = 'fehlgeschlagen'
+    'collect.noReason'          = 'ohne Angabe von Gründen'
+    'collect.wroteData'         = 'Daten:   {0}'
+    'collect.wroteReport'       = 'Bericht: {0}'
+    'collect.footer'            = 'Gesammelt: {0} ok, {1} fehlgeschlagen. Eine fehlgeschlagene Batterie steht im Dump - sie lässt den Lauf nicht scheitern.'
+    'collect.writeFailed'       = 'Der Dump konnte nicht nach {0} geschrieben werden ({1}). Ist der Stick voll oder schreibgeschützt?'
+    'collect.badArg'            = "Unbekanntes Argument: '{0}'."
+    'collect.onlyNeedsValue'    = '--only braucht eine Batterie-Liste, z. B. "loki collect --only os,storage".'
+    'collect.unknownBattery'    = "Unbekannte Batterie: '{0}'. Bekannt: {1}."
 
     'setup.engineHeading'       = 'loki setup - Offline-Engine'
     'setup.engineOffline'       = 'github.com nicht erreichbar - von dort kommt die Offline-Engine. Führe setup an einem verbundenen Rechner aus.'

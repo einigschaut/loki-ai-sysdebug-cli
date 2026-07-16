@@ -16,10 +16,11 @@ computers.
 
 > **Status: pre-release (v0.x). Not production-ready.**
 > What works today: the dispatcher, the generated command registry, `version` / `help` / `status` /
-> `doctor` / `auth`, config + settings precedence, the environment-isolation primitives, localization,
-> and the **online engine** (`ask` / `scan` / `chat`) behind the allow-list gate. The **offline engine**
-> is not wired up yet, and the online commands' interactive/live paths are still being hardened. See the
-> [roadmap](docs/DESIGN.md#7-roadmap).
+> `doctor` / `auth` / `hwscan` / `collect`, config + settings precedence, the environment-isolation
+> primitives, localization, and the **online engine** (`ask` / `scan` / `chat`) behind the allow-list gate.
+> `collect` writes a raw diagnostic dump with no network, model or admin required — the answer when nothing
+> else can help. The **offline engine** itself is not wired up yet, and the online commands'
+> interactive/live paths are still being hardened. See the [roadmap](docs/DESIGN.md#7-roadmap).
 
 ## Honest security scope
 
@@ -74,6 +75,7 @@ table by hand; run `build/Update-LokiDocs.ps1` (a CI gate fails the build if it 
 
 | Command | Group | Description |
 | --- | --- | --- |
+| `collect` | Diagnostics | Write a raw diagnostic dump (no network, model or admin needed) |
 | `doctor` | Health | Full environment & host-posture diagnosis |
 | `help` | Health | Help / command overview (also: loki <cmd> --help) |
 | `hwscan` | Health | Check what the offline engine can run on this machine (writes nothing) |
