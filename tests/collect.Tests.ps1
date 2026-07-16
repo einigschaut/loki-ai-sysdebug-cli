@@ -519,6 +519,31 @@ Describe 'Get-LokiCollectEventLogEntry' {
         $r.WindowHours | Should -Be 72
     }
 
+    It 'reports the window it was ASKED for, not the one in the constant' {
+        <#
+            The row used to fill WindowHours from $script:LokiCollectEventWindowHours whatever -Since said, so it
+            could contradict its own parameter. Measured on the broken version: asked for 6 hours it claimed 72, and
+            asked for ten years it claimed 72 while reporting Matched=500 -- "500 errors in the last 72 hours" about
+            a machine that had 500 in a decade. A reader acts on that number.
+
+            Two windows, both away from the 72 the constant holds, so the constant cannot satisfy either.
+        #>
+        $six = Get-LokiCollectEventLogEntry -LogName 'System' -Since ([datetime]::Now).AddHours(-6)
+        $six.WindowHours | Should -Be 6
+
+        $twelve = Get-LokiCollectEventLogEntry -LogName 'System' -Since ([datetime]::Now).AddHours(-12)
+        $twelve.WindowHours | Should -Be 12
+    }
+
+    It 'the empty-window row describes its window too -- a failed lookup still says what it looked at' {
+        # The early-return path (no matching events) builds the same row, so it needs the same honesty. A dump whose
+        # empty result claims the wrong window reads as "nothing wrong in 72 hours" for a window that was minutes.
+        $r = Get-LokiCollectEventLogEntry -LogName 'System' -Since ([datetime]::Now).AddDays(365)
+        $r.Matched | Should -Be 0
+        # A future window is negative hours -- odd, and honest. What it must NOT be is a confident, wrong 72.
+        $r.WindowHours | Should -BeLessThan 0
+    }
+
     It 'never returns more sample rows than the cap, however many matched' {
         $r = Get-LokiCollectEventLogEntry -LogName 'System' -Since ([datetime]::Now).AddDays(-90)
         @($r.Newest).Count | Should -BeLessOrEqual 15
