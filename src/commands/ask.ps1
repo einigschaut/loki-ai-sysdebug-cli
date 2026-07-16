@@ -63,7 +63,10 @@ function Invoke-LokiCmd_ask {
     Write-LokiLine ([string]$res.Result)
     if ($null -ne $res.CostUsd) {
         Write-LokiLine ''
-        Write-LokiInfo (Get-LokiText 'ask.cost' -ArgumentList @([string]$res.CostUsd))
+        # NOT [string]$res.CostUsd: PowerShell's [string] cast is culture-INVARIANT (measured -- it stays '0.42' even
+        # under a forced en-US thread), so pre-casting hands Get-LokiText a finished string and takes the number out
+        # of localization entirely. A German user would read "Kosten: 0.42 USD". The double goes through as a double.
+        Write-LokiInfo (Get-LokiText 'ask.cost' -ArgumentList @($res.CostUsd))
     }
     return (Get-LokiExitCode 'Ok')
 }

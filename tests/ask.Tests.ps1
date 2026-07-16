@@ -107,6 +107,22 @@ Describe 'Command ask' {
             $r.AllText | Should -BeLike '*0.0123*'
         }
 
+        It 'the cost is localized with the message, not pre-stringified past it' {
+            # This assertion only means something under 'de'. The command used to pass [string]$res.CostUsd, and
+            # PowerShell's [string] cast is culture-INVARIANT (measured) -- so the pre-cast and a correctly formatted
+            # 'en' double BOTH render "0.0123", and no en-locale test can tell them apart. Under 'de' they diverge:
+            # a pre-cast still says "0.0123" inside a German sentence, the double says "0,0123".
+            Mock Invoke-LokiClaude { @{ Ok = $true; Reason = 'ok'; Result = 'ok'; CostUsd = 0.0123; IsError = $false } }
+            $src = (Resolve-Path "$PSScriptRoot\..\src").Path
+            try {
+                Initialize-LokiI18n -AppRoot $src -Locale 'de' | Out-Null
+                $r = Invoke-AskCommand -Context (New-TestAskContext)
+                $r.AllText | Should -BeLike '*0,0123*'
+                $r.AllText | Should -Not -BeLike '*0.0123*'
+            }
+            finally { Initialize-LokiI18n -AppRoot $src -Locale 'en' | Out-Null }
+        }
+
         It 'auth-missing -> AuthMissing exit with a helpful message' {
             Mock Invoke-LokiClaude { @{ Ok = $false; Reason = 'auth-missing' } }
             $r = Invoke-AskCommand -Context (New-TestAskContext)

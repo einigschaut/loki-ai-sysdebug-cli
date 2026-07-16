@@ -86,7 +86,9 @@ function Invoke-LokiCmd_scan {
     Write-LokiLine ([string]$res.Result)
     if ($null -ne $res.CostUsd) {
         Write-LokiLine ''
-        Write-LokiInfo (Get-LokiText 'scan.cost' -ArgumentList @([string]$res.CostUsd))
+        # NOT [string]$res.CostUsd -- see the same note in commands/ask.ps1: the cast is culture-invariant and would
+        # take the cost out of localization before Get-LokiText ever sees it.
+        Write-LokiInfo (Get-LokiText 'scan.cost' -ArgumentList @($res.CostUsd))
     }
     return (Get-LokiExitCode 'Ok')
 }
