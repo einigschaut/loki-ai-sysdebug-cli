@@ -49,7 +49,7 @@ function Invoke-LokiCmd_setup {
         $gb = [math]::Round(([double]$m.SizeBytes / 1GB), 2)
         $star = ''
         if ($m.Default) { $star = ' *' }
-        Write-LokiLine ("  {0,-14} {1,-26} {2,6} GB  RAM~{3}GB  ctx {4}  {5}{6}" -f $m.Id, $m.Model, $gb, $m.MinRamGB, $m.ContextTokens, $m.License, $star)
+        Write-LokiLine ("  {0,-14} {1,-26} {2,6} GB  RAM~{3}GB  ctx {4}  {5}{6}" -f $m.Id, $m.Model, $gb, $m.ResidentGB, $m.ContextTokens, $m.License, $star)
     }
 
     if ($tokens.Count -eq 0) {

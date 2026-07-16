@@ -76,6 +76,7 @@ table by hand; run `build/Update-LokiDocs.ps1` (a CI gate fails the build if it 
 | --- | --- | --- |
 | `doctor` | Health | Full environment & host-posture diagnosis |
 | `help` | Health | Help / command overview (also: loki <cmd> --help) |
+| `hwscan` | Health | Check what the offline engine can run on this machine (writes nothing) |
 | `status` | Health | Quick environment check (writes nothing) |
 | `version` | Health | Show Loki and environment versions |
 | `ask` | Online | Ask the online engine a read-only diagnostic question |

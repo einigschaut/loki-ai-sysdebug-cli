@@ -119,6 +119,29 @@
     'setup.offline'             = 'loki setup braucht Internet - führe es am Rechner aus, an dem du den Stick einrichtest.'
     'setup.heading'             = 'loki setup - Offline-Modelle'
 
+    'hwscan.summary'            = 'Prüfen, was die Offline-Engine auf diesem Rechner leisten kann (schreibt nichts)'
+    'hwscan.heading'            = 'loki hwscan - Offline-Fähigkeit'
+    'hwscan.unknown'            = 'unbekannt'
+    'hwscan.cpu'                = 'CPU:       {0}'
+    'hwscan.cpuThreads'         = '{0} ({1} Threads)'
+    'hwscan.ram'                = 'RAM:       {0} GB gesamt, {1} GB verfügbar'
+    'hwscan.ramUnknown'         = 'RAM nicht ermittelbar - es kann kein Modell sicher gewählt werden.'
+    'hwscan.ramUnknownFatal'    = 'Ohne RAM-Wert wählt Loki kein Modell: hier zu raten heißt, genau den Rechner lahmzulegen, den man reparieren wollte. Mit --model <tier> --force überstimmen.'
+    'hwscan.budget'             = 'Budget:    {0} GB für ein Modell ({1} GB bleiben für den Host reserviert)'
+    'hwscan.installed'          = 'Modelle:   {0} von {1} Tier(s) auf diesem Stick'
+    'hwscan.tierRow'            = '    {0,-14} {1,-26} ~{2} GB resident'
+    'hwscan.selected'           = 'Würde laufen: {0} ({1}, ~{2} GB resident)'
+    'hwscan.forced'             = 'Erzwungen: dieser Tier braucht ~{0} GB, das Budget beträgt nur {1} GB. Mit starkem Swapping rechnen.'
+    'hwscan.forcedRamUnknown'   = 'Erzwungen: dieser Tier braucht ~{0} GB. Das RAM war nicht lesbar, das Risiko ist also nicht einschätzbar.'
+    'hwscan.noneInstalled'      = 'Auf diesem Stick liegt kein Modell. Führe zuerst "loki setup" an einem verbundenen Rechner aus.'
+    'hwscan.overrideMissing'    = "Tier '{0}' liegt nicht auf diesem Stick. 'loki hwscan' ohne --model zeigt, was da ist."
+    'hwscan.overrideTooLarge'   = "Tier '{0}' braucht ~{1} GB, das Budget beträgt nur {2} GB. Nimm einen kleineren Tier oder --force, um ihn trotzdem zu starten."
+    'hwscan.nothingFits'        = 'Kein installiertes Modell passt in ein Budget von {0} GB. Gib Speicher frei oder lade mit "loki setup" einen kleineren Tier.'
+    'hwscan.budgetTooSmall'     = 'Dieser Rechner hat zu wenig freien Speicher für irgendein Modell ({0} GB Budget). Kein Download hilft hier - nimm stattdessen einen reinen Diagnose-Dump auf oder gib Speicher frei und versuche es erneut.'
+    'hwscan.badArg'             = "Unbekanntes Argument: '{0}'."
+    'hwscan.modelNeedsValue'    = '--model braucht eine Tier-Id, z. B. "loki hwscan --model mid".'
+    'hwscan.forceNeedsModel'    = '--force gilt nur zusammen mit --model, z. B. "loki hwscan --model mid --force". Allein würde es nichts ändern.'
+
     'setup.engineHeading'       = 'loki setup - Offline-Engine'
     'setup.engineOffline'       = 'github.com nicht erreichbar - von dort kommt die Offline-Engine. Führe setup an einem verbundenen Rechner aus.'
     'setup.engineDownloading'   = 'Lade Engine {0} {1} (~{2} MB)...'

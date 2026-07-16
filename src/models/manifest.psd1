@@ -23,7 +23,7 @@
             FileName      = 'Qwen3-1.7B-Q4_K_M.gguf'
             Sha256        = 'b139949c5bd74937ad8ed8c8cf3d9ffb1e99c866c823204dc42c0d91fa181897'
             SizeBytes     = 1107409472
-            MinRamGB      = 2.5
+            ResidentGB      = 2.5
             ContextTokens = 32768
             Default       = $false
             Note          = 'Low-RAM fallback. Universal llama.cpp support (pure transformer).'
@@ -37,7 +37,7 @@
             FileName      = 'Qwen3-4B-Instruct-2507-Q4_K_M.gguf'
             Sha256        = '3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597'
             SizeBytes     = 2497281120
-            MinRamGB      = 4.5
+            ResidentGB      = 4.5
             ContextTokens = 262144
             Default       = $true
             Note          = 'Recommended default. Best small free model; non-thinking (concise); 262K context.'
@@ -51,7 +51,7 @@
             FileName      = 'Qwen3-8B-Q4_K_M.gguf'
             Sha256        = '120307ba529eb2439d6c430d94104dabd578497bc7bfe7e322b5d9933b449bd4'
             SizeBytes     = 5027784512
-            MinRamGB      = 7.0
+            ResidentGB      = 7.0
             ContextTokens = 32768
             Default       = $false
             Note          = 'Higher-accuracy mid tier. Best verified free ~8B (IFEval/MMLU-Pro).'
@@ -65,7 +65,7 @@
             FileName      = 'phi-4-Q4_K_M.gguf'
             Sha256        = '009aba717c09d4a35890c7d35eb59d54e1dba884c7c526e7197d9c13ab5911d9'
             SizeBytes     = 9053114816
-            MinRamGB      = 12.0
+            ResidentGB      = 12.0
             ContextTokens = 16384
             Default       = $false
             Note          = 'Best reasoning-per-token at 14B (MIT). 16K context -> chunk long logs.'
@@ -79,7 +79,7 @@
             FileName      = 'Qwen_Qwen3-14B-Q4_K_M.gguf'
             Sha256        = '915913e22399475dbe6c968ac014d9f1fbe08975e489279aede9d5c7b2c98eb6'
             SizeBytes     = 9001753632
-            MinRamGB      = 12.0
+            ResidentGB      = 12.0
             ContextTokens = 131072
             Default       = $false
             Note          = 'Large alternative for long / German logs (131K context, Apache).'
@@ -93,7 +93,7 @@
             FileName      = 'Mistral-Small-24B-Instruct-2501-Q4_K_M.gguf'
             Sha256        = 'd1a6d049f09730c3f8ba26cf6b0b60c89790b5fdafa9a59c819acdfe93fffd1b'
             SizeBytes     = 14333908672
-            MinRamGB      = 18.0
+            ResidentGB      = 18.0
             ContextTokens = 32768
             Default       = $false
             Note          = 'Practical CPU ceiling: text-only 24B, top instruction-following (IFEval 82.9), Apache.'
@@ -107,7 +107,7 @@
             FileName      = 'Qwen_Qwen3-32B-Q4_K_M.gguf'
             Sha256        = 'e41ec56ddd376963a116da97506fadfccb50fb402bb6f3cb4be0bc179a582bd6'
             SizeBytes     = 19762149696
-            MinRamGB      = 24.0
+            ResidentGB      = 24.0
             ContextTokens = 32768
             Default       = $false
             Note          = 'Highest free reasoning ceiling. Slow on CPU (~1-2 tok/s); needs ~24-32 GB RAM.'

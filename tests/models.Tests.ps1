@@ -23,7 +23,7 @@ BeforeAll {
         $e = @{
             Id = 'x'; Model = 'M'; Tier = 'T'; License = 'Apache-2.0'
             Url = 'https://example.com/m.gguf'; FileName = 'm.gguf'
-            Sha256 = ('a' * 64); SizeBytes = 123; MinRamGB = 2.0; ContextTokens = 4096
+            Sha256 = ('a' * 64); SizeBytes = 123; ResidentGB = 2.0; ContextTokens = 4096
         }
         foreach ($k in $Override.Keys) { $e[$k] = $Override[$k] }
         $path = Join-Path (New-ModelsCaseDir) 'manifest.psd1'
