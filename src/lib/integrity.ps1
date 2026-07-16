@@ -23,15 +23,19 @@
 #   Get-LokiZipEntryHash -Entry <ZipArchiveEntry> -> [string] SHA256 hex (uppercase), computed from the entry stream.
 #   Test-LokiEngineIntegrity -Layout <layout> -Engine <manifest entry> [-PreserveNames <string[]>]
 #       -> [hashtable]{ Ok; Reason; ... } Reason is a stable machine token, never localized (same convention as
-#       lib/allowlist.ps1): engine-not-installed | archive-missing | archive-mismatch | unsafe-entry | file-mismatch |
-#       unexpected-file | file-missing | nothing-verified | verify-failed | verified.
-#       On the 'verified'/'file-*'/'unexpected-file' paths it also carries Checked/Mismatched/Unexpected/Missing.
+#       lib/allowlist.ps1): engine-not-installed | archive-missing | archive-mismatch | archive-unreadable |
+#       unsafe-entry | file-mismatch | unexpected-file | file-unreadable | file-missing | nothing-verified |
+#       verify-failed | verified.
+#       On the 'verified'/'file-*'/'unexpected-file' paths it also carries
+#       Checked/Mismatched/Unexpected/Missing/Unreadable.
+#       The *-unreadable tokens are NOT a flavour of mismatch: they say we could not read the bytes, which on a USB
+#       stick usually means the medium is failing, not that anyone touched it. They can never report as OK.
 #   Get-LokiVcRuntimeHostStatus -RegistryKey <string> -MinVersion <string> -> [hashtable]{ Ok; Reason; [Version] }
 #       Is the MSVC runtime installed on the TARGET, system-wide, at or above the floor? Never throws.
 #   Resolve-LokiVcRuntimeAvailability -Directory -Files -MinVersion -RegistryKey -> [hashtable]{ Ok; Reason; Source }
 #       The one answer to `will llama-server find a good enough runtime here`, app-local and host in ONE place.
 #   Test-LokiModelIntegrity -Entry <manifest entry> -ModelsDir <dir> -> [hashtable]{ Ok; Reason; Id; [Path] }
-#       not-installed | mismatch | verified.
+#       not-installed | mismatch | unreadable | verified.
 #   Get-LokiEngineReport -AppRoot -Engine -Runtime -Models -> [hashtable] the impure gatherer (probes disk+registry).
 #   ConvertTo-LokiIntegrityChecks -Report -> [object[]] doctor check objects (PURE; same shape as lib/posture.ps1).
 #
@@ -74,10 +78,15 @@ function Test-LokiEngineIntegrity {
 
     if (-not (Test-Path -LiteralPath $Layout.Dir)) { return @{ Ok = $false; Reason = 'engine-not-installed' } }
     if (-not (Test-Path -LiteralPath $Layout.ArchivePath -PathType Leaf)) { return @{ Ok = $false; Reason = 'archive-missing' } }
-    # The root of the chain. Everything below is only as trustworthy as this line.
-    if (-not (Test-LokiFileHash -Path $Layout.ArchivePath -ExpectedSha256 ([string]$Engine.Sha256))) {
-        return @{ Ok = $false; Reason = 'archive-mismatch' }
-    }
+    # The root of the chain. Everything below is only as trustworthy as this line -- which is exactly why it must not
+    # say more than it knows: a bool here reported an archive we could not READ as an archive that did not MATCH, i.e.
+    # a failing USB stick was told its engine had been tampered with. Absent / unreadable / different are three
+    # different answers and the operator needs the right one.
+    $archiveState = Get-LokiFileHashState -Path $Layout.ArchivePath -ExpectedSha256 ([string]$Engine.Sha256)
+    if ($archiveState -eq 'unreadable') { return @{ Ok = $false; Reason = 'archive-unreadable' } }
+    # Deleted between the Test-Path above and this line. Vanishingly rare, but it is 'gone', not 'wrong'.
+    if ($archiveState -eq 'missing') { return @{ Ok = $false; Reason = 'archive-missing' } }
+    if ($archiveState -ne 'match') { return @{ Ok = $false; Reason = 'archive-mismatch' } }
 
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $zip = $null
@@ -99,15 +108,18 @@ function Test-LokiEngineIntegrity {
         $checked = 0
         $missing = New-Object System.Collections.Generic.List[string]
         $mismatched = New-Object System.Collections.Generic.List[string]
+        $unreadable = New-Object System.Collections.Generic.List[string]
         foreach ($entry in $zip.Entries) {
             if ([string]::IsNullOrEmpty([string]$entry.Name)) { continue }   # directory entry -- produces no file
             $rel = ([string]$entry.FullName) -replace '/', '\'
             $onDisk = Join-Path $dirFull $rel
-            if (-not (Test-Path -LiteralPath $onDisk -PathType Leaf)) { $missing.Add($rel); continue }
             # Compare the bytes on disk against the bytes INSIDE the verified archive -- not against each other.
-            if (-not (Test-LokiFileHash -Path $onDisk -ExpectedSha256 (Get-LokiZipEntryHash -Entry $entry))) {
-                $mismatched.Add($rel); continue
-            }
+            # $checked counts only PROVEN files: an unreadable one must never be able to satisfy the "we actually
+            # verified something" floor below.
+            $state = Get-LokiFileHashState -Path $onDisk -ExpectedSha256 (Get-LokiZipEntryHash -Entry $entry)
+            if ($state -eq 'missing') { $missing.Add($rel); continue }
+            if ($state -eq 'unreadable') { $unreadable.Add($rel); continue }
+            if ($state -ne 'match') { $mismatched.Add($rel); continue }
             $checked++
         }
         $zip.Dispose()
@@ -143,10 +155,17 @@ function Test-LokiEngineIntegrity {
             Mismatched = $mismatched.ToArray()
             Unexpected = $unexpected.ToArray()
             Missing    = $missing.ToArray()
+            Unreadable = $unreadable.ToArray()
         }
-        # Most alarming first: altered bytes, then a planted file, then a merely broken install.
+        # Most alarming first: altered bytes, then a planted file, then what we could not read, then a merely broken
+        # install. The order is a safety property, not a preference -- 'unreadable' is the only reason here that means
+        # "unknown", and it is the ONE thing an attacker could aim for: making a file unreadable turns a would-be
+        # file-mismatch(1) into an unknown(5). It must therefore never be able to mask a POSITIVE finding, so both
+        # findings that indict the stick are tested before it. What it may outrank is file-missing, which is merely
+        # the other half of the same broken-install answer.
         if ($mismatched.Count -gt 0) { return ($detail + @{ Ok = $false; Reason = 'file-mismatch' }) }
         if ($unexpected.Count -gt 0) { return ($detail + @{ Ok = $false; Reason = 'unexpected-file' }) }
+        if ($unreadable.Count -gt 0) { return ($detail + @{ Ok = $false; Reason = 'file-unreadable' }) }
         if ($missing.Count -gt 0) { return ($detail + @{ Ok = $false; Reason = 'file-missing' }) }
         # A pinned archive cannot really be empty -- but "we verified nothing and therefore found nothing wrong" is
         # the shape of every vacuous pass, so it is refused explicitly rather than left to the pin to prevent.
@@ -352,6 +371,10 @@ function Test-LokiModelIntegrity {
         'not-installed' is deliberately NOT a failure here: `loki setup` lets the operator pick a subset (ADR-0013),
         so an absent tier is normal. The CALLER decides what an absent model means -- for the harness about to load
         one it is fatal; for a report it is information.
+
+        'unreadable' is not 'mismatch'. A tier is several GB of file on removable media -- the one artifact most
+        likely to meet a bad sector -- and "this .gguf does NOT match its pin, do not load it" is an accusation, not
+        a diagnosis. It still never reads as fine (Get-LokiIntegrityExitCode).
     #>
     param(
         [Parameter(Mandatory = $true)]$Entry,
@@ -360,10 +383,10 @@ function Test-LokiModelIntegrity {
     $ErrorActionPreference = 'Stop'
     $id = [string]$Entry.Id
     $path = Join-Path $ModelsDir ([string]$Entry.FileName)
-    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return @{ Ok = $false; Reason = 'not-installed'; Id = $id } }
-    if (-not (Test-LokiFileHash -Path $path -ExpectedSha256 ([string]$Entry.Sha256))) {
-        return @{ Ok = $false; Reason = 'mismatch'; Id = $id; Path = $path }
-    }
+    $state = Get-LokiFileHashState -Path $path -ExpectedSha256 ([string]$Entry.Sha256)
+    if ($state -eq 'missing') { return @{ Ok = $false; Reason = 'not-installed'; Id = $id } }
+    if ($state -eq 'unreadable') { return @{ Ok = $false; Reason = 'unreadable'; Id = $id; Path = $path } }
+    if ($state -ne 'match') { return @{ Ok = $false; Reason = 'mismatch'; Id = $id; Path = $path } }
     return @{ Ok = $true; Reason = 'verified'; Id = $id; Path = $path }
 }
 
@@ -411,15 +434,30 @@ function Get-LokiIntegrityExitCode {
         staged is staged-but-wrong, and an unreadable signature is undetermined -- neither suggests tampering, and
         neither can reach 0.
 
+        UNREADABLE (archive-unreadable / file-unreadable / a model that could not be read) is 5, and that is the one
+        judgement in here worth arguing with, because it sits on the wrong side of the sentence above: we could not
+        establish the chain, yet it is not 1. The reasons it is still right:
+          * The medium says so first. Loki runs off a USB stick, where "this file cannot be read" is overwhelmingly a
+            dying stick, an AV scanner's exclusive handle, or an ACL -- not an adversary. Answering "do not trust this
+            stick" to a bad sector cries wolf on the common case, and a guard that cries wolf is a guard that gets
+            ignored on the day it is right.
+          * The attacker does not gain the thing that matters: unreadable can never reach 0, so nothing loads. All a
+            file-locking adversary buys is a different WORD for a stick that already refuses to run.
+          * It does not fit "could not establish the chain AT ALL" anyway: verify-failed is an exception we cannot
+            characterise, archive-missing is a state setup never leaves behind. Unreadable is a specific, named,
+            diagnosable condition -- so it gets a specific, honest answer instead of the loudest available one.
+        The residual limit is real and recorded in ADR-0014: an adversary who can hold a handle open (or set a
+        deny-read ACE on an NTFS-formatted stick) can push a would-be 1 down to a 5. Never to a 0.
+
         Collapsing those two into one code would make tampering indistinguishable from a fresh stick, and tampering
         must never look routine. A caller scripting this needs to tell "expected, run loki setup" from "this stick
         has been altered". 1 beats 5: if anything at all does not match its pin, that is the answer.
     #>
     param([Parameter(Mandatory = $true)]$Report)
 
-    # Anything other than these two means we compared bytes and they did not match (or we could not compare at all,
+    # Anything outside these two lists means we compared bytes and they did not match (or we could not compare at all,
     # which we refuse to treat as fine).
-    $engineIncomplete = @('engine-not-installed')
+    $engineIncomplete = @('engine-not-installed', 'archive-unreadable', 'file-unreadable')
     $engineOk = @('verified')
 
     $wrong = $false
@@ -429,9 +467,11 @@ function Get-LokiIntegrityExitCode {
     elseif ($engineOk -notcontains $Report.Engine.Reason) { $wrong = $true }
 
     # A model that is present but does not match its pin is as much a "do not trust this" as a bad engine file.
-    # A model that is simply absent is normal (ADR-0013) and is not counted here at all.
+    # A model that is simply absent is normal (ADR-0013) and is not counted here at all. One we could not read is
+    # undetermined -- same reasoning as the engine above, and equally unable to reach 0.
     foreach ($m in @($Report.Models)) {
         if ($m.Reason -eq 'mismatch') { $wrong = $true }
+        elseif ($m.Reason -eq 'unreadable') { $incomplete = $true }
     }
 
     # The runtime splits across BOTH buckets, so it cannot be a single not-Ok test.
@@ -467,13 +507,18 @@ function ConvertTo-LokiIntegrityChecks {
     $engineInstalled = ($e.Reason -ne 'engine-not-installed')
 
     # ---- engine ---------------------------------------------------------------------------------------------------
+    # 'unknown' is not a softer 'fail' -- it is a different claim. It renders as a warning and can never count as a
+    # clean OK (doctor.ps1), which is what fail-closed requires; what it does not do is tell an operator their stick
+    # was altered when all we actually know is that we could not read it.
     $engineMap = @{
         'verified'             = @{ Severity = 'ok'; Key = 'integrity.engine.verified' }
         'engine-not-installed' = @{ Severity = 'warn'; Key = 'integrity.engine.notInstalled' }
         'archive-missing'      = @{ Severity = 'fail'; Key = 'integrity.engine.archiveMissing' }
         'archive-mismatch'     = @{ Severity = 'fail'; Key = 'integrity.engine.archiveMismatch' }
+        'archive-unreadable'   = @{ Severity = 'unknown'; Key = 'integrity.engine.archiveUnreadable' }
         'file-mismatch'        = @{ Severity = 'fail'; Key = 'integrity.engine.fileMismatch' }
         'unexpected-file'      = @{ Severity = 'fail'; Key = 'integrity.engine.unexpectedFile' }
+        'file-unreadable'      = @{ Severity = 'unknown'; Key = 'integrity.engine.fileUnreadable' }
         'file-missing'         = @{ Severity = 'fail'; Key = 'integrity.engine.fileMissing' }
     }
     if ($engineMap.ContainsKey($e.Reason)) {
@@ -483,6 +528,7 @@ function ConvertTo-LokiIntegrityChecks {
             'verified' { $args_ = @($e.Checked, $Report.EngineVersion) }
             'file-mismatch' { $args_ = @(@($e.Mismatched).Count, (@($e.Mismatched) -join ', ')) }
             'unexpected-file' { $args_ = @(@($e.Unexpected).Count, (@($e.Unexpected) -join ', ')) }
+            'file-unreadable' { $args_ = @(@($e.Unreadable).Count, (@($e.Unreadable) -join ', ')) }
             'file-missing' { $args_ = @(@($e.Missing).Count, (@($e.Missing) -join ', ')) }
         }
         $checks.Add(@{ Id = 'engine'; Severity = $m.Severity; LabelKey = 'doctor.check.engine'
@@ -555,6 +601,11 @@ function ConvertTo-LokiIntegrityChecks {
             if ($m.Ok) {
                 $checks.Add(@{ Id = ('model:' + $m.Id); Severity = 'ok'; LabelKey = 'doctor.check.models'
                         DetailKey = 'integrity.model.verified'; DetailArgs = @([string]$m.Id); DetailRaw = $null
+                    })
+            }
+            elseif ($m.Reason -eq 'unreadable') {
+                $checks.Add(@{ Id = ('model:' + $m.Id); Severity = 'unknown'; LabelKey = 'doctor.check.models'
+                        DetailKey = 'integrity.model.unreadable'; DetailArgs = @([string]$m.Id); DetailRaw = $null
                     })
             }
             else {

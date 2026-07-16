@@ -91,8 +91,10 @@
     'integrity.engine.notInstalled'     = 'not installed - run loki setup on the setup machine'
     'integrity.engine.archiveMissing'   = 'the pinned archive is gone - integrity cannot be established; re-run loki setup'
     'integrity.engine.archiveMismatch'  = 'the archive does NOT match the pinned hash - do not trust this stick; re-run loki setup'
+    'integrity.engine.archiveUnreadable' = 'the pinned archive could not be READ, so nothing here could be verified - the stick may be failing (or a scanner is holding the file); copy it off and check the medium'
     'integrity.engine.fileMismatch'     = '{0} file(s) do NOT match the pinned build: {1}'
     'integrity.engine.unexpectedFile'   = '{0} file(s) the pinned build does not contain: {1}'
+    'integrity.engine.fileUnreadable'   = '{0} file(s) could not be READ, so they could not be verified either way - the stick may be failing: {1}'
     'integrity.engine.fileMissing'      = '{0} file(s) from the pinned build are missing: {1}'
     'integrity.engine.error'            = 'integrity could not be established ({0})'
     'integrity.runtime.ok'             = 'present and recent enough ({0}, {1})'
@@ -103,6 +105,7 @@
     'integrity.runtime.unknown'         = 'could not be determined ({0})'
     'integrity.model.verified'          = '{0}: verified against the pin'
     'integrity.model.mismatch'          = '{0}: does NOT match the pinned hash - do not load it'
+    'integrity.model.unreadable'        = '{0}: could not be READ, so it could not be verified - the stick may be failing; re-run loki setup to fetch it again'
     'integrity.model.noneInstalled'     = 'no model tiers on this stick - add one with loki setup'
 
     'footprint.heading'         = 'loki doctor --footprint'

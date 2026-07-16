@@ -117,6 +117,41 @@ routine, and a script could not tell "expected on a fresh stick" from "do not tr
 operator to ignore the report — which is how a real `mismatch` gets scrolled past. Only tiers that are **present**
 get a row; a stick with none gets a single line.
 
+**10. "Could not read it" is its own answer, and it is not "it was altered."** (Added by the follow-up fix; this
+replaces a limit the original slice shipped knowingly.) `Test-LokiFileHash` returns `$false` for a file it cannot
+read — correct for *downloading*, where anything unproven must be refused, and wrong for *verifying*, where the whole
+job is to say what is true. So the primitive is now tri-state (`Get-LokiFileHashState` → `match` / `differ` /
+`unreadable` / `missing`) and `Test-LokiFileHash` is a bool wrapper over it, leaving every acquisition decision
+byte-for-byte as it was. Verification maps the new states to `archive-unreadable` / `file-unreadable` / a model
+`unreadable`, all at severity `unknown` → **exit 5, never 0**.
+
+This matters more here than the phrasing suggests, because **Loki runs off a USB stick**: "this file cannot be read"
+is the medium's own failure mode — a bad sector, an AV/EDR scanner holding a brief exclusive handle, a deny-read ACE
+on an NTFS-formatted stick — long before it is an adversary. (A *running* executable is not one of these: Windows
+maps images with share-read, so `llama-server.exe` hashes fine while it runs. Measured; the intuitive assumption is
+wrong.) Answering *do not trust this stick* to a dying stick cries wolf on the common case, and a guard that cries
+wolf gets ignored on the day it is right. It is the mirror of §4's rule: not *we verified nothing, so nothing is
+wrong*, but *we verified nothing, so everything is wrong*.
+
+Ordering is a safety property, not a preference: `file-mismatch` and `unexpected-file` are both tested **before**
+`file-unreadable`, so an unreadable file can never mask a positive finding. It may outrank `file-missing`, which is
+merely the other half of the same broken-install answer.
+
+**11. Setup's temporaries live in a SIBLING, `engine-staging\`, not in `engine-offline\`.** (Added by the same fix.)
+Everything setup writes on its way in is unverified while it is being written — a download's `.part`, a runtime DLL's
+`.staging` copy, the `.bak` of the file it displaces. Inside `engine-offline\` those are indistinguishable from a
+planted file, so the reconcile called them out and a `loki setup` killed mid-download (Ctrl-C on 200 MB over a slow
+link) made `doctor --engine` report the stick as tampered with. Reproduced before fixing; the baseline verified
+clean, so the result was not vacuous.
+
+The tempting fix — add `*.part`/`*.staging`/`*.bak` to the expected set — was rejected: it hands an attacker a naming
+convention, because `evil.dll.bak` sits in `llama-server.exe`'s DLL search path exactly like `evil.dll` does. A
+suffix is not a permission, and there is now a break-the-guard test per suffix saying so. The sibling follows the
+precedent `Expand-LokiVerifiedArchive` already set (it builds `engine-offline.new-<guid>` beside the target, never
+inside it), and sits on the same volume so committing a staged file stays a rename rather than a copy.
+`Copy-LokiVcRuntimeAppLocal`'s `-StagingDir` is **mandatory** rather than defaulting to `DestDir`: the natural
+default is exactly the defect, and a default nobody has to think about is how a defect comes back.
+
 ## Consequences
 
 * **The enforcement call site does not exist yet, and this ADR must not be read as if it did.** This slice builds and
@@ -152,21 +187,21 @@ get a row; a stick with none gets a single line.
     `$false` rather than throwing — so a deep tree reports `file-missing` (exit 1, "this stick is wrong") for files
     that are present and correct. Reachability is low (a stick is `E:\`; it needs the tree copied somewhere deep like
     a synced folder), but the failure mode is a confident false accusation with no mention of path length.
-  * **`loki setup`'s own temp files** (`*.part`, `*.staging`, `*.bak`) are written *inside* `engine-offline\` and are
-    not in the expected set, so a setup interrupted mid-stage leaves a leftover that this reports as
-    `unexpected-file`. Re-running `loki setup` prunes it (verified), and the message is accurate, but the exit code
-    frames a benign leftover as tampering. Staging them in a sibling directory — the way `Expand-LokiVerifiedArchive`
-    already builds its tree — is the real fix and is deliberately out of this slice's scope.
   * **A file reparse point is deliberately not flagged** (only directory ones are). Hashing follows the link, exactly
     as loading does, so a swapped target is caught as `file-mismatch`; flagging every file reparse point would
     false-alarm on a tree under OneDrive Files On-Demand, whose placeholders *are* reparse points.
-  * **"Unreadable" is reported as "mismatched".** `Test-LokiFileHash` returns `$false` for a file it cannot read — a
-    deliberate ADR-0012 §4b decision, correct for *downloading*, wrong for *verifying*, where the caller must
-    distinguish "differs" from "could not be read". A file held with `FileShare.None` (a backup, VSS, a concurrent
-    setup) makes a pristine engine report `file-mismatch`. The common cases are fine (a running exe and ordinary AV
-    use `FILE_SHARE_READ`, verified), which is what makes the rare case a confident lie rather than a flaky one. This
-    is the mirror of §4's rule — *we verified nothing* rendering as *we verified it and it is wrong* — and it wants a
-    tri-state hash primitive (`match` / `differ` / `unreadable`) feeding the `unknown` severity that already exists.
+  * **An adversary who can make a file unreadable can soften the verdict from 1 to 5** — the residual of §10, and the
+    reason that decision is a judgement rather than an obvious call. Holding a `FileShare.None` handle needs a live
+    process on the target (i.e. code execution already), but a deny-read ACE on an NTFS-formatted stick is persistent
+    and needs no process. Either way the report changes from *this stick was altered* to *could not determine* on a
+    stick that **is** altered. It can never reach **0**, so nothing loads and nothing executes; what is lost is the
+    operator's belief, not the gate. Accepted knowingly: the alternative accuses every failing stick of tampering,
+    and that trade runs the wrong way round on hardware this disposable.
+  * **`engine-staging\` is unverified space, by construction.** Nothing in it is trusted and nothing is left in it
+    (asserted on both the success and rollback paths), but it does not close the pre-existing gap it inherits: a
+    runtime DLL can in principle be swapped between the `.staging` copy and the move that commits it. That window
+    existed before §11 and is unchanged by it — the file lands app-local either way, and §6b's signature check is
+    what actually catches it at load time.
 * **The threat model is narrower than it looks, and saying so is part of the deal.** The pin (`engine/manifest.psd1`)
   and the checker (`lib/integrity.ps1`) live on the same volume as the thing they vouch for. An attacker who can
   write anywhere on the stick rewrites the pin or the checker and every guarantee here evaporates. So this slice's

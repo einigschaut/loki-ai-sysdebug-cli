@@ -46,6 +46,56 @@ Describe 'Test-LokiFileHash' {
         [System.IO.File]::WriteAllText($f, $script:GoodBytes, [System.Text.Encoding]::ASCII)
         Test-LokiFileHash -Path $f -ExpectedSha256 ($script:GoodHash.ToLower()) | Should -BeTrue
     }
+
+    It 'BREAK-THE-GUARD: an UNREADABLE file is not a match -- "could not tell" must stay "no" here' {
+        # The tri-state below exists so a reporting caller can distinguish these. This test pins the half that must
+        # NOT change with it: every acquisition decision in this module rests on Test-LokiFileHash, so the moment
+        # unreadable stops being $false, an unverifiable download becomes an accepted one.
+        $d = New-DownloadCaseDir
+        $f = Join-Path $d 'a.bin'
+        [System.IO.File]::WriteAllText($f, $script:GoodBytes, [System.Text.Encoding]::ASCII)
+        $hold = [System.IO.File]::Open($f, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::None)
+        try { Test-LokiFileHash -Path $f -ExpectedSha256 $script:GoodHash | Should -BeFalse }
+        finally { $hold.Close() }
+        # Sanity: the SAME file passes once the lock is gone, so the assertion above is about readability and not
+        # about a fixture that never matched in the first place.
+        Test-LokiFileHash -Path $f -ExpectedSha256 $script:GoodHash | Should -BeTrue
+    }
+}
+
+Describe 'Get-LokiFileHashState (tri-state)' {
+
+    It 'tells the four states apart' {
+        $d = New-DownloadCaseDir
+        $f = Join-Path $d 'a.bin'
+        [System.IO.File]::WriteAllText($f, $script:GoodBytes, [System.Text.Encoding]::ASCII)
+
+        Get-LokiFileHashState -Path $f -ExpectedSha256 $script:GoodHash | Should -Be 'match'
+        Get-LokiFileHashState -Path $f -ExpectedSha256 ('b' * 64) | Should -Be 'differ'
+        Get-LokiFileHashState -Path (Join-Path $d 'missing.bin') -ExpectedSha256 $script:GoodHash | Should -Be 'missing'
+
+        # The whole point: a file we cannot read is 'unreadable', NOT 'differ'. On a USB stick this is a bad sector or
+        # an AV handle far more often than an attacker, and calling it 'differ' is what made lib/integrity.ps1 accuse
+        # a failing stick of being tampered with.
+        $hold = [System.IO.File]::Open($f, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::None)
+        try { Get-LokiFileHashState -Path $f -ExpectedSha256 $script:GoodHash | Should -Be 'unreadable' }
+        finally { $hold.Close() }
+    }
+
+    It 'a directory wearing the file''s name is missing, not unreadable' {
+        # Get-FileHash throws on a directory, so the naive try/catch would call this 'unreadable' and send an operator
+        # hunting for a hardware fault. There is no file there to read.
+        $d = New-DownloadCaseDir
+        New-Item -ItemType Directory -Force -Path (Join-Path $d 'a.bin') | Out-Null
+        Get-LokiFileHashState -Path (Join-Path $d 'a.bin') -ExpectedSha256 $script:GoodHash | Should -Be 'missing'
+    }
+
+    It 'is case-insensitive on the hex, like the bool it backs' {
+        $d = New-DownloadCaseDir
+        $f = Join-Path $d 'a.bin'
+        [System.IO.File]::WriteAllText($f, $script:GoodBytes, [System.Text.Encoding]::ASCII)
+        Get-LokiFileHashState -Path $f -ExpectedSha256 ($script:GoodHash.ToLower()) | Should -Be 'match'
+    }
 }
 
 Describe 'Invoke-LokiVerifiedDownload (integrity gate; network Mocked)' {
@@ -66,6 +116,42 @@ Describe 'Invoke-LokiVerifiedDownload (integrity gate; network Mocked)' {
         $r.Ok | Should -BeTrue
         Test-Path -LiteralPath $dest | Should -BeTrue
         Test-Path -LiteralPath ($dest + '.part') | Should -BeFalse
+    }
+
+    It '-StagingDir keeps the .part out of the destination directory, and still commits the file' {
+        # engine-offline\ is reconciled against the pinned archive (lib/integrity.ps1), so a .part written there IS a
+        # file the archive does not account for. The mock asserts on the .part's location at the moment it exists --
+        # after a successful run it is gone either way, which is exactly how this defect stayed invisible.
+        $d = New-DownloadCaseDir
+        $stage = Join-Path $d 'staging'
+        $dest = Join-Path $d 'verified\m.bin'
+        $script:SeenPart = $null
+        Mock Get-LokiHttpFile {
+            $script:SeenPart = $OutFile
+            [System.IO.File]::WriteAllText($OutFile, $script:GoodBytes, [System.Text.Encoding]::ASCII)
+        }
+        $r = Invoke-LokiVerifiedDownload -Url 'https://example.com/m.bin' -ExpectedSha256 $script:GoodHash -DestPath $dest -StagingDir $stage
+        $r.Ok | Should -BeTrue
+        $script:SeenPart | Should -Be (Join-Path $stage 'm.bin.part')
+        Test-Path -LiteralPath $dest | Should -BeTrue
+        @(Get-ChildItem -LiteralPath (Split-Path -Parent $dest) -Force | ForEach-Object { $_.Name }) | Should -Be @('m.bin')
+    }
+
+    It 'a .part abandoned by an earlier run is replaced, not resumed' {
+        # A hard interrupt (the case -StagingDir exists for) cannot be simulated by throwing -- a thrown download runs
+        # the catch and tidies up, a killed process runs nothing. So this pins the state such a kill LEAVES BEHIND:
+        # stale bytes under the .part name. They must be overwritten wholesale; a resume that appended to them would
+        # produce a file that fails its pin for a reason nobody could explain.
+        $d = New-DownloadCaseDir
+        $stage = Join-Path $d 'staging'
+        $dest = Join-Path $d 'verified\m.bin'
+        New-Item -ItemType Directory -Force -Path $stage | Out-Null
+        [System.IO.File]::WriteAllText((Join-Path $stage 'm.bin.part'), 'JUNK-FROM-A-KILLED-RUN', [System.Text.Encoding]::ASCII)
+        Mock Get-LokiHttpFile { [System.IO.File]::WriteAllText($OutFile, $script:GoodBytes, [System.Text.Encoding]::ASCII) }
+        $r = Invoke-LokiVerifiedDownload -Url 'https://example.com/m.bin' -ExpectedSha256 $script:GoodHash -DestPath $dest -StagingDir $stage
+        $r.Ok | Should -BeTrue
+        $r.Reason | Should -Be 'verified'
+        @(Get-ChildItem -LiteralPath $stage -Force).Count | Should -Be 0
     }
 
     It 'BREAK-THE-GUARD: a tampered download (hash mismatch) is DELETED and never kept' {

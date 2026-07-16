@@ -8,26 +8,57 @@
 #     a mismatch or a download error deletes the partial -- an unverified download is never kept.
 #   * this module downloads and verifies only -- it NEVER executes or expands what it fetched.
 # Contract:
+#   Get-LokiFileHashState -Path <file> -ExpectedSha256 <hex> -> 'match' | 'differ' | 'unreadable' | 'missing'
+#       (never throws; case-insensitive compare). The tri-state primitive -- use it when you must REPORT a fact.
 #   Test-LokiFileHash -Path <file> -ExpectedSha256 <hex> -> [bool]  (missing file -> $false; case-insensitive).
+#       "is this PROVEN to be the pinned bytes?" -- use it when you must DECIDE.
 #   Get-LokiHttpFile -Url <https> -OutFile <path>  -- the raw streaming download (the mock seam; tests replace it).
-#   Invoke-LokiVerifiedDownload -Url -ExpectedSha256 -DestPath -> [hashtable]{ Ok; Reason; [Skipped] }
+#   Invoke-LokiVerifiedDownload -Url -ExpectedSha256 -DestPath [-StagingDir <dir>] -> [hashtable]{ Ok; Reason; [Skipped] }
 #       not-https -> Ok=$false; already-present+verified -> Ok=$true Skipped; otherwise download to a .part file,
 #       verify, then move into place; hash-mismatch or download error -> the .part is deleted and Ok=$false.
+#       -StagingDir puts the .part somewhere other than next to its destination (see the note there).
 # ASCII-only file -> no BOM (CLAUDE.md section 1).
 Set-StrictMode -Version Latest
 
-function Test-LokiFileHash {
+function Get-LokiFileHashState {
+    <#
+        Tri-state, because a bool cannot say "I do not know".
+
+        "the bytes differ" and "I could not read the bytes" are different facts, and the difference is the difference
+        between telling an operator their stick was TAMPERED WITH and telling them their stick is FAILING. Collapsing
+        both into $false is exactly right for the download path (anything not proven is refused) and exactly wrong for
+        the reporting path (lib/integrity.ps1), whose entire job is to say what is actually true.
+
+        Unreadable is not an exotic case here -- Loki lives on a USB stick, so it is the medium's own failure mode:
+        a bad sector, an AV/EDR scanner holding a brief exclusive handle, a deny-read ACE on an NTFS-formatted stick,
+        an unhydratable cloud placeholder. (A RUNNING executable is NOT one of these: Windows maps images with
+        share-read, so llama-server.exe hashes fine while it is running -- measured, not assumed.)
+    #>
     param(
         [Parameter(Mandatory = $true)][string]$Path,
         [Parameter(Mandatory = $true)][string]$ExpectedSha256
     )
-    if (-not (Test-Path -LiteralPath $Path)) { return $false }
-    # A file we cannot READ is a file we cannot prove matches -> $false, never an exception escaping into a caller
-    # that is trying to decide whether something is trustworthy. (Get-FileHash throws on a locked file, and callers
-    # run with $ErrorActionPreference='Stop', so without this the throw would blow past their fail-closed handling.)
+    # -PathType Leaf: a DIRECTORY carrying the file's name is not a file we failed to read, it is a file that is not
+    # there. (Get-FileHash on a directory throws, so without this it would report 'unreadable'.)
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return 'missing' }
+    # Never let this exception escape into a caller that is trying to decide whether something is trustworthy:
+    # Get-FileHash throws on a locked file, and callers run with $ErrorActionPreference='Stop', so a throw here would
+    # blow straight past their fail-closed handling.
     try { $actual = (Get-FileHash -LiteralPath $Path -Algorithm SHA256 -ErrorAction Stop).Hash }
-    catch { return $false }
-    return ([string]$actual -ieq [string]$ExpectedSha256)
+    catch { return 'unreadable' }
+    if ([string]$actual -ieq [string]$ExpectedSha256) { return 'match' }
+    return 'differ'
+}
+
+function Test-LokiFileHash {
+    # The fail-closed question, unchanged: is this file PROVEN to be the pinned bytes? Anything else -- absent,
+    # unreadable, different -- is $false. Every acquisition decision in this module rests on this and must keep
+    # treating "could not tell" as "no".
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$ExpectedSha256
+    )
+    return ((Get-LokiFileHashState -Path $Path -ExpectedSha256 $ExpectedSha256) -eq 'match')
 }
 
 function Get-LokiHttpFile {
@@ -50,7 +81,8 @@ function Invoke-LokiVerifiedDownload {
     param(
         [Parameter(Mandatory = $true)][string]$Url,
         [Parameter(Mandatory = $true)][string]$ExpectedSha256,
-        [Parameter(Mandatory = $true)][string]$DestPath
+        [Parameter(Mandatory = $true)][string]$DestPath,
+        [string]$StagingDir
     )
     # Set INSIDE the function (function-scoped, so it neither leaks to the caller nor depends on them): Copy-Item /
     # Move-Item / Remove-Item failures are NON-terminating by default, so without this the catch blocks below never
@@ -75,7 +107,22 @@ function Invoke-LokiVerifiedDownload {
 
     $dir = Split-Path -Parent $DestPath
     if (-not [string]::IsNullOrEmpty($dir) -and -not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+
+    # Where the partial download lives, and why it is a parameter. When the destination directory is a VERIFIED one,
+    # a `.part` must not be dropped into it: lib/integrity.ps1 reconciles engine-offline\ against the pinned archive,
+    # so a partial left behind by a HARD interrupt (Ctrl-C on a slow 200 MB download -- the catch blocks below handle
+    # every ordinary failure) is correctly seen as "a file the pinned build does not contain" and reported as
+    # tampering. The stick would be accused of being hostile because setup littered in it. Staging elsewhere keeps the
+    # verified directory a place where only verified bytes ever exist.
+    # Default = the old behaviour, deliberately: the model tiers download into models\, which nothing reconciles, and
+    # inventing a staging directory for them would be ceremony without a defect to fix.
+    # Callers pass a SIBLING on the same volume, so the commit below stays a rename. A staging directory on another
+    # volume would silently turn Move-Item into a copy -- slow, and no longer atomic.
     $tmp = $DestPath + '.part'
+    if (-not [string]::IsNullOrEmpty($StagingDir)) {
+        if (-not (Test-Path -LiteralPath $StagingDir)) { New-Item -ItemType Directory -Force -Path $StagingDir | Out-Null }
+        $tmp = Join-Path $StagingDir ((Split-Path -Leaf $DestPath) + '.part')
+    }
     if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
 
     try {

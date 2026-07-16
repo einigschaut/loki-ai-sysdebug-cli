@@ -97,7 +97,11 @@ function Invoke-LokiCmd_setup {
     }
 
     Write-LokiInfo (Get-LokiText 'setup.engineDownloading' -ArgumentList @([string]$engine.Id, [string]$engine.Version, [math]::Round(([double]$engine.SizeBytes / 1MB), 1)))
-    $dl = Invoke-LokiVerifiedDownload -Url ([string]$engine.Url) -ExpectedSha256 ([string]$engine.Sha256) -DestPath $layout.ArchivePath
+    # -StagingDir: the .part must not be written into engine-offline\, which lib/integrity.ps1 reconciles against the
+    # pinned archive. A Ctrl-C on this download (200 MB over a slow link is where operators actually reach for it)
+    # would otherwise leave a partial that makes `loki doctor --engine` report the stick as tampered with.
+    $dl = Invoke-LokiVerifiedDownload -Url ([string]$engine.Url) -ExpectedSha256 ([string]$engine.Sha256) `
+        -DestPath $layout.ArchivePath -StagingDir $layout.StagingDir
     if (-not $dl.Ok) {
         Write-LokiErr (Get-LokiText 'setup.engineFailed' -ArgumentList @([string]$dl.Reason))
         return (Get-LokiExitCode 'GeneralError')
@@ -130,7 +134,8 @@ function Invoke-LokiCmd_setup {
     }
     if ($stageRuntime) {
         Write-LokiInfo (Get-LokiText 'setup.runtimeNotice')
-        $st = Copy-LokiVcRuntimeAppLocal -SourceDir $systemDir -DestDir $layout.Dir -Files $runtimeFiles -MinVersion ([string]$runtimeSpec.MinVersion)
+        $st = Copy-LokiVcRuntimeAppLocal -SourceDir $systemDir -DestDir $layout.Dir -Files $runtimeFiles `
+            -MinVersion ([string]$runtimeSpec.MinVersion) -StagingDir $layout.StagingDir
         if ($st.Ok) {
             Write-LokiOk (Get-LokiText 'setup.runtimeStaged' -ArgumentList @(@($st.Staged).Count, [string]$st.Version))
         }
