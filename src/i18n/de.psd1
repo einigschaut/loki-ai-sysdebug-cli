@@ -114,4 +114,18 @@
     'chat.engineMissing'        = 'Claude Code (das `claude`-CLI) wurde nicht gefunden. Installiere es für die Online-Engine.'
     'chat.ended'                = 'Session beendet.'
     'chat.failed'               = 'Die Online-Engine konnte die interaktive Session nicht starten.'
+
+    'setup.summary'             = 'Stick vorbereiten: Offline-Modell(e) herunterladen (am Einrichte-Rechner ausführen)'
+    'setup.offline'             = 'loki setup braucht Internet - führe es am Rechner aus, an dem du den Stick einrichtest.'
+    'setup.heading'             = 'loki setup - Offline-Modelle'
+    'setup.tiersHint'           = 'Verfügbare Tiers (* = empfohlener Default):'
+    'setup.choosePrompt'        = 'Welche Tier(s)? ids mit Komma getrennt, oder "default" / "all"'
+    'setup.badSelection'        = "Unbekannte Tier-id: '{0}'."
+    'setup.noneSelected'        = 'Nichts ausgewählt - keine Modelle geladen.'
+    'setup.downloading'         = 'Lade {0} (~{1} GB)...'
+    'setup.verified'            = '{0}: heruntergeladen und verifiziert.'
+    'setup.skipped'             = '{0}: bereits vorhanden und verifiziert - übersprungen.'
+    'setup.verifyFailed'        = '{0}: FEHLGESCHLAGEN ({1}) - nicht behalten.'
+    'setup.done'                = 'Fertig - {0} Modell(e) auf dem Stick bereit.'
+    'setup.engineNote'          = 'Modelle liegen auf dem Stick. Die Offline-Engine, die sie ausführt, kommt in einer späteren Version.'
 }

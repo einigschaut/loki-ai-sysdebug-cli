@@ -82,6 +82,7 @@ table by hand; run `build/Update-LokiDocs.ps1` (a CI gate fails the build if it 
 | `chat` | Online | Interactive diagnostic session with the online engine (mutations require confirmation) |
 | `scan` | Online | Run a structured read-only diagnostic scan of an area |
 | `auth` | Setup | Manage auth method and secret |
+| `setup` | Setup | Prepare the stick: download offline model(s) (run where you set up the stick) |
 
 <!-- END GENERATED COMMANDS -->
 

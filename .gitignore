@@ -6,6 +6,8 @@
 # === Large binaries & models — fetched via build/fetch-manifest.json, never in git ===
 *.exe
 *.gguf
+*.gguf.part
+*.part
 *.dll
 engine-offline/
 bin/
