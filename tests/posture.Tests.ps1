@@ -95,6 +95,83 @@ Describe 'Get-LokiVolumePosture' {
         $r = Get-LokiVolumePosture -Path 'not-a-rooted-path'
         $r | Should -Not -BeNullOrEmpty
     }
+
+    Context 'the BitLocker probe is not paid for when it cannot succeed' {
+
+        It 'BREAK-THE-GUARD: without provable elevation the BitLocker cmdlet is never called' {
+            # Measured: on a non-admin host Get-BitLockerVolume costs 5021 ms and then fails with "Access denied".
+            # That single call was the whole reason `loki doctor` took ~7 s. This asserts the CALL, not the timing --
+            # a duration assertion would be flaky on a loaded CI runner and would pass for the wrong reason on a fast
+            # one, while "we never asked" is the actual property.
+            Mock Test-LokiElevated { $false }
+            Mock Get-BitLockerVolume { throw 'the probe must not be called when we cannot succeed' }
+            $r = Get-LokiVolumePosture -Path $script:Work
+            $r.BitLockerOn | Should -BeNullOrEmpty
+            Should -Invoke Get-BitLockerVolume -Times 0
+        }
+
+        It 'a host that cannot even answer "am I elevated" is also a skip, not a 5-second wait' {
+            # $null = ConstrainedLanguage (measured: the elevation check itself throws there). Reading
+            # .ProtectionStatus off the result object is blocked in CL too, so the probe could not have worked --
+            # same sentinel, without the wait.
+            Mock Test-LokiElevated { $null }
+            Mock Get-BitLockerVolume { throw 'the probe must not be called when elevation cannot be established' }
+            $r = Get-LokiVolumePosture -Path $script:Work
+            $r.BitLockerOn | Should -BeNullOrEmpty
+            Should -Invoke Get-BitLockerVolume -Times 0
+        }
+
+        It 'an elevated host still gets a real answer (the fast path must not become a dead path)' {
+            # Without this the "fix" could be `$bitLockerOn = $null` and the suite would stay green.
+            Mock Test-LokiElevated { $true }
+            Mock Get-BitLockerVolume { [pscustomobject]@{ ProtectionStatus = 'On' } }
+            $r = Get-LokiVolumePosture -Path $script:Work
+            $r.BitLockerOn | Should -BeTrue
+            Should -Invoke Get-BitLockerVolume -Times 1
+        }
+
+        It 'an elevated host reporting Off is reported as Off, not unknown' {
+            Mock Test-LokiElevated { $true }
+            Mock Get-BitLockerVolume { [pscustomobject]@{ ProtectionStatus = 'Off' } }
+            (Get-LokiVolumePosture -Path $script:Work).BitLockerOn | Should -BeFalse
+        }
+
+        It 'an elevated host whose probe throws still degrades to unknown, never outward' {
+            Mock Test-LokiElevated { $true }
+            Mock Get-BitLockerVolume { throw 'Access denied' }
+            { Get-LokiVolumePosture -Path $script:Work } | Should -Not -Throw
+            (Get-LokiVolumePosture -Path $script:Work).BitLockerOn | Should -BeNullOrEmpty
+        }
+    }
+}
+
+Describe 'Test-LokiElevated' {
+
+    It 'never throws and answers true, false, or "cannot tell"' {
+        { Test-LokiElevated } | Should -Not -Throw
+        @($true, $false, $null) | Should -Contain (Test-LokiElevated)
+    }
+
+    It 'agrees with an INDEPENDENT reading of this token, not just with itself' {
+        # Found by mutation: a Test-LokiElevated hard-wired to $true survived the whole suite, which would silently
+        # re-open the 5-second probe on every non-admin host -- the exact regression this change exists to prevent.
+        # Asserting against the shape of the answer proves nothing; this compares against the token's INTEGRITY LEVEL
+        # read through native whoami (a different code path from the .NET API under test).
+        # S-1-16-12288 = High = elevated; S-1-16-8192 = Medium = not.
+        $groups = (whoami /groups) 2>&1 | Out-String
+        $groups | Should -Not -BeNullOrEmpty -Because 'without an independent signal this test proves nothing'
+        $elevatedPerToken = [bool]($groups -match 'S-1-16-12288')
+        Test-LokiElevated | Should -Be $elevatedPerToken
+    }
+
+    It 'is cheap enough to sit in front of every volume probe' {
+        # The point of the whole change is that asking is free compared to the 5021 ms it saves. A generous bound:
+        # measured at 8-14 ms, so 1000 ms only fails if the mechanism itself regressed into something expensive.
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        $null = Test-LokiElevated
+        $sw.Stop()
+        $sw.ElapsedMilliseconds | Should -BeLessThan 1000
+    }
 }
 
 Describe 'ConvertTo-LokiDoctorChecks - auth' {
