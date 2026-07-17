@@ -34,7 +34,7 @@ jobs:
       # Trusting the repo is NOT optional and cannot simply be made non-fatal (measured): -Force does not bypass the
       # untrusted-source prompt, and this shell is `powershell -command` with no console, so the prompt fails with
       # "Windows PowerShell is in NonInteractive mode. Read and Prompt functionality is not available."
-      - name: Install modules (Pester 5 + PSScriptAnalyzer)
+      - name: Install modules (versions pinned in build/module-versions.psd1)
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
@@ -61,23 +61,33 @@ jobs:
             Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction Stop
           }
 
-          Invoke-CiRetry 'Install Pester' {
-            Install-Module Pester -MinimumVersion 5.5.0 -Scope CurrentUser -Force -SkipPublisherCheck -ErrorAction Stop
+          # No version number is written in this file -- not in the code, not in a comment. build/module-versions.psd1
+          # is the single source of truth, it carries the history of why, and build/Invoke-Checks.ps1 imports the very
+          # same file, so the gate CI runs IS the gate a maintainer runs. tests/module-pin.Tests.ps1 goes red if a
+          # version reappears here; it caught this comment on its first run for restating one.
+          $pins = Import-PowerShellDataFile (Join-Path $env:GITHUB_WORKSPACE 'build\module-versions.psd1')
+
+          # -SkipPublisherCheck is Pester-only and deliberate: Windows ships a Microsoft-signed Pester 3.4.0, so
+          # putting the Pester project's own signed build beside it is a publisher change. PSScriptAnalyzer has no
+          # such conflict and therefore does not get the flag.
+          Invoke-CiRetry "Install Pester $($pins.Pester)" {
+            Install-Module Pester -RequiredVersion $pins.Pester -Scope CurrentUser -Force -SkipPublisherCheck -ErrorAction Stop
           }
-          Invoke-CiRetry 'Install PSScriptAnalyzer' {
-            Install-Module PSScriptAnalyzer -MinimumVersion 1.21.0 -Scope CurrentUser -Force -ErrorAction Stop
+          Invoke-CiRetry "Install PSScriptAnalyzer $($pins.PSScriptAnalyzer)" {
+            Install-Module PSScriptAnalyzer -RequiredVersion $pins.PSScriptAnalyzer -Scope CurrentUser -Force -ErrorAction Stop
           }
 
           # ASSERT, do not merely report. The old step printed the version, so an absent module rendered a blank line
           # here and surfaced later as a confusing test error instead of failing where the cause actually was.
-          foreach ($m in @(
-              @{ Name = 'Pester'; Min = '5.5.0' },
-              @{ Name = 'PSScriptAnalyzer'; Min = '1.21.0' }
-            )) {
-            $found = Get-Module -ListAvailable $m.Name | Sort-Object Version -Descending | Select-Object -First 1
-            if ($null -eq $found) { throw ("{0} is still not available after a successful install" -f $m.Name) }
-            if ($found.Version -lt [version]$m.Min) { throw ("{0} {1} is older than the required {2}" -f $m.Name, $found.Version, $m.Min) }
-            Write-Host ("{0,-17} {1}" -f ($m.Name + ':'), $found.Version)
+          # Assert on the EXACT version, not a floor -- a floor here is what the pin exists to remove.
+          foreach ($name in @('Pester', 'PSScriptAnalyzer')) {
+            $want  = [version]$pins[$name]
+            $found = @(Get-Module -ListAvailable $name | Where-Object { $_.Version -eq $want })
+            if ($found.Count -eq 0) {
+              $have = @(Get-Module -ListAvailable $name | ForEach-Object { $_.Version.ToString() })
+              throw ("{0} {1} is not available after a successful install (found: {2})" -f $name, $want, ($have -join ', '))
+            }
+            Write-Host ("{0,-17} {1}" -f ($name + ':'), $want)
           }
 
       - name: Checks (lint + structure gate + Pester)
