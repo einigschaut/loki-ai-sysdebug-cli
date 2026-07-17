@@ -25,5 +25,13 @@ coverage.xml
 *.log
 docs/gen/*.tmp
 
+# === Diagnostic dumps (`loki collect`) — NEVER commit ===
+# A dump names the machine that produced it: computer name, IP addresses, DNS servers, adapter descriptions,
+# running processes. Harmless on the stick it was written for, published data in a public repo. `loki collect`
+# writes to <AppRoot>\reports\, so a run from a clone lands here and a careless `git add -A` ships someone's
+# network topology. Ignored at the root and under src/ because AppRoot is src/ in a working copy (ADR-0018).
+reports/
+src/reports/
+
 # === Claude Code local settings (per-machine, not shipped) ===
 .claude/settings.local.json
