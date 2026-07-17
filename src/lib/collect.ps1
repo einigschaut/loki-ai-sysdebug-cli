@@ -436,9 +436,17 @@ function Get-LokiCollectEventLogEntry {
     #>
     param([Parameter(Mandatory = $true)][string]$LogName, [Parameter(Mandatory = $true)][datetime]$Since)
 
+    # DERIVED from -Since, never read from the constant. The first version reported
+    # $script:LokiCollectEventWindowHours regardless of the window it was actually given, so the row contradicted its
+    # own parameter. Measured: asked for 6 hours it claimed 72; asked for ten years it claimed 72 while reporting
+    # Matched=500 -- a row saying "500 errors in the last 72 hours" about a machine that had 500 in a decade. That
+    # is not a rounding error, it is a meltdown reported on a healthy box.
+    # Only one caller exists today and it happens to pass the matching window, which is the sole reason this was
+    # never a live lie. A field that can contradict its own input is a contract bug regardless, and the first
+    # `--window` flag would have made it a dangerous one.
     $row = [pscustomobject]@{
         Log         = $LogName
-        WindowHours = $script:LokiCollectEventWindowHours
+        WindowHours = [math]::Round(((([datetime]::Now) - $Since).TotalHours), 1)
         Matched     = 0
         Capped      = $false
         Error       = $null
