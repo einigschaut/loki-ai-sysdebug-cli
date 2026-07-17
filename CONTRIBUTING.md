@@ -129,6 +129,13 @@ or test, fail CI's registry-consistency gate.
   This runs PSScriptAnalyzer, the structure/dead-code gate, and the full
   Pester suite — the same checks CI runs. It must be green.
 
+- **The tool versions are pinned exactly**, in `build/module-versions.psd1`.
+  CI installs those versions and `Invoke-Checks.ps1` imports those versions,
+  which is what makes "the same checks CI runs" literal instead of
+  approximate. If you do not have them yet, the first run stops and tells you
+  the command to install them. Upgrading one is a PR of its own, so that the
+  green CI run on it is the evidence for the change.
+
 ### Definition of Done
 
 A PR is ready for review when:
