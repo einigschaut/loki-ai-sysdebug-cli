@@ -128,6 +128,35 @@ Describe 'Command setup' {
             $r = Invoke-SetupCommand -Context (New-TestSetupContext -CmdArgs @('--tier', 'default'))
             $r.AllText | Should -BeLike '*GB*'
             $r.AllText | Should -BeLike '*Qwen3-4B-Instruct-2507*'
+            # The SIZE itself, which the name of this test promised and it did not check: 'GB' alone is satisfied by a
+            # row rendering "2,33 GB" just as happily as "2.33 GB", and that is how the bug below stayed green here.
+            $r.AllText | Should -BeLike '*2.33*'
+        }
+
+        It 'renders the sizes in the message locale, never the machine regional format' {
+            # Found by running setup for real, not by review: the row printed "2,33 GB" three lines above
+            # setup.downloading's "2.33 GB" -- one number, one run, two separators. The row was the only place in the
+            # CLI where the -f operator got a NUMBER, and -f formats in the ambient CurrentCulture, which is a
+            # property of the machine and not of the message (the note at the top of lib/i18n.ps1 says so, and this
+            # line predates it).
+            #
+            # The culture MUST be forced: a GitHub runner is en-US, so an unforced test is green with the bug intact.
+            # That is exactly the false determinism CLAUDE.md section 10 exists to prevent, and it is why the box this
+            # was found on -- CurrentUICulture=en-GB, CurrentCulture=de-DE -- saw what CI could not.
+            $orig = [System.Threading.Thread]::CurrentThread.CurrentCulture
+            try {
+                [System.Threading.Thread]::CurrentThread.CurrentCulture = [Globalization.CultureInfo]::GetCultureInfo('de-DE')
+                $r = Invoke-SetupCommand -Context (New-TestSetupContext -CmdArgs @('--tier', 'default'))
+                # Asserted over the WHOLE output rather than a located row, because AllText comes through Out-String,
+                # which wraps at the host's console width (measured on a CI runner) and would break a 90-char row
+                # apart. It cannot go falsely green: the locale is 'en', the catalog is 7 rows with two sizes each, so
+                # the bug puts fourteen decimal commas in here and no wrap hides them all.
+                $r.AllText | Should -Not -Match '\d,\d'
+            }
+            finally {
+                # Restore, or every test that runs after this one in the same process inherits de-DE.
+                [System.Threading.Thread]::CurrentThread.CurrentCulture = $orig
+            }
         }
     }
 
