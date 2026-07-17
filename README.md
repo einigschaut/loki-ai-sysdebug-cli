@@ -81,6 +81,7 @@ table by hand; run `build/Update-LokiDocs.ps1` (a CI gate fails the build if it 
 | `hwscan` | Health | Check what the offline engine can run on this machine (writes nothing) |
 | `status` | Health | Quick environment check (writes nothing) |
 | `version` | Health | Show Loki and environment versions |
+| `offline` | Offline | Analyze a diagnostic dump with the offline engine (no network needed) |
 | `ask` | Online | Ask the online engine a read-only diagnostic question |
 | `chat` | Online | Interactive diagnostic session with the online engine (mutations require confirmation) |
 | `scan` | Online | Run a structured read-only diagnostic scan of an area |

@@ -178,6 +178,10 @@
     'hwscan.forceNeedsModel'    = '--force only applies to --model, e.g. "loki hwscan --model mid --force". On its own it would change nothing.'
 
     'collect.summary'           = 'Write a raw diagnostic dump (no network, model or admin needed)'
+
+    # --- offline (Offline engine: analyze a dump with the local model) ---
+    'offline.summary'           = 'Analyze a diagnostic dump with the offline engine (no network needed)'
+    'offline.usage'             = 'Usage: loki offline --analyze <dump>'
     'collect.heading'           = 'loki collect - raw diagnostic dump'
     'collect.working'           = 'Collecting. A battery or two takes about a second on a busy machine.'
     'collect.batteryOk'         = '{0,-10} {1,5} ms'
