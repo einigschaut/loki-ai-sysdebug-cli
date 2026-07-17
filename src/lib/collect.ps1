@@ -146,10 +146,20 @@ function ConvertTo-LokiIsoTimestamp {
 }
 
 function Get-LokiCollectStamp {
-    # Impure (reads the clock). Sortable and filename-safe. InvariantCulture is not decoration: '/' and ':' are
-    # culture-REPLACED placeholders in a .NET format string, and a filename is the last place to discover that.
-    # ('-' is a literal, so this particular pattern would survive anyway -- pinning it removes the question.)
-    return ([datetime]::Now).ToString('yyyyMMdd-HHmmss', [System.Globalization.CultureInfo]::InvariantCulture)
+    <#
+        Impure (reads the clock). Sortable and filename-safe.
+
+        MILLISECONDS, not seconds. The first version had second resolution and that was silent data loss, measured:
+        `loki collect --only posture` completes in 14 ms warm, so four consecutive runs produced ONE stamp between
+        them and Set-Content overwrote each previous dump without a word. The operator would believe they held two
+        dumps -- a before and an after -- and hold one. In a tool whose entire job is preserving evidence, on a
+        project whose own rule is "report rather than delete", that is the wrong failure.
+
+        InvariantCulture is not decoration: '/' and ':' are culture-REPLACED placeholders in a .NET format string,
+        and a filename is the last place to discover that. ('-' is a literal, so this pattern would survive anyway --
+        pinning it removes the question.)
+    #>
+    return ([datetime]::Now).ToString('yyyyMMdd-HHmmss-fff', [System.Globalization.CultureInfo]::InvariantCulture)
 }
 
 function Get-LokiCollectPath {

@@ -94,6 +94,19 @@ function Invoke-LokiCmd_collect {
         if (-not (Test-Path -LiteralPath $paths.Dir)) {
             New-Item -ItemType Directory -Path $paths.Dir -Force -ErrorAction Stop | Out-Null
         }
+
+        # NEVER overwrite an existing dump. The stamp now carries milliseconds, which makes a collision practically
+        # unreachable (the cheapest run costs ~14 ms), but "practically unreachable" is not "impossible": two collect
+        # processes started in the same millisecond still land here. The failure mode being defended against is
+        # silent destruction of evidence -- Set-Content overwrites without a word (measured) -- and this project
+        # refuses that on principle (DESIGN.md 5.4: "the rule is to report rather than delete"). The dump already on
+        # the stick wins; the new run says so out loud and exits non-zero rather than quietly taking its place.
+        foreach ($target in @($paths.JsonPath, $paths.TextPath)) {
+            if (Test-Path -LiteralPath $target) {
+                Write-LokiErr (Get-LokiText 'collect.wouldOverwrite' -ArgumentList @($target))
+                return (Get-LokiExitCode 'GeneralError')
+            }
+        }
         # -ErrorAction Stop is load-bearing, not decoration: Set-Content failures are NON-terminating by default, so
         # without it the catch below never fires and this reports a written dump over a file that does not exist.
         # lib/download.ps1 and lib/engine.ps1 both carry the same note after adversarial review reproduced exactly that.

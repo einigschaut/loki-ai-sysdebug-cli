@@ -189,6 +189,7 @@
     'collect.wroteReport'       = 'Report: {0}'
     'collect.footer'            = 'Collected: {0} ok, {1} failed. A failed battery is recorded in the dump - it does not fail the run.'
     'collect.writeFailed'       = 'Could not write the dump to {0} ({1}). Is the stick full or write-protected?'
+    'collect.wouldOverwrite'    = 'A dump already exists at {0}. It was kept - nothing was overwritten. Run "loki collect" again to write a new one.'
     'collect.badArg'            = "Unknown argument: '{0}'."
     'collect.onlyNeedsValue'    = '--only needs a battery list, e.g. "loki collect --only os,storage".'
     'collect.unknownBattery'    = "Unknown battery: '{0}'. Known: {1}."

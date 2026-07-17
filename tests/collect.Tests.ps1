@@ -134,20 +134,40 @@ Describe 'ConvertTo-LokiIsoTimestamp' {
 Describe 'Get-LokiCollectStamp' {
     It 'is sortable, filename-safe, and free of culture-replaced separators' {
         $stamp = Get-LokiCollectStamp
-        $stamp | Should -Match '^\d{8}-\d{6}$'
+        $stamp | Should -Match '^\d{8}-\d{6}-\d{3}$'
         # ':' and '/' are culture-REPLACED placeholders in a .NET format string and are both illegal in a filename.
         $stamp | Should -Not -Match '[:/\\]'
+    }
+
+    It 'carries milliseconds -- second resolution was silent data loss' {
+        # Measured against the second-resolution version: `loki collect --only posture` completes in 14 ms warm, so
+        # four consecutive runs produced ONE stamp and Set-Content overwrote each previous dump without a word.
+        # This is the regression guard for that: a stamp without milliseconds fails the shape above, and the two
+        # runs below would collide.
+        $a = Get-LokiCollectStamp
+        Start-Sleep -Milliseconds 5
+        $b = Get-LokiCollectStamp
+        $a | Should -Not -Be $b
     }
 
     It 'is identical in shape under de-DE' {
         $original = [System.Threading.Thread]::CurrentThread.CurrentCulture
         try {
             [System.Threading.Thread]::CurrentThread.CurrentCulture = [System.Globalization.CultureInfo]::GetCultureInfo('de-DE')
-            (Get-LokiCollectStamp) | Should -Match '^\d{8}-\d{6}$'
+            (Get-LokiCollectStamp) | Should -Match '^\d{8}-\d{6}-\d{3}$'
         }
         finally {
             [System.Threading.Thread]::CurrentThread.CurrentCulture = $original
         }
+    }
+
+    It 'still sorts chronologically as a string (the reason for the format at all)' {
+        # A dump directory is read by name, so the stamp must order lexicographically the way time does. Milliseconds
+        # are zero-padded to 3 -- without the padding, '-9' would sort after '-10'.
+        $a = Get-LokiCollectStamp
+        Start-Sleep -Milliseconds 5
+        $b = Get-LokiCollectStamp
+        (@($b, $a) | Sort-Object)[0] | Should -Be $a
     }
 }
 
