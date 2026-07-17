@@ -2,13 +2,37 @@
 # Order: PSScriptAnalyzer -> structure/dead-code gate -> Pester. Exit != 0 as soon as one gate goes red.
 [CmdletBinding()]
 param(
-    [string]$RepoRoot
+    [string]$RepoRoot,
+    # Set by the Core->5.1 relaunch below so the child never relaunches again. Not for manual use.
+    [switch]$Relaunched
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 # $PSScriptRoot is unreliable (empty) in a param default under 5.1 -> resolve it in the body.
 if ([string]::IsNullOrEmpty($RepoRoot)) { $RepoRoot = Split-Path $PSScriptRoot -Parent }
+
+# The gate is only meaningful on the runtime it guards. CI runs it under Windows PowerShell 5.1 (ci.yml,
+# `shell: powershell`) because 5.1 is the stick's target and the shipped code must run there (CLAUDE.md section 1). A
+# dev shell is usually pwsh 7, where two tests legitimately diverge on documented .NET-Core-vs-.NET-Framework
+# behaviour -- an env var set to '' is removed under Framework but kept under Core; an unknown well-formed locale
+# resolves to a different CultureInfo name -- and report a FALSE red CI never sees. So on Core, relaunch the whole
+# gate under 5.1 and hand back its exit code: local == CI by construction, not by the operator picking a shell (the
+# same "one gate everyone runs" rule build/module-versions.psd1 applies to tool versions). See ADR-0020. A -Relaunched
+# switch, not an env var, carries the guard so nothing leaks into the caller's session and a re-run is never skipped.
+if ($PSVersionTable.PSEdition -eq 'Core' -and -not $Relaunched) {
+    $ps51 = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    if (-not (Test-Path -LiteralPath $ps51)) {
+        Write-Host "This gate must run under Windows PowerShell 5.1 (the target runtime, CLAUDE.md section 1), but"
+        Write-Host "powershell.exe was not found at: $ps51"
+        exit 3
+    }
+    Write-Host "Dev shell is $($PSVersionTable.PSEdition) $($PSVersionTable.PSVersion); relaunching the gate under"
+    Write-Host 'Windows PowerShell 5.1 so local matches CI exactly (ADR-0020)...'
+    & $ps51 -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath -RepoRoot $RepoRoot -Relaunched
+    $code = $LASTEXITCODE
+    exit $code
+}
 
 $src      = Join-Path $RepoRoot 'src'
 $tests    = Join-Path $RepoRoot 'tests'
