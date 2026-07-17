@@ -825,9 +825,12 @@ function ConvertTo-LokiCollectDataLine {
         PURE. Renders one battery's Data.
 
         The branch ORDER is a correctness property, not a style choice: dictionary before list, because a dictionary
-        satisfies the list test but does not survive it (see Test-LokiCollectRowList). The recursion is bounded by
-        construction -- a row list recurses into rows, and a row is rendered flat -- so it cannot walk a
-        self-referential value the way the first version did.
+        satisfies the list test but does not survive it (see Test-LokiCollectRowList). Both the dictionary and the
+        PSObject branch recurse into a nested row list or nested dictionary, so evidence one level down -- a network
+        adapter's IP, a stopped service's name -- reaches the reader instead of collapsing to a type name
+        ("Adapters : System.Collections.Hashtable"). The recursion is bounded by construction: the value is a finite
+        tree (dump -> batteries -> rows -> scalars, built from CIM and surviving a JSON round-trip, no cycle), so it
+        terminates -- it cannot walk a self-referential value the way the first version did.
     #>
     param(
         [Parameter(Mandatory = $true)][AllowNull()]$Value,
@@ -849,8 +852,22 @@ function ConvertTo-LokiCollectDataLine {
             return , $lines.ToArray()
         }
         foreach ($key in $keys) {
-            $label = ([string]$key).PadRight($script:LokiCollectLabelWidth)
-            $lines.Add(('{0}{1}: {2}' -f $pad, $label, (Format-LokiCollectScalar -Value $Value[$key])))
+            $keyValue = $Value[$key]
+            # Symmetry with the PSObject branch below. A value that is itself a row list or a nested dictionary is a
+            # BLOCK and must recurse; rendered as a scalar it collapses to a type name -- a hashtable-shaped
+            # network.Adapters printed "Adapters : System.Collections.Hashtable" and the IP inside it never reached the
+            # reader. The real collector emits pscustomobjects (the PSObject branch, always fine); this closes the same
+            # hole for dictionary input and makes the renderer shape-agnostic.
+            if ((Test-LokiCollectRowList -Value $keyValue) -or ($keyValue -is [System.Collections.IDictionary])) {
+                $lines.Add(('{0}{1}:' -f $pad, $key))
+                foreach ($line in (ConvertTo-LokiCollectDataLine -Value $keyValue -Indent ($Indent + 1))) {
+                    $lines.Add($line)
+                }
+            }
+            else {
+                $label = ([string]$key).PadRight($script:LokiCollectLabelWidth)
+                $lines.Add(('{0}{1}: {2}' -f $pad, $label, (Format-LokiCollectScalar -Value $keyValue)))
+            }
         }
         return , $lines.ToArray()
     }
@@ -885,7 +902,7 @@ function ConvertTo-LokiCollectDataLine {
 
     foreach ($property in $properties) {
         $propertyValue = $property.Value
-        if (Test-LokiCollectRowList -Value $propertyValue) {
+        if ((Test-LokiCollectRowList -Value $propertyValue) -or ($propertyValue -is [System.Collections.IDictionary])) {
             $lines.Add(('{0}{1}:' -f $pad, $property.Name))
             foreach ($line in (ConvertTo-LokiCollectDataLine -Value $propertyValue -Indent ($Indent + 1))) {
                 $lines.Add($line)

@@ -380,6 +380,51 @@ Describe 'ConvertTo-LokiCollectText' {
     }
 }
 
+Describe 'ConvertTo-LokiCollectText -- shape-agnostic (a hashtable renders as faithfully as a pscustomobject)' {
+    # THE REGRESSION behind Run D (2026-07-17). The tier eval fed the renderer HASHTABLE-shaped dumps (its fixtures are
+    # built with @{}), which take the dictionary branch. That branch rendered every value as a scalar, so a nested
+    # network.Adapters list collapsed to "Adapters : System.Collections.Hashtable" and the APIPA address inside it
+    # never reached the model -- eleven models scored 0/3 on L2/L8, cases that were unwinnable by construction. The
+    # real collector emits pscustomobjects (the PSObject branch, always fine), so this was never a shipped-dump bug;
+    # these tests pin that a hashtable renders just as faithfully, so the renderer is shape-agnostic and the hole
+    # cannot reopen for any future caller that hands it a dictionary.
+    It 'expands a nested list under a HASHTABLE key instead of printing its type name' {
+        $dump = [pscustomobject]@{
+            CreatedAt = ([datetime]'2026-07-16 14:30:00')
+            Batteries = @(
+                [pscustomobject]@{
+                    Id = 'network'; Status = 'ok'; DurationMs = 115; Error = $null
+                    Data = @{
+                        Reachable = $false
+                        Adapters  = @(
+                            @{ Description = 'Intel I219-LM'; DhcpEnabled = $true; IpAddress = @('169.254.14.203'); Gateway = @(); DnsServers = @() }
+                        )
+                    }
+                }
+            )
+        }
+        $text = (ConvertTo-LokiCollectText -Document (ConvertTo-LokiCollectDocument -Dump $dump -LokiVersion '0.8.0')) -join "`n"
+        # The evidence the model actually needs, and the type name it used to get instead.
+        $text | Should -Match '169\.254\.14\.203'
+        $text | Should -Not -Match 'System\.Collections\.Hashtable'
+    }
+
+    It 'expands a nested single dictionary under a HASHTABLE key to its pairs' {
+        $dump = [pscustomobject]@{
+            CreatedAt = ([datetime]'2026-07-16 14:30:00')
+            Batteries = @(
+                [pscustomobject]@{
+                    Id = 'posture'; Status = 'ok'; DurationMs = 5; Error = $null
+                    Data = @{ Summary = @{ Reachable = $false; Mode = 'apipa' } }
+                }
+            )
+        }
+        $text = (ConvertTo-LokiCollectText -Document (ConvertTo-LokiCollectDocument -Dump $dump -LokiVersion '0.8.0')) -join "`n"
+        $text | Should -Match 'apipa'
+        $text | Should -Not -Match 'System\.Collections\.Hashtable'
+    }
+}
+
 Describe 'ConvertTo-LokiCollectSafeText' {
     It 'flattens a multi-line value to one line' {
         $r = ConvertTo-LokiCollectSafeText -Text "line one`r`nline two`nline three"
