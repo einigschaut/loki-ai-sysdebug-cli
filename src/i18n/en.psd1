@@ -213,6 +213,10 @@
     'setup.runtimeUnreadable'   = 'Could not read the runtime version of {0} - nothing staged.'
     'setup.runtimeStageFailed'  = 'Could not stage the runtime ({0}) - nothing staged.'
     'setup.tiersHint'           = 'Available tiers (* = recommended default):'
+    # Structural, like 'hwscan.tierRow' -- identical in every locale. It lives in the catalog anyway, because that is
+    # what routes the two SIZES through Get-LokiText's culture-explicit [string]::Format instead of the -f operator,
+    # which reads the machine's regional format (see the note at the top of lib/i18n.ps1).
+    'setup.tierRow'             = '  {0,-14} {1,-26} {2,6} GB  RAM~{3}GB  ctx {4}  {5}{6}'
     'setup.choosePrompt'        = 'Which tier(s)? ids comma-separated, or "default" / "all"'
     'setup.badSelection'        = "Unknown tier id: '{0}'."
     'setup.noneSelected'        = 'Nothing selected - no models downloaded.'

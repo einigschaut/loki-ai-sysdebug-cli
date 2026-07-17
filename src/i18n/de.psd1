@@ -213,6 +213,8 @@
     'setup.runtimeUnreadable'   = 'Runtime-Version von {0} nicht lesbar - nichts abgelegt.'
     'setup.runtimeStageFailed'  = 'Runtime konnte nicht abgelegt werden ({0}) - nichts abgelegt.'
     'setup.tiersHint'           = 'Verfügbare Tiers (* = empfohlener Default):'
+    # Structural, like 'hwscan.tierRow' -- deliberately identical to the en row, not a translation.
+    'setup.tierRow'             = '  {0,-14} {1,-26} {2,6} GB  RAM~{3}GB  ctx {4}  {5}{6}'
     'setup.choosePrompt'        = 'Welche Tier(s)? ids mit Komma getrennt, oder "default" / "all"'
     'setup.badSelection'        = "Unbekannte Tier-id: '{0}'."
     'setup.noneSelected'        = 'Nichts ausgewählt - keine Modelle geladen.'
