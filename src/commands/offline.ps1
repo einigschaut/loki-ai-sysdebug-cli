@@ -8,8 +8,8 @@ function Get-LokiCmdMeta_offline {
         Name     = 'offline'
         Group    = 'Offline'
         Summary  = 'offline.summary'
-        Usage    = 'loki offline --analyze <dump>'
-        Examples = @('loki offline --analyze <dump>')
+        Usage    = 'loki offline (--analyze <dump> | --agent)'
+        Examples = @('loki offline --analyze <dump>', 'loki offline --agent')
         Flags    = @()
     }
 }
@@ -17,26 +17,35 @@ function Get-LokiCmdMeta_offline {
 function Invoke-LokiCmd_offline {
     param($Context)
 
-    # Slice 1: `loki offline --analyze <dump>`. --agent is Slice 2; anything without --analyze is a usage error.
-    if (-not (@($Context.Args) -contains '--analyze')) {
-        Write-LokiErr (Get-LokiText 'offline.usage')
-        return (Get-LokiExitCode 'Usage')
-    }
-    $dumpPath = @($Context.Args | Where-Object { $_ -ne '--analyze' }) | Select-Object -First 1
-    if ([string]::IsNullOrWhiteSpace([string]$dumpPath)) {
+    # Two modes, exactly one per invocation: `--analyze <dump>` (Slice 1) reads a dump, `--agent` (Slice 2a) runs the
+    # read-only diagnose loop. Neither flag, or BOTH (ambiguous), is a usage error.
+    $cmdArgs     = @($Context.Args)
+    $wantAgent   = $cmdArgs -contains '--agent'
+    $wantAnalyze = $cmdArgs -contains '--analyze'
+    if ($wantAgent -eq $wantAnalyze) {   # both true (ambiguous) OR both false (no mode chosen)
         Write-LokiErr (Get-LokiText 'offline.usage')
         return (Get-LokiExitCode 'Usage')
     }
 
-    # Read-only: analyze must not write (the footprint guarantee). A collect .json is rendered, a .txt used as-is.
-    $dump = Read-LokiOfflineDump -Path ([string]$dumpPath)
-    if (-not $dump.Ok) {
-        Write-LokiErr (Get-LokiText 'offline.dumpUnreadable' -ArgumentList @([string]$dumpPath))
-        return (Get-LokiExitCode 'Usage')
+    # --analyze needs its dump up front; --agent gathers its own data live (ADR-0021), so it takes no dump argument.
+    # Read-only either way: analyze must not write (the footprint guarantee). A collect .json is rendered, a .txt as-is.
+    $dumpText = $null
+    if ($wantAnalyze) {
+        $dumpPath = @($cmdArgs | Where-Object { $_ -ne '--analyze' }) | Select-Object -First 1
+        if ([string]::IsNullOrWhiteSpace([string]$dumpPath)) {
+            Write-LokiErr (Get-LokiText 'offline.usage')
+            return (Get-LokiExitCode 'Usage')
+        }
+        $dump = Read-LokiOfflineDump -Path ([string]$dumpPath)
+        if (-not $dump.Ok) {
+            Write-LokiErr (Get-LokiText 'offline.dumpUnreadable' -ArgumentList @([string]$dumpPath))
+            return (Get-LokiExitCode 'Usage')
+        }
+        $dumpText = [string]$dump.Text
     }
 
-    # Engine + model come from the pinned manifests on the stick. Default tier is the analyze model; if the machine
-    # cannot run it, the preflight inside Invoke-LokiOfflineAnalyze says so (a clear message, not a crash).
+    # Engine + model come from the pinned manifests on the stick (shared by both modes). If the machine cannot run the
+    # model, the preflight inside the engine harness says so (a clear message, not a crash).
     $engineData = Get-LokiEngineManifest -Path (Join-Path $Context.AppRoot 'engine\manifest.psd1')
     $models = Get-LokiModelManifest -Path (Get-LokiModelLayout -AppRoot $Context.AppRoot).ManifestPath  # assign FIRST
     $modelList = @($models)                                                                             # THEN wrap
@@ -47,9 +56,25 @@ function Invoke-LokiCmd_offline {
         return (Get-LokiExitCode 'OfflineEngineMissing')
     }
 
+    if ($wantAgent) {
+        # The agent LOOP needs a model at or above the ~8B floor (the `mid` tier, DESIGN.md section 3 / ADR-0021).
+        # Below it, decline and point at --analyze rather than run a loop DESIGN.md itself calls unreliable there.
+        if (-not (Test-LokiOfflineAgentCapable -Model $model)) {
+            Write-LokiErr (Get-LokiText 'offline.agentTooSmall' -ArgumentList @([string]$model.Model))
+            return (Get-LokiExitCode 'OfflineEngineMissing')
+        }
+        # Capable model -> the read-only agent loop. Invoke-LokiOfflineAgent (returns { Ok; Reason; Answer }) and this
+        # branch's result-to-exit-code mapping are built together across Slice 2a #20-#22 (ADR-0021); until then
+        # Invoke-LokiOfflineAgent is a WIP throw, so the slice merges as one reviewed unit and the throw never ships.
+        Invoke-LokiOfflineAgent -AppRoot $Context.AppRoot -Engine $engineData.Engine `
+            -Runtime $engineData.Runtime -Model $model | Out-Null
+        return (Get-LokiExitCode 'GeneralError')
+    }
+
+    # --- --analyze (Slice 1) ---
     Write-LokiInfo (Get-LokiText 'offline.working' -ArgumentList @([string]$model.Model))
     $res = Invoke-LokiOfflineAnalyze -AppRoot $Context.AppRoot -Engine $engineData.Engine `
-        -Runtime $engineData.Runtime -Model $model -DumpText ([string]$dump.Text)
+        -Runtime $engineData.Runtime -Model $model -DumpText $dumpText
 
     if ($res.Ok) {
         Write-LokiLine ''

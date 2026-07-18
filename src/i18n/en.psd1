@@ -181,7 +181,7 @@
 
     # --- offline (Offline engine: analyze a dump with the local model) ---
     'offline.summary'           = 'Analyze a diagnostic dump with the offline engine (no network needed)'
-    'offline.usage'             = 'Usage: loki offline --analyze <dump>'
+    'offline.usage'             = 'Usage: loki offline --analyze <dump> | loki offline --agent'
     'offline.working'           = 'Analyzing the dump offline with {0} (read-only)...'
     'offline.dumpUnreadable'    = 'Cannot read the diagnostic dump: {0}'
     'offline.notSetup'          = 'The offline engine or this model is not on the stick. Run loki setup on a connected machine.'
@@ -189,6 +189,7 @@
     'offline.tampered'          = 'The offline engine or model does not match its pinned hash. Do not trust this stick; re-run loki setup on a machine you trust.'
     'offline.orphan'            = 'An offline engine from an earlier run is still active. Close it (or reboot) and try again.'
     'offline.engineFailed'      = 'The offline engine could not complete the analysis.'
+    'offline.agentTooSmall'     = 'This model ({0}) is below the ~8B tier the offline agent needs. Run loki collect, then loki offline --analyze <dump>.'
     'collect.heading'           = 'loki collect - raw diagnostic dump'
     'collect.working'           = 'Collecting. A battery or two takes about a second on a busy machine.'
     'collect.batteryOk'         = '{0,-10} {1,5} ms'
