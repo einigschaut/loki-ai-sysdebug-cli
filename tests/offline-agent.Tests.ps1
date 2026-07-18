@@ -38,6 +38,11 @@ Describe 'Test-LokiOfflineAgentCapable (the ~8B agent floor is the mid tier, DES
         (Test-LokiOfflineAgentCapable -Model @{ Id = 'ultra-9000' }) | Should -BeFalse
         (Test-LokiOfflineAgentCapable -Model @{ Id = '' })           | Should -BeFalse
     }
+    It 'Get-LokiOfflineTierRank returns a COPY -- mutating it cannot change the policy (T8)' {
+        $r = Get-LokiOfflineTierRank
+        $r[0] = 'HACKED'
+        (Get-LokiOfflineTierRank)[0] | Should -Not -Be 'HACKED'
+    }
 }
 
 Describe 'Tier-rank drift guard (a new catalog tier nobody ranked must fail a test, not silently decline)' {
@@ -117,6 +122,13 @@ Describe 'ConvertFrom-LokiAgentToolCall (engine reply -> next move; fail-safe, n
         )
         (ConvertFrom-LokiAgentToolCall -ToolCalls $tc).Command | Should -Be 'Get-Process'
     }
+    It 'FAIL-SAFE (broken-once): a malformed tool-call object never throws under StrictMode -- it is "none"' {
+        # Without the try/catch guards, `.function.name` on these shapes THROWS under Set-StrictMode Latest. The guards
+        # must turn each into a clean 'none', never a crash that would kill the loop on a malformed engine reply.
+        { ConvertFrom-LokiAgentToolCall -ToolCalls @([pscustomobject]@{ notfunction = 1 }) } | Should -Not -Throw
+        (ConvertFrom-LokiAgentToolCall -ToolCalls @([pscustomobject]@{ notfunction = 1 })).Kind | Should -Be 'none'
+        (ConvertFrom-LokiAgentToolCall -ToolCalls @([pscustomobject]@{ function = [pscustomobject]@{ noname = 'x' } })).Kind | Should -Be 'none'
+    }
 }
 
 Describe 'Invoke-LokiEngineChat -Tools (the transport carries the move set and reads tool_calls back)' {
@@ -192,11 +204,35 @@ Describe 'Invoke-LokiOfflineAgentCommand (read-only gate: only a provable read r
     }
 }
 
+Describe 'Get-LokiOfflineChildReadEnv (child env hardening: PATH pinned, secrets stripped)' {
+    It 'pins PATH to the Windows system dirs so a PATH-planted binary elsewhere cannot resolve (S3)' {
+        $e = Get-LokiOfflineChildReadEnv -BaseEnv @{ PATH = 'C:\evil;C:\other'; FOO = 'bar' }
+        $e['PATH'] | Should -Match '(?i)System32'
+        $e['PATH'] | Should -Not -Match '(?i)evil'
+        $e['FOO']  | Should -Be 'bar'   # non-sensitive machine state is preserved for diagnosis
+    }
+    It 'strips every known auth/secret var, case-insensitively (S6)' {
+        $e = Get-LokiOfflineChildReadEnv -BaseEnv @{ ANTHROPIC_API_KEY = 'sk'; anthropic_auth_token = 't'; CLAUDE_CODE_OAUTH_TOKEN = 'o'; LOKI_SECRET = 's'; SAFE = 'ok' }
+        @($e.Keys | Where-Object { $_ -match '(?i)ANTHROPIC|OAUTH|LOKI_SECRET' }).Count | Should -Be 0
+        $e['SAFE'] | Should -Be 'ok'
+    }
+    It 'does not mutate the caller''s BaseEnv' {
+        $base = @{ PATH = 'C:\orig'; ANTHROPIC_API_KEY = 'sk' }
+        $null = Get-LokiOfflineChildReadEnv -BaseEnv $base
+        $base['PATH'] | Should -Be 'C:\orig'
+        $base.ContainsKey('ANTHROPIC_API_KEY') | Should -BeTrue
+    }
+}
+
 Describe 'Invoke-LokiChildReadCommand (isolated child Windows PowerShell; real process)' {
     It 'runs a benign read in a -NoProfile child and captures its stdout' {
         $r = Invoke-LokiChildReadCommand -CommandLine 'Write-Output LOKI_CHILD_OK' -TimeoutSec 30
         $r.Ok     | Should -BeTrue
         $r.StdOut | Should -Match 'LOKI_CHILD_OK'
+    }
+    It 'hard-caps captured output so a high-throughput read cannot flood memory downstream (S4)' {
+        $r = Invoke-LokiChildReadCommand -CommandLine "Write-Output ('x' * 400000)" -TimeoutSec 30
+        $r.StdOut.Length | Should -BeLessOrEqual 262144
     }
     It 'BREAK-THE-GUARD: a command that hangs is KILLED at the timeout (never wedges the loop)' {
         $r = Invoke-LokiChildReadCommand -CommandLine 'Start-Sleep -Seconds 30' -TimeoutSec 2
@@ -286,6 +322,37 @@ Describe 'Invoke-LokiOfflineAgentTurnLoop (the capped multi-turn diagnose loop; 
         $r.StopReason | Should -Be 'iteration-cap'
         $r.Iterations | Should -Be 3
     }
+
+    It 'WIRE SHAPE (T1): run -> observe -> final accumulates a well-formed assistant tool_calls + tool result pair' {
+        Mock Invoke-LokiOfflineAgentCommand { @{ Executed = $true; Class = 'read'; Reason = 'read-allowlisted'; Output = 'FREE_GB_1POINT8'; Truncated = $false } }
+        Mock Invoke-LokiEngineChat {
+            $msgs = @($Messages)
+            if ((@($msgs)[-1]).role -eq 'tool') {
+                # On the final turn the history the serializer receives must carry a well-formed OpenAI turn pair: the
+                # assistant's tool_calls, and a tool result whose id links the call and whose content is the observation.
+                (@($msgs | Where-Object { $_.role -eq 'assistant' })[0]).tool_calls | Should -Not -BeNullOrEmpty
+                $tool = @($msgs | Where-Object { $_.role -eq 'tool' })[0]
+                $tool.tool_call_id | Should -Be 'call-42'
+                [string]$tool.content | Should -Match 'FREE_GB_1POINT8'
+                @{ Ok = $true; Reason = 'ok'; ToolCalls = (New-ToolCall 'final_answer' '{"answer":"done"}' 'c9') }
+            }
+            else { @{ Ok = $true; Reason = 'ok'; ToolCalls = (New-ToolCall 'run_command' '{"command":"Get-Process"}' 'call-42') } }
+        }
+        (Invoke-LokiOfflineAgentTurnLoop -BaseUri 'x' -Messages $script:seed -Tools @()).StopReason | Should -Be 'final'
+    }
+
+    It 'a tool call with no id gets a synthetic tool_call_id so the turn pair stays well-formed (T5)' {
+        Mock Invoke-LokiOfflineAgentCommand { @{ Executed = $true; Class = 'read'; Reason = 'read-allowlisted'; Output = 'obs'; Truncated = $false } }
+        Mock Invoke-LokiEngineChat {
+            $msgs = @($Messages)
+            if ((@($msgs)[-1]).role -eq 'tool') {
+                (@($msgs | Where-Object { $_.role -eq 'tool' })[0]).tool_call_id | Should -Match '^call_'
+                @{ Ok = $true; Reason = 'ok'; ToolCalls = (New-ToolCall 'final_answer' '{"answer":"done"}' 'c2') }
+            }
+            else { @{ Ok = $true; Reason = 'ok'; ToolCalls = @([pscustomobject]@{ function = [pscustomobject]@{ name = 'run_command'; arguments = '{"command":"Get-Process"}' } }) } }
+        }
+        (Invoke-LokiOfflineAgentTurnLoop -BaseUri 'x' -Messages $script:seed -Tools @()).StopReason | Should -Be 'final'
+    }
 }
 
 Describe 'Agent system prompt (the injection-defense framing is a security layer, ADR-0021)' {
@@ -316,6 +383,23 @@ Describe 'Invoke-LokiOfflineAgent (wraps the loop in the engine harness; preflig
         $r.Answer     | Should -Match 'disk C: full'
         $r.StopReason | Should -Be 'final'
     }
+
+    It 'propagates an engine failure that happens INSIDE the loop -- Ok=$false, not a fabricated answer (T3)' {
+        Mock Invoke-LokiWithEngine { $res = & $Body @{ Port = 1; BaseUri = 'http://127.0.0.1:1'; Process = $null }; @{ Ok = $true; Reason = 'ok'; Result = $res } }
+        Mock Invoke-LokiEngineChat { @{ Ok = $false; Reason = 'engine-request-failed' } }
+        $r = Invoke-LokiOfflineAgent -AppRoot 'x' -Engine @{} -Runtime @{} -Model @{ ContextTokens = 40960 }
+        $r.Ok     | Should -BeFalse
+        $r.Reason | Should -Be 'engine-request-failed'
+    }
+}
+
+Describe 'Agent i18n keys resolve (no literal key leaks to the operator, T7)' {
+    It 'the agent message key resolves to real text, not itself: <key>' -ForEach @(
+        @{ key = 'offline.agentTooSmall' }
+        @{ key = 'offline.agentWorking' }
+    ) {
+        (Get-LokiText $key) | Should -Not -Be $key
+    }
 }
 
 Describe 'Command offline --agent (wiring: floor decline, ambiguity, routing)' {
@@ -330,28 +414,56 @@ Describe 'Command offline --agent (wiring: floor decline, ambiguity, routing)' {
         (Invoke-LokiCmd_offline (New-OfflineCtx @('--agent', '--analyze', 'x'))) | Should -Be (Get-LokiExitCode 'Usage')
     }
 
-    It 'a below-floor model (small) -> declines OfflineEngineMissing(5) and NEVER enters the loop' {
-        Mock Get-LokiModelManifest { , @(@{ Id = 'small'; Model = 'Qwen3-4B'; ContextTokens = 262144; ResidentGB = 4.5; Default = $true }) }
-        Mock Invoke-LokiOfflineAgent { }   # if this is ever called for a small model, the security floor has failed
+    It 'no agent-capable model installed -> declines OfflineEngineMissing(5) and NEVER enters the loop' {
+        Mock Get-LokiModelManifest { , @(@{ Id = 'small'; Model = 'Qwen3-4B'; ContextTokens = 262144; ResidentGB = 4.5; FileName = 'small.gguf'; Default = $true }) }
+        Mock Select-LokiOfflineAgentModel { $null }
+        Mock Invoke-LokiOfflineAgent { }   # if this is ever called with no capable model installed, the floor has failed
         (Invoke-LokiCmd_offline (New-OfflineCtx @('--agent'))) | Should -Be (Get-LokiExitCode 'OfflineEngineMissing')
-        Should -Invoke Invoke-LokiOfflineAgent -Times 0
+        Should -Invoke Invoke-LokiOfflineAgent -Times 0 -Exactly
     }
 
-    It 'an empty model manifest -> OfflineEngineMissing(5), not a crash (no model to run the agent)' {
-        Mock Get-LokiModelManifest { , @() }
-        (Invoke-LokiCmd_offline (New-OfflineCtx @('--agent'))) | Should -Be (Get-LokiExitCode 'OfflineEngineMissing')
-    }
-
-    It 'a capable model (mid) -> runs the agent with that model and prints its answer (exit Ok)' {
-        Mock Get-LokiModelManifest { , @(@{ Id = 'mid'; Model = 'the-8B'; ContextTokens = 40960; ResidentGB = 7.0; Default = $true }) }
+    It 'a capable installed model -> runs the agent with THAT model and returns exit Ok (routing + result mapping)' {
+        Mock Get-LokiModelManifest { , @(@{ Id = 'mid'; Model = 'the-8B'; ContextTokens = 40960; ResidentGB = 7.0; FileName = 'mid.gguf' }) }
+        Mock Select-LokiOfflineAgentModel { @{ Id = 'mid'; Model = 'the-8B'; ContextTokens = 40960 } }
         Mock Invoke-LokiOfflineAgent { @{ Ok = $true; Reason = 'ok'; Answer = 'VERDICT: disk C: full'; StopReason = 'final'; Iterations = 2 } }
         (Invoke-LokiCmd_offline (New-OfflineCtx @('--agent'))) | Should -Be (Get-LokiExitCode 'Ok')
         Should -Invoke Invoke-LokiOfflineAgent -Times 1 -Exactly -ParameterFilter { $Model.Id -eq 'mid' }
     }
 
     It 'a capable model whose agent run fails maps the Reason to an exit code (mirrors --analyze, not a crash)' {
-        Mock Get-LokiModelManifest { , @(@{ Id = 'mid'; Model = 'the-8B'; ContextTokens = 40960; ResidentGB = 7.0; Default = $true }) }
+        Mock Get-LokiModelManifest { , @(@{ Id = 'mid'; Model = 'the-8B'; ContextTokens = 40960; ResidentGB = 7.0; FileName = 'mid.gguf' }) }
+        Mock Select-LokiOfflineAgentModel { @{ Id = 'mid'; Model = 'the-8B'; ContextTokens = 40960 } }
         Mock Invoke-LokiOfflineAgent { @{ Ok = $false; Reason = 'insufficient-ram' } }
         (Invoke-LokiCmd_offline (New-OfflineCtx @('--agent'))) | Should -Be (Get-LokiExitCode 'OfflineEngineMissing')
+    }
+}
+
+Describe 'Select-LokiOfflineAgentModel (recommended INSTALLED agent-capable tier; ignores Default=small)' {
+    BeforeAll {
+        $script:catalog = @(
+            @{ Id = 'small'; Model = 'Qwen3-4B'; FileName = 'small.gguf'; Default = $true },
+            @{ Id = 'mid';   Model = 'the-8B';   FileName = 'mid.gguf' },
+            @{ Id = 'large'; Model = 'the-14B';  FileName = 'large.gguf' }
+        )
+    }
+    It 'picks the SMALLEST capable tier that is installed (mid over large), never the Default=small' {
+        (Select-LokiOfflineAgentModel -Models $script:catalog -InstalledFileNames @('small.gguf', 'mid.gguf', 'large.gguf')).Id | Should -Be 'mid'
+    }
+    It 'skips a capable tier that is NOT installed (picks large when only large is on the stick)' {
+        (Select-LokiOfflineAgentModel -Models $script:catalog -InstalledFileNames @('small.gguf', 'large.gguf')).Id | Should -Be 'large'
+    }
+    It 'returns $null when only a below-floor tier is installed (the real default stick: small only)' {
+        Select-LokiOfflineAgentModel -Models $script:catalog -InstalledFileNames @('small.gguf') | Should -BeNullOrEmpty
+    }
+    It 'returns $null when nothing is installed' {
+        Select-LokiOfflineAgentModel -Models $script:catalog -InstalledFileNames @() | Should -BeNullOrEmpty
+    }
+    It 'matches installed filenames case-insensitively (Windows)' {
+        (Select-LokiOfflineAgentModel -Models $script:catalog -InstalledFileNames @('MID.GGUF')).Id | Should -Be 'mid'
+    }
+    It 'REGRESSION (A1): on the REAL shipped manifest, an installed mid tier is chosen despite Default=small' {
+        $models = Get-LokiModelManifest -Path (Join-Path (Resolve-Path "$PSScriptRoot\..\src").Path 'models\manifest.psd1')
+        $midFile = (@($models) | Where-Object { $_.Id -eq 'mid' } | Select-Object -First 1).FileName
+        (Select-LokiOfflineAgentModel -Models @($models) -InstalledFileNames @($midFile)).Id | Should -Be 'mid'
     }
 }

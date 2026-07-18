@@ -31,8 +31,9 @@ guard broken once on purpose to prove it can fail (CLAUDE.md section 6).
 
 **1. Slice 2a is read-only. No mutations, at all, in this increment.**
 
-Every command the model proposes goes through the one allow-list engine (`Get-LokiAllowDecision`, ADR-0006). Only a
-`read` decision (`AutoAllowed`) executes. A `mutate` or `denied` decision is **refused this slice** with a short
+Every command the model proposes goes through the one runtime-safe gate, `Resolve-LokiCommandDecision` (ADR-0006, in
+`lib/claude.ps1` -- see Decision point 4). Only a `read` decision (`.Class -eq 'read'`) executes. A `mutate` or
+`denied` decision is **refused this slice** with a short
 notice -- not queued, not confirmed. Confirmation-gated mutation is real work with its own interaction model
 (ADR-0008) and its own review; it is Slice 2b, deferred deliberately so the safe half ships first and the review
 surface here stays small. The read-only loop is already the whole of what DESIGN.md calls "a supervised junior
@@ -94,9 +95,11 @@ engine-agnostic home is a clean follow-up the review can weigh. It is reused in 
 security-critical shared function mid-slice.)
 
 Execution runs the vetted command in an **isolated child Windows PowerShell**: `-NoProfile` (no profile-defined
-`Function`/`Alias` can shadow the command name -- the execution-layer half of the Cmdlet check), `-NonInteractive`, a
-hard timeout that **kills** a hung command, and the command text passed on **STDIN** (`-Command -`) so there is no
-argument-quoting seam to smuggle through. Its output is length-bounded and neutralized (point 5) before it re-enters
+`Function`/`Alias` can shadow the command name -- the execution-layer half of the Cmdlet check); a **PATH pinned to
+System32** so a native read tool resolves to the real binary, not a PATH-planted `.exe`, with any ambient secret
+stripped from the child env; `-NonInteractive`; a hard timeout that **tree-kills** a hung command and its
+grandchildren. The command travels as a base64 **`-EncodedCommand`** (verbatim, so there is no argument-quoting seam --
+base64 has no quoting to break out of). Its output is length-bounded and neutralized (point 5) before it re-enters
 the model's context.
 
 **5. Command output is untrusted data too, and the loop has hard caps.**
@@ -118,15 +121,31 @@ framing is defense-in-depth on top of the structural gate, not a substitute for 
 * **Slice 2a ships a supervised, read-only offline agent.** Mutations (2b, ADR-0008) and true router-mode fallback (when
   the router exists) are explicit, named follow-ups, not forgotten corners.
 * **New file `src/lib/offline-agent.ps1`** owns the loop, the tool protocol, and the gated execution. It **reuses**
-  `Invoke-LokiEngineChat`, `Protect-LokiOfflineDumpText`, and `Get-LokiOfflineFailure` from `lib/offline.ps1` and
-  `Get-LokiAllowDecision` from `lib/allowlist.ps1`; it does not re-implement any of them (CLAUDE.md section 2,
-  "one source of truth per concept"). The `offline` command grows a `--agent` route only -- the dispatcher stays thin.
+  `Invoke-LokiEngineChat` / `Protect-LokiOfflineDumpText` / `Get-LokiOfflineContextSize` from `lib/offline.ps1`,
+  `Invoke-LokiWithEngine` from `lib/agent.ps1`, and the runtime-safe gate `Resolve-LokiCommandDecision` +
+  `Get-LokiJsonProp` from `lib/claude.ps1` (**NOT** the weaker `Get-LokiAllowDecision`, which lacks the
+  cmdlet-resolution / secret-target / side-effect blocks); it re-implements none of them (CLAUDE.md section 2, "one
+  source of truth per concept"). `Get-LokiOfflineFailure` reuse lives in the `offline` command, which grows a `--agent`
+  route only -- the dispatcher stays thin. The `claude.ps1`-resident gate is a real offline->online-module coupling;
+  hoisting it to `lib/allowlist.ps1` as the engine-agnostic home is the recorded follow-up in Decision point 4.
 * **`Invoke-LokiEngineChat` gains an optional `Tools` path** (#20). That is a `lib/` signature change to a function
   ADR-0015 already declared "shared with Slice 2"; it is additive (existing analyze callers pass none, and the return
   shape only grows a `ToolCalls` field when tools are sent), and is the one contract touched.
-* **The `run_command` tool manifest must match the allow-list** -- CI's docs/tool-manifest gate (CLAUDE.md section 7)
-  checks that the exposed tool surface and the allow-list agree, so a tool added here without its allow-list entry is a
-  red build, by design.
+* **`run_command` is the vehicle that FEEDS the allow-list, not an allow-listed command itself** -- so there is no
+  "tool manifest == allow-list" cross-check to make for this tool surface (that framing, and any CLAUDE.md section 7
+  gate it might imply, do not apply here). What is enforced is per-command, at execution time, by
+  `Resolve-LokiCommandDecision` on every string the model puts through the single tool.
+* **The read gate was hardened by this slice's own adversarial review (ADR-0006 refinement, 2026-07-18)**, and because
+  those fixes live in the SHARED gate they harden Claude Code too: forward/mixed-slash UNC (`//host`) now joins
+  backslash UNC in the side-effect deny; remote-target parameters (`-ComputerName` / `-CN` / `-CimSession` /
+  `-ConnectionUri`) are denied; and the read child pins PATH to System32 so a native tool cannot resolve a
+  PATH-planted binary. **Accepted residual:** the native reachability tools (`ping` / `tracert` / `nslookup` with a
+  bare host) can still reach an operator-/model-chosen host -- that is intrinsic to network diagnosis; the beacon risk
+  is bounded (low bandwidth, no credential) and is documented rather than removed.
+* **`--agent` selects the recommended INSTALLED agent-capable tier**, not the catalog `Default` (which is `small`,
+  below the floor). Selecting by `Default` made the command decline on every default stick even with a capable tier
+  installed; `Select-LokiOfflineAgentModel` picks the smallest capable tier whose weights are present, declining only
+  when none is installed.
 * **This is a security core end to end.** No part of it merges without the mandatory Opus adversarial review
   (CLAUDE.md section 5), and the gate, the injection defense, the caps, and the grammar each get a
   broken-once-on-purpose test (CLAUDE.md section 6).

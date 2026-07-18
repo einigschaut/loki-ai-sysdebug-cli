@@ -236,7 +236,7 @@ function Select-LokiTier {
         The manifest's Default flag already encodes somebody balancing quality against speed; a RAM figure does not
         get to overrule it. Anything larger is offered by the report, never auto-selected (ADR-0017).
 
-        -Override names a tier explicitly (`offline --model <tier>`); it still has to fit unless -Force is given, and
+        -Override names a tier explicitly (a `--model <tier>` override where a command wires it); it still has to fit unless -Force is given, and
         -Force is the operator knowingly accepting the swap risk -- it is reported, never silent.
     #>
     param(

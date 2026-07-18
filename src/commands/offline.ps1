@@ -44,23 +44,21 @@ function Invoke-LokiCmd_offline {
         $dumpText = [string]$dump.Text
     }
 
-    # Engine + model come from the pinned manifests on the stick (shared by both modes). If the machine cannot run the
-    # model, the preflight inside the engine harness says so (a clear message, not a crash).
+    # Engine + model catalog come from the pinned manifests on the stick (shared by both modes).
     $engineData = Get-LokiEngineManifest -Path (Join-Path $Context.AppRoot 'engine\manifest.psd1')
-    $models = Get-LokiModelManifest -Path (Get-LokiModelLayout -AppRoot $Context.AppRoot).ManifestPath  # assign FIRST
-    $modelList = @($models)                                                                             # THEN wrap
-    $model = $modelList | Where-Object { $_.Default } | Select-Object -First 1
-    if ($null -eq $model) { $model = $modelList | Select-Object -First 1 }
-    if ($null -eq $model) {
-        Write-LokiErr (Get-LokiText 'offline.notSetup')
-        return (Get-LokiExitCode 'OfflineEngineMissing')
-    }
+    $modelLayout = Get-LokiModelLayout -AppRoot $Context.AppRoot
+    $models = Get-LokiModelManifest -Path $modelLayout.ManifestPath   # assign FIRST
+    $modelList = @($models)                                           # THEN wrap
 
     if ($wantAgent) {
-        # The agent LOOP needs a model at or above the ~8B floor (the `mid` tier, DESIGN.md section 3 / ADR-0021).
-        # Below it, decline and point at --analyze rather than run a loop DESIGN.md itself calls unreliable there.
-        if (-not (Test-LokiOfflineAgentCapable -Model $model)) {
-            Write-LokiErr (Get-LokiText 'offline.agentTooSmall' -ArgumentList @([string]$model.Model))
+        # The agent needs the recommended INSTALLED agent-capable tier -- NOT the catalog Default (which is `small`,
+        # below the ~8B floor). Selecting by Default made --agent decline on every default stick even with mid/large
+        # installed (review 2026-07-18); pick the smallest capable tier whose weights are present, decline if none.
+        $installedFiles = @(Get-ChildItem -LiteralPath $modelLayout.Dir -Filter '*.gguf' -File -ErrorAction SilentlyContinue |
+                ForEach-Object { $_.Name })
+        $model = Select-LokiOfflineAgentModel -Models $modelList -InstalledFileNames $installedFiles
+        if ($null -eq $model) {
+            Write-LokiErr (Get-LokiText 'offline.agentTooSmall')
             return (Get-LokiExitCode 'OfflineEngineMissing')
         }
         # Capable model -> the read-only agent loop. Ok -> print the answer; otherwise map the harness Reason through
@@ -77,10 +75,23 @@ function Invoke-LokiCmd_offline {
         if (($agent -is [hashtable]) -and $agent.ContainsKey('Detail')) { $agentDetail = [string]$agent.Detail }
         $agentFail = Get-LokiOfflineFailure -Reason ([string]$agent.Reason) -Detail $agentDetail
         Write-LokiErr (Get-LokiText $agentFail.MessageKey)
+        if ($agentFail.MessageKey -eq 'offline.engineFailed') {
+            # llama-server says WHY on stderr; show it only with --verbose -- matching --analyze so the modes do not drift (A5).
+            $verbose = ($Context.Flags -is [hashtable]) -and $Context.Flags.ContainsKey('Verbose') -and $Context.Flags['Verbose']
+            if ($verbose -and ($agent -is [hashtable]) -and $agent.ContainsKey('EngineLog') -and (-not [string]::IsNullOrWhiteSpace([string]$agent.EngineLog))) {
+                Write-LokiLine ([string]$agent.EngineLog)
+            }
+        }
         return (Get-LokiExitCode $agentFail.ExitName)
     }
 
-    # --- --analyze (Slice 1) ---
+    # --- --analyze (Slice 1): the catalog Default is the analyze model. ---
+    $model = $modelList | Where-Object { $_.Default } | Select-Object -First 1
+    if ($null -eq $model) { $model = $modelList | Select-Object -First 1 }
+    if ($null -eq $model) {
+        Write-LokiErr (Get-LokiText 'offline.notSetup')
+        return (Get-LokiExitCode 'OfflineEngineMissing')
+    }
     Write-LokiInfo (Get-LokiText 'offline.working' -ArgumentList @([string]$model.Model))
     $res = Invoke-LokiOfflineAnalyze -AppRoot $Context.AppRoot -Engine $engineData.Engine `
         -Runtime $engineData.Runtime -Model $model -DumpText $dumpText
