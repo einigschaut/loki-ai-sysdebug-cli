@@ -112,3 +112,21 @@ refusal message for a `'denied'` one, is the calling command's job (via
   enforcement layer (`lib/claude.ps1`, the next slice) will only honor the `Get-*`
   auto-read when a runtime `Get-Command` resolves the name to a real `Cmdlet`, not
   a `Function`/`Alias`/`Application`.
+
+## Refinement (2026-07-18) — offline-agent adversarial review
+
+The `offline --agent` slice (ADR-0021) made this gate's `read` decision auto-execute model-proposed commands, turning
+three latent gaps in the SHARED classifier into exploitable ones. Fixed here, so both engines are hardened at once:
+
+* **Forward/mixed-slash UNC.** The side-effect deny matched only `\\host`; `//host` and `/\host` normalize to a UNC in
+  .NET too and still coerce SMB/NTLM auth. The deny now catches a `[\\/]{2}` path root at a token boundary (spared:
+  `http://` and inline `//`, which are not path roots).
+* **Remote-target parameters.** `-ComputerName` / `-CN` / `-CimSession` / `-ConnectionUri` on a read cmdlet reach an
+  attacker host over WinRM/DCOM → NetNTLM leak; they are now denied. Native `ping`/`tracert` (bare host) and positional
+  `Test-NetConnection` stay allowed — reachability is intrinsic to network diagnosis, an accepted bounded residual.
+* **Native-tool PATH hijack.** The runtime `Get-Command` check guards only the `Get-*` branch; a name-trusted native
+  tool (`ipconfig`/`whoami`) has no cmdlet to outrank a PATH-planted `.exe`. The offline read executor now runs the
+  child with **PATH pinned to System32** (and the ambient secret stripped), closing the hijack at the execution layer.
+  Extending a resolution check to native tools in the online path is a noted follow-up.
+
+Each fix has a broken-once-on-purpose test (`tests/claude.Tests.ps1`, `tests/offline-agent.Tests.ps1`).

