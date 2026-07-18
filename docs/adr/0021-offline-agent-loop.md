@@ -62,14 +62,21 @@ The rank is an **ordered floor**, not a fixed allow-set: a larger tier added to 
 automatically, while a new tier `Id` that is not ranked fails a test (`tests/offline-agent.Tests.ps1`) rather than
 silently passing or silently declining. The floor fails safe -- an unranked or unknown tier is treated as below it.
 
-**3. One narrow tool -- `run_command` -- with its argument grammar-constrained.**
+**3. Two narrow tools -- `run_command` and `final_answer` -- their arguments schema-constrained.**
 
 DESIGN.md section 3 is explicit: "an allow-list of narrow native functions rather than 'run a shell command'." The
-model is given exactly one tool, `run_command`, whose single argument is a command **string**. The argument is
-constrained by a GBNF grammar (#20) so that the dominant small-model failure mode -- malformed JSON -- is structurally
-impossible, and so the string is a **single line** (no CR/LF), reinforcing at the generation layer the exact rule the
-allow-list enforces at the gate (ADR-0006 step 2a). A single narrow tool keeps the model's move set to "name a command
-to run," never "hand a blob to a shell."
+model is given exactly two tools: `run_command` (one argument, a command **string**) to gather one fact, and
+`final_answer` (one argument, the diagnosis **text**) to stop. Its move set is therefore "name one command to run" or
+"answer" -- never "hand a blob to a shell," never free-form control flow.
+
+The tool arguments are constrained by each tool's JSON **schema**, which llama-server compiles to a GBNF grammar and
+enforces during generation (measured against the pinned engine: it returns a well-formed `tool_calls` object with
+parseable arguments, even from the 4B model). That makes the dominant small-model failure mode -- malformed JSON --
+structurally impossible, without a hand-written grammar fighting the model's own tool template. The one thing the
+schema grammar does *not* reliably express is "no newline inside the string" (a JSON string may carry `\n`), so the
+**single-line / no-CRLF rule is enforced at the gate** by the allow-list (ADR-0006: any CR/LF -> not a clean read ->
+not auto-allowed) and asked for in the system prompt -- defense where it is reliable, rather than a grammar claim that
+would not hold.
 
 **4. Enforcement reuses the one allow-list engine, plus the runtime check ADR-0006 promised.**
 
@@ -103,9 +110,9 @@ framing is defense-in-depth on top of the structural gate, not a substitute for 
   `Invoke-LokiEngineChat`, `Protect-LokiOfflineDumpText`, and `Get-LokiOfflineFailure` from `lib/offline.ps1` and
   `Get-LokiAllowDecision` from `lib/allowlist.ps1`; it does not re-implement any of them (CLAUDE.md section 2,
   "one source of truth per concept"). The `offline` command grows a `--agent` route only -- the dispatcher stays thin.
-* **`Invoke-LokiEngineChat` gains an optional `Tools`/`Grammar` path** (#20). That is a `lib/` signature change to a
-  function ADR-0015 already declared "shared with Slice 2"; it is additive (existing analyze callers pass neither), and
-  is the one contract touched.
+* **`Invoke-LokiEngineChat` gains an optional `Tools` path** (#20). That is a `lib/` signature change to a function
+  ADR-0015 already declared "shared with Slice 2"; it is additive (existing analyze callers pass none, and the return
+  shape only grows a `ToolCalls` field when tools are sent), and is the one contract touched.
 * **The `run_command` tool manifest must match the allow-list** -- CI's docs/tool-manifest gate (CLAUDE.md section 7)
   checks that the exposed tool surface and the allow-list agree, so a tool added here without its allow-list entry is a
   red build, by design.

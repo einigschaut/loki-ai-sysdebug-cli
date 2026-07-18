@@ -20,7 +20,7 @@
 #       never to Ok, on an unforeseen Reason.
 #   Read-LokiOfflineDump -Path <string> -> [hashtable]{ Ok; Text?; Reason }   (READ-ONLY; renders a collect .json)
 #   Protect-LokiOfflineDumpText -DumpText <string> -> [string]   (PURE; neutralizes the <dump> fence in untrusted text)
-#   Invoke-LokiEngineChat -BaseUri <string> -Messages <array> [...] -> [hashtable]{ Ok; Content?; Reason }
+#   Invoke-LokiEngineChat -BaseUri <string> -Messages <array> [-Tools <array>] [...] -> [hashtable]{ Ok; Content?; ToolCalls?; Reason }
 #   Invoke-LokiOfflineAnalyze -AppRoot -Engine -Runtime -Model -DumpText [...] -> [hashtable]{ Ok; Reason; Analysis? }
 # ASCII-only file -> no BOM (CLAUDE.md section 1).
 Set-StrictMode -Version Latest
@@ -173,20 +173,43 @@ function Invoke-LokiEngineChat {
         [Parameter(Mandatory = $true)][array]$Messages,
         [int]$MaxTokens = 768,
         [double]$Temperature = 0.2,
-        [int]$TimeoutSec = 300
+        [int]$TimeoutSec = 300,
+        [array]$Tools = @()
     )
-    $payload = @{ messages = $Messages; temperature = $Temperature; max_tokens = $MaxTokens; stream = $false } |
-        ConvertTo-Json -Depth 6 -Compress
+    # -Tools is the Slice 2a addition (ADR-0021): the run_command/final_answer move set. When sent, the reply's move is
+    # in tool_calls (which llama-server constrains to each tool's schema), so this returns those alongside any content.
+    # Analyze (Slice 1) passes no tools and the shape is unchanged: { Ok; Content; Reason }.
+    $hasTools = ($null -ne $Tools) -and (@($Tools).Count -gt 0)
+    $body = @{ messages = $Messages; temperature = $Temperature; max_tokens = $MaxTokens; stream = $false }
+    if ($hasTools) { $body['tools'] = $Tools }
+    $payload = $body | ConvertTo-Json -Depth 10 -Compress
     try {
         $r = Invoke-RestMethod -Uri ($BaseUri.TrimEnd('/') + '/v1/chat/completions') -Method Post `
             -ContentType 'application/json' -Body $payload -TimeoutSec $TimeoutSec -ErrorAction Stop
     }
     catch { return @{ Ok = $false; Reason = 'engine-request-failed'; Error = $_.Exception.Message } }
 
+    $msg = $null
+    try { $msg = $r.choices[0].message } catch { $msg = $null }
+    if ($null -eq $msg) { return @{ Ok = $false; Reason = 'engine-empty-answer' } }
+
     $content = $null
-    try { $content = [string]$r.choices[0].message.content } catch { $content = $null }
-    if ([string]::IsNullOrWhiteSpace($content)) { return @{ Ok = $false; Reason = 'engine-empty-answer' } }
-    return @{ Ok = $true; Content = $content.Trim(); Reason = 'ok' }
+    try { $content = [string]$msg.content } catch { $content = $null }
+
+    # A tool-call reply legitimately carries null content -- the move is in tool_calls, not prose. So an empty answer is
+    # a failure only when there is ALSO no tool call to act on.
+    $toolCalls = @()
+    if ($hasTools) {
+        try { if ($null -ne $msg.tool_calls) { $toolCalls = @($msg.tool_calls) } } catch { $toolCalls = @() }
+    }
+    if (($toolCalls.Count -eq 0) -and [string]::IsNullOrWhiteSpace($content)) {
+        return @{ Ok = $false; Reason = 'engine-empty-answer' }
+    }
+
+    $result = @{ Ok = $true; Reason = 'ok' }
+    if (-not [string]::IsNullOrWhiteSpace($content)) { $result['Content'] = $content.Trim() }
+    if ($toolCalls.Count -gt 0) { $result['ToolCalls'] = $toolCalls }
+    return $result
 }
 
 function Invoke-LokiOfflineAnalyze {

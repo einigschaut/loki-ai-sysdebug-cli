@@ -50,10 +50,101 @@ Describe 'Tier-rank drift guard (a new catalog tier nobody ranked must fail a te
     }
 }
 
-Describe 'Invoke-LokiOfflineAgent (WIP boundary -- #20-#22 replace this with the real loop)' {
+Describe 'Get-LokiOfflineAgentToolset (the model move set: run_command + final_answer, ADR-0021)' {
+    BeforeAll { $script:tools = Get-LokiOfflineAgentToolset }
+
+    It 'exposes exactly the two tools, in order, and no more' {
+        @($script:tools).Count | Should -Be 2
+        (@($script:tools | ForEach-Object { $_.function.name }) -join ',') | Should -Be 'run_command,final_answer'
+    }
+    It 'every tool is an OpenAI function with a single required string argument' {
+        foreach ($t in $script:tools) {
+            $t.type | Should -Be 'function'
+            $t.function.parameters.type | Should -Be 'object'
+            @($t.function.parameters.required).Count | Should -Be 1
+            $argName = @($t.function.parameters.required)[0]
+            $t.function.parameters.properties.$argName.type | Should -Be 'string'
+        }
+    }
+    It 'serializes to a JSON array with array-typed `required` (the exact shape llama-server receives)' {
+        # PS 5.1 ConvertTo-Json can collapse a single-element array to a scalar; if `required` came out as a bare
+        # "command" instead of ["command"], the tool schema the engine is handed would be malformed. Assert the wire
+        # shape directly (whitespace-stripped so formatting does not matter).
+        $json = ConvertTo-Json -InputObject $script:tools -Depth 10
+        $json.TrimStart().StartsWith('[') | Should -BeTrue
+        $json | Should -Match 'run_command'
+        $json | Should -Match 'final_answer'
+        $flat = ($json -replace '\s', '')
+        $flat | Should -Match '"required":\["command"\]'
+        $flat | Should -Match '"required":\["answer"\]'
+    }
+}
+
+Describe 'ConvertFrom-LokiAgentToolCall (engine reply -> next move; fail-safe, never a half-read command)' {
+    It 'a run_command call -> Kind run + the command, trimmed' {
+        $tc = @([pscustomobject]@{ function = [pscustomobject]@{ name = 'run_command'; arguments = '{"command":"  Get-Volume  "}' } })
+        $move = ConvertFrom-LokiAgentToolCall -ToolCalls $tc
+        $move.Kind    | Should -Be 'run'
+        $move.Command | Should -Be 'Get-Volume'
+    }
+    It 'a final_answer call -> Kind final + the answer' {
+        $tc = @([pscustomobject]@{ function = [pscustomobject]@{ name = 'final_answer'; arguments = '{"answer":"disk C: is full"}' } })
+        (ConvertFrom-LokiAgentToolCall -ToolCalls $tc).Answer | Should -Be 'disk C: is full'
+    }
+    It 'plain prose with no tool call -> Kind final (a model that did not tool-call is still heard)' {
+        (ConvertFrom-LokiAgentToolCall -Content 'VERDICT: nothing wrong').Kind | Should -Be 'final'
+    }
+    It 'FAIL-SAFE: malformed argument JSON -> none, never a half-read run' {
+        $tc = @([pscustomobject]@{ function = [pscustomobject]@{ name = 'run_command'; arguments = '{"command": "Get-Vol' } })
+        (ConvertFrom-LokiAgentToolCall -ToolCalls $tc).Kind | Should -Be 'none'
+    }
+    It 'FAIL-SAFE: run_command with an empty command -> none' {
+        $tc = @([pscustomobject]@{ function = [pscustomobject]@{ name = 'run_command'; arguments = '{"command":"   "}' } })
+        (ConvertFrom-LokiAgentToolCall -ToolCalls $tc).Kind | Should -Be 'none'
+    }
+    It 'FAIL-SAFE: an unknown tool name -> none (never guessed into run)' {
+        $tc = @([pscustomobject]@{ function = [pscustomobject]@{ name = 'delete_everything'; arguments = '{}' } })
+        (ConvertFrom-LokiAgentToolCall -ToolCalls $tc).Kind | Should -Be 'none'
+    }
+    It 'FAIL-SAFE: neither a tool call nor content -> none' {
+        (ConvertFrom-LokiAgentToolCall).Kind | Should -Be 'none'
+    }
+    It 'takes only the FIRST tool call -- one fact per turn (a smuggled second command is ignored)' {
+        $tc = @(
+            [pscustomobject]@{ function = [pscustomobject]@{ name = 'run_command';  arguments = '{"command":"Get-Volume"}' } },
+            [pscustomobject]@{ function = [pscustomobject]@{ name = 'run_command';  arguments = '{"command":"Remove-Item C:\\"}' } }
+        )
+        (ConvertFrom-LokiAgentToolCall -ToolCalls $tc).Command | Should -Be 'Get-Volume'
+    }
+}
+
+Describe 'Invoke-LokiEngineChat -Tools (the transport carries the move set and reads tool_calls back)' {
+    It 'sends the tools in the payload and returns tool_calls -- a null-content tool reply is still Ok' {
+        Mock Invoke-RestMethod {
+            [pscustomobject]@{ choices = @([pscustomobject]@{ message = [pscustomobject]@{
+                        content    = $null
+                        tool_calls = @([pscustomobject]@{ function = [pscustomobject]@{ name = 'run_command'; arguments = '{"command":"Get-Volume"}' } })
+                    } }) }
+        }
+        $res = Invoke-LokiEngineChat -BaseUri 'http://127.0.0.1:1' -Messages @(@{ role = 'user'; content = 'go' }) -Tools (Get-LokiOfflineAgentToolset)
+        $res.Ok | Should -BeTrue
+        @($res.ToolCalls).Count | Should -Be 1
+        Should -Invoke Invoke-RestMethod -Times 1 -Exactly -ParameterFilter { ($Body -match '"tools"') -and ($Body -match 'run_command') }
+    }
+    It 'without -Tools the payload has no tools key (the analyze path is unchanged)' {
+        Mock Invoke-RestMethod {
+            [pscustomobject]@{ choices = @([pscustomobject]@{ message = [pscustomobject]@{ content = 'VERDICT: ok' } }) }
+        }
+        $res = Invoke-LokiEngineChat -BaseUri 'http://127.0.0.1:1' -Messages @(@{ role = 'user'; content = 'go' })
+        $res.Content | Should -Be 'VERDICT: ok'
+        Should -Invoke Invoke-RestMethod -Times 1 -Exactly -ParameterFilter { $Body -notmatch '"tools"' }
+    }
+}
+
+Describe 'Invoke-LokiOfflineAgent (WIP boundary -- #21-#22 replace this with the real loop)' {
     It 'throws an explicit not-yet-wired error rather than pretending to run' {
         # A security core must never ship a loop that only looks like it runs (CLAUDE.md 9). This guard is replaced by
-        # real loop tests when #20-#22 land; its presence documents that the scaffold does not fake the loop.
+        # real loop tests when #21-#22 land; its presence documents that the scaffold does not fake the loop.
         { Invoke-LokiOfflineAgent -AppRoot 'x' -Engine @{} -Runtime @{} -Model @{ Id = 'mid' } } |
             Should -Throw '*not yet wired*'
     }
