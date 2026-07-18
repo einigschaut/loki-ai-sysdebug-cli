@@ -25,6 +25,13 @@
 #   ConvertFrom-LokiAgentToolCall [-ToolCalls <array>] [-Content <string>] -> [hashtable]{ Kind; Command?; Answer?; Reason? }   (#20)
 #       PURE, fail-safe. Turns the engine reply into the loop's next move: 'run' (a command), 'final' (an answer), or
 #       'none' (nothing usable). Never throws, never returns 'run' with a command it could not read.
+#   Invoke-LokiOfflineAgentCommand -CommandLine <string> [-TimeoutSec -MaxOutputChars] -> [hashtable]{ Executed; Class; Reason; Output?; Truncated?; ExitCode?; TimedOut? }   (#21)
+#       SECURITY CORE. Gate a model-proposed command via Resolve-LokiCommandDecision (the one runtime-safe gate) and
+#       run it ONLY if it is provably 'read'. 'mutate'/'denied' are refused and NEVER executed. Output is neutralized
+#       (Protect-LokiOfflineDumpText) and length-bounded before it can re-enter the model context.
+#   Invoke-LokiChildReadCommand -CommandLine <string> [-TimeoutSec] -> [hashtable]{ Ok; ExitCode; StdOut; StdErr; TimedOut }   (#21)
+#       Run ONE already-gated read in an isolated child Windows PowerShell (-NoProfile, -NonInteractive, command on
+#       STDIN, hard timeout + kill). A failure is data, never a throw. The CALLER must have gated the command first.
 #   Invoke-LokiOfflineAgent -AppRoot -Engine -Runtime -Model [-MaxIterations -TimeBudgetSec] -> [hashtable]{ Ok; Reason; Answer? }
 #       The loop entry the command calls for a CAPABLE model. #21-#22 implement it; in this scaffold it is an explicit
 #       WIP throw so a half-built loop can never masquerade as a working one (CLAUDE.md section 9).
@@ -149,14 +156,127 @@ function ConvertFrom-LokiAgentToolCall {
     return @{ Kind = 'none'; Reason = 'no-tool-call-no-content' }
 }
 
+function Invoke-LokiChildReadCommand {
+    <#
+        Run ONE already-gated read-only command in an isolated child Windows PowerShell, capture its output, and never
+        let it outlive its welcome. The CALLER must have vetted it read-only first (Invoke-LokiOfflineAgentCommand does)
+        -- this function does NOT gate, it only isolates. Isolation: -NoProfile (no profile-defined Function/Alias can
+        shadow the command, the execution-layer half of the gate's Get-Command Cmdlet check), -NonInteractive (never
+        prompts, never hangs on input), and a hard timeout that KILLS the child (a diagnostic on a broken machine must
+        not wedge the loop). The command text goes in on STDIN (`-Command -`), never as an argument, so there is no
+        argument-quoting seam. Returns { Ok; ExitCode; StdOut; StdErr; TimedOut } -- a failure is data, never a throw.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$CommandLine,
+        [int]$TimeoutSec = 20
+    )
+    $psExe = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    if (-not (Test-Path -LiteralPath $psExe)) { $psExe = 'powershell.exe' }  # fall back to PATH; still target 5.1
+
+    # Pass the (already-gated) command as a base64 -EncodedCommand: it travels VERBATIM with no argument-quoting seam
+    # and none of the stdin-timing fragility of `-Command -`. We build the encoding ourselves from a vetted read -- this
+    # is invocation, not the obfuscation the allow-list denies in MODEL input (that check guards what the model sends).
+    $encoded = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($CommandLine))
+
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $psExe
+    # -OutputFormat Text keeps stdout plain (not CLIXML). No stdin is redirected: -NonInteractive turns any prompt into
+    # a failure rather than a hang, and there is nothing to feed.
+    $psi.Arguments = "-NoProfile -NonInteractive -OutputFormat Text -EncodedCommand $encoded"
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+
+    $p = $null
+    try { $p = [System.Diagnostics.Process]::Start($psi) }
+    catch { return @{ Ok = $false; ExitCode = -1; StdOut = ''; StdErr = 'child-start-failed'; TimedOut = $false } }
+
+    # Drain both pipes async BEFORE waiting: a child that fills a pipe buffer would otherwise deadlock a sync read
+    # (ADR-0015 learned this for the engine).
+    $outTask = $p.StandardOutput.ReadToEndAsync()
+    $errTask = $p.StandardError.ReadToEndAsync()
+
+    $timedOut = $false
+    if (-not $p.WaitForExit($TimeoutSec * 1000)) {
+        $timedOut = $true
+        try { $p.Kill() } catch { $null = $_ }                    # best-effort kill; a race where it already exited is fine
+        try { [void]$p.WaitForExit(2000) } catch { $null = $_ }
+    }
+
+    $stdout = ''
+    $stderr = ''
+    try { $stdout = [string]$outTask.Result } catch { $null = $_ }   # pipes close on kill; a faulted read is just empty
+    try { $stderr = [string]$errTask.Result } catch { $null = $_ }
+    $exit = -1
+    try { if ($p.HasExited) { $exit = [int]$p.ExitCode } } catch { $null = $_ }
+    try { $p.Dispose() } catch { $null = $_ }
+
+    return @{ Ok = (-not $timedOut); ExitCode = $exit; StdOut = $stdout; StdErr = $stderr; TimedOut = $timedOut }
+}
+
+function Invoke-LokiOfflineAgentCommand {
+    <#
+        SECURITY CORE (ADR-0021 point 4). Gate ONE model-proposed command and run it ONLY if it is provably read-only.
+        The gate is Resolve-LokiCommandDecision -- the SAME runtime-safe engine online and offline (DESIGN.md 5.1): the
+        pure allow-list classifier PLUS the runtime Get-Command Cmdlet-resolution check (a hijacked Get-* -> not a
+        Cmdlet -> downgraded) PLUS the secret-target and side-effect hard-blocks. Slice 2a is READ-ONLY: only a 'read'
+        decision executes; 'mutate' (would need confirmation, a 2b feature) and 'denied' are refused here and NEVER run
+        -- the property this whole slice exists to make. Executed output is neutralized (Protect-LokiOfflineDumpText:
+        command output off a compromised machine is untrusted data that must not break the dump fence) and bounded
+        before the caller feeds it back to the model. Returns { Executed; Class; Reason; Output?; Truncated?; ExitCode?;
+        TimedOut? } -- never a throw.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$CommandLine,
+        [int]$TimeoutSec = 20,
+        [int]$MaxOutputChars = 4000
+    )
+    $decision = Resolve-LokiCommandDecision -CommandLine $CommandLine
+    if ($decision.Class -ne 'read') {
+        # mutate OR denied -> refused. 2a runs nothing that is not provably read-only, and the executor is never even
+        # reached (a Should -Invoke ... -Times 0 test pins this).
+        return @{ Executed = $false; Class = [string]$decision.Class; Reason = [string]$decision.Reason }
+    }
+
+    $run = Invoke-LokiChildReadCommand -CommandLine $CommandLine -TimeoutSec $TimeoutSec
+
+    # Give the model stdout; if a read produced nothing but errored, show the error tail so it knows WHY, then say if
+    # the command was killed on timeout -- silence would be misdiagnosed.
+    $raw = [string]$run.StdOut
+    if ([string]::IsNullOrWhiteSpace($raw) -and (-not [string]::IsNullOrWhiteSpace([string]$run.StdErr))) {
+        $raw = '[stderr] ' + [string]$run.StdErr
+    }
+    $raw = $raw.Trim()
+    if ($run.TimedOut) { $raw = ($raw + "`r`n[command timed out after $TimeoutSec s and was stopped]").Trim() }
+
+    $safe = Protect-LokiOfflineDumpText -DumpText $raw
+    $truncated = $false
+    if ($safe.Length -gt $MaxOutputChars) {
+        $safe = $safe.Substring(0, $MaxOutputChars) + "`r`n[output truncated at $MaxOutputChars chars]"
+        $truncated = $true
+    }
+
+    return @{
+        Executed  = $true
+        Class     = 'read'
+        Reason    = [string]$decision.Reason
+        Output    = $safe
+        Truncated = $truncated
+        ExitCode  = $run.ExitCode
+        TimedOut  = [bool]$run.TimedOut
+    }
+}
+
 function Invoke-LokiOfflineAgent {
     <#
-        The read-only agent loop entry for a CAPABLE model (Test-LokiOfflineAgentCapable already said yes). The tool
-        protocol it drives is in place (Get-LokiOfflineAgentToolset + ConvertFrom-LokiAgentToolCall, #20); what remains is
-        #21 (gated isolated execution + the Get-Command cmdlet-resolution check) and #22 (the capped multi-turn loop).
-        Until those land it is an explicit WIP throw, on purpose: a security core must never ship a loop that only looks
-        like it runs (CLAUDE.md section 9, "never mark a stub as done"). The whole slice merges as one reviewed unit, so
-        this throw is replaced before any PR.
+        The read-only agent loop entry for a CAPABLE model (Test-LokiOfflineAgentCapable already said yes). Its parts
+        are in place: the tool protocol (Get-LokiOfflineAgentToolset + ConvertFrom-LokiAgentToolCall, #20) and the gated
+        executor (Invoke-LokiOfflineAgentCommand, #21). What remains is #22 -- the capped multi-turn loop that wires
+        them to the engine (chat -> gated command -> observation -> repeat, under iteration + time caps). Until it lands
+        this is an explicit WIP throw, on purpose: a security core must never ship a loop that only looks like it runs
+        (CLAUDE.md section 9, "never mark a stub as done"). The whole slice merges as one reviewed unit, so this throw is
+        replaced before any PR.
     #>
     param(
         [Parameter(Mandatory = $true)][string]$AppRoot,
@@ -166,5 +286,5 @@ function Invoke-LokiOfflineAgent {
         [int]$MaxIterations = 8,
         [int]$TimeBudgetSec = 300
     )
-    throw 'offline --agent loop is not yet wired (Slice 2a: #21 gated execution, #22 the loop).'
+    throw 'offline --agent loop is not yet wired (Slice 2a: #22 the multi-turn loop).'
 }

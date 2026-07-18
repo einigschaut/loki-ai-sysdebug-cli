@@ -78,15 +78,26 @@ schema grammar does *not* reliably express is "no newline inside the string" (a 
 not auto-allowed) and asked for in the system prompt -- defense where it is reliable, rather than a grammar claim that
 would not hold.
 
-**4. Enforcement reuses the one allow-list engine, plus the runtime check ADR-0006 promised.**
+**4. Enforcement reuses the one runtime-safe gate -- `Resolve-LokiCommandDecision` -- not a second copy.**
 
-The gate is `Get-LokiAllowDecision` -- the *same* engine online and offline (DESIGN.md section 5.1, "one allow-list
-engine for both"), not a second copy. On top of the pure string classifier, the offline enforcement layer (#21) adds
-the defense-in-depth ADR-0006 named as a known residual: a `Get-*` auto-read is honored **only** if `Get-Command`
-resolves the name to a real **Cmdlet**, not a `Function`/`Alias`/`Application` -- closing the "same-named hijacked
-`Get-*` on the target's PATH" hole on the machine we are there precisely because it is compromised. Execution runs with
-the child-environment hygiene of ADR-0016, and its output is length-bounded and neutralized (point 5) before it
-re-enters the model's context.
+The gate is `Resolve-LokiCommandDecision`, the runtime-safe decision the allow-list header already named as the
+enforcement layer -- the SAME gate online and offline (DESIGN.md section 5.1, "one allow-list engine for both"). It
+wraps the pure classifier `Get-LokiCommandClass` and adds exactly the defenses this slice needs, all of which apply
+verbatim to a compromised offline target: **(a)** the `Get-*` -> `Get-Command` Cmdlet-resolution check -- a hijacking
+`Function`/`Alias`/`Application`, or an unresolvable name, downgrades the read to a mutate, closing the ADR-0006
+residual; **(b)** a hard block on any command that targets the secret or the process environment; **(c)** a hard block
+on side-effecting/exfiltrating commands (UNC/NTLM, browser launch). Slice 2a executes ONLY a `read` decision; `mutate`
+and `denied` are refused and **never run** -- the security property this whole slice exists to make.
+
+(`Resolve-LokiCommandDecision` lives in `lib/claude.ps1` today; hoisting it to `lib/allowlist.ps1` as the
+engine-agnostic home is a clean follow-up the review can weigh. It is reused in place here rather than refactoring a
+security-critical shared function mid-slice.)
+
+Execution runs the vetted command in an **isolated child Windows PowerShell**: `-NoProfile` (no profile-defined
+`Function`/`Alias` can shadow the command name -- the execution-layer half of the Cmdlet check), `-NonInteractive`, a
+hard timeout that **kills** a hung command, and the command text passed on **STDIN** (`-Command -`) so there is no
+argument-quoting seam to smuggle through. Its output is length-bounded and neutralized (point 5) before it re-enters
+the model's context.
 
 **5. Command output is untrusted data too, and the loop has hard caps.**
 
