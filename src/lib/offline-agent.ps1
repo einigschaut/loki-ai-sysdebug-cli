@@ -3,8 +3,9 @@
 # This file owns the loop, the run_command tool protocol, and the gated read-only execution; the `offline` command
 # (commands/offline.ps1) only ROUTES --agent here (thin dispatcher, CLAUDE.md section 2). It REUSES, never
 # re-implements: Invoke-LokiEngineChat / Protect-LokiOfflineDumpText / Get-LokiOfflineContextSize (lib/offline.ps1),
-# Invoke-LokiWithEngine (lib/agent.ps1), and the runtime-safe gate Resolve-LokiCommandDecision + Get-LokiJsonProp
-# (lib/claude.ps1 -- NOT the weaker Get-LokiAllowDecision, which lacks the cmdlet-resolution/secret/side-effect blocks).
+# Invoke-LokiWithEngine (lib/agent.ps1), the runtime-safe gate Resolve-LokiCommandDecision (lib/allowlist.ps1 as of
+# issue #50 -- NOT the weaker Get-LokiAllowDecision, which lacks the cmdlet-resolution/secret/side-effect blocks), and
+# Get-LokiJsonProp (lib/claude.ps1).
 #
 # SECURITY (ADR-0021): Slice 2a is READ-ONLY. Every model-proposed command goes through the ONE allow-list engine and
 # only a `read` decision executes; `mutate`/`denied` are refused this slice (confirm-gated mutation is 2b). The model

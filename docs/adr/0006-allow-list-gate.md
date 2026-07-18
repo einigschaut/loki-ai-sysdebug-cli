@@ -109,7 +109,8 @@ refusal message for a `'denied'` one, is the calling command's job (via
   `Get-Foo.exe` earlier on `PATH` would be classified `'read'`. A pure string
   classifier cannot detect this. It is mitigated in depth by Loki's isolated child
   environment and by treating scanned data as data, never instructions; and the
-  enforcement layer (`lib/claude.ps1`, the next slice) will only honor the `Get-*`
+  runtime-safe enforcement layer (`Resolve-LokiCommandDecision`, co-located in **this**
+  module as of the 2026-07-18 hoist -- issue #50, below) only honors the `Get-*`
   auto-read when a runtime `Get-Command` resolves the name to a real `Cmdlet`, not
   a `Function`/`Alias`/`Application`.
 
@@ -129,4 +130,28 @@ three latent gaps in the SHARED classifier into exploitable ones. Fixed here, so
   child with **PATH pinned to System32** (and the ambient secret stripped), closing the hijack at the execution layer.
   Extending a resolution check to native tools in the online path is a noted follow-up.
 
-Each fix has a broken-once-on-purpose test (`tests/claude.Tests.ps1`, `tests/offline-agent.Tests.ps1`).
+Each fix has a broken-once-on-purpose test (`tests/allowlist.Tests.ps1`, `tests/offline-agent.Tests.ps1`).
+
+## Hoist (2026-07-18) — the runtime-safe gate now lives in this module (issue #50)
+
+`Resolve-LokiCommandDecision` -- the runtime-safe gate that wraps `Get-LokiCommandClass` with the `Get-Command`
+Cmdlet-resolution check and the secret-target / side-effect denies -- was born in `lib/claude.ps1` (the online engine
+module), because that was the first slice to enforce. Once the offline agent (ADR-0021) reused it, the shared gate
+living in an *engine* module was an inverted dependency: the offline engine importing the online one. It (and its two
+`$script:` deny-pattern arrays) moved **here**, next to the pure classifier, so the ONE gate is engine-agnostic --
+both `lib/claude.ps1` (`Get-LokiPreToolUseDecision`) and `lib/offline-agent.ps1` call it from this neutral module
+(DESIGN.md section 5.1, "one allow-list engine for both"). Behaviour is unchanged: the move is a pure relocation and
+every gate test (residual matrix, secret-target, side-effect, the break-the-guard cases) moved with it to
+`tests/allowlist.Tests.ps1` and stays green. The live PreToolUse hook already sourced `allowlist.ps1`, so it is
+unaffected.
+
+Two honest consequences, recorded rather than hidden:
+
+- **This module is no longer strictly "pure logic".** `Get-LokiCommandClass` / `Get-LokiAllowDecision` remain pure
+  string logic (table-testable, no mocking). `Resolve-LokiCommandDecision` is the one function here that consults the
+  runtime (`Get-Command`) -- unit-tested by mocking it. The module header states the split explicitly; the value the
+  purity gave (a table-testable classifier) is intact.
+- **`Get-LokiJsonProp` stayed in `lib/claude.ps1`.** It is generic StrictMode-safe JSON plumbing, not part of the
+  gate, so it does not belong in the pure-classifier module, and relocating it to a shared util module was out of
+  scope for this security-focused move. The offline agent's remaining dependency on `claude.ps1` for that one reader
+  is benign (no security surface) and is noted for a later tidy-up.

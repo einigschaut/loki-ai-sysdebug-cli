@@ -26,7 +26,9 @@ not a prompt tool. The relevant, documented facts:
 ## Decision
 
 **The enforcement layer is a `PreToolUse` hook that calls Loki's allow-list, plus a fail-closed
-permission mode.** `src/lib/claude.ps1` owns it; `src/commands/ask.ps1` is thin wiring.
+permission mode.** `src/lib/claude.ps1` owns the hook decision (`Get-LokiPreToolUseDecision`); the
+runtime-safe gate it calls, `Resolve-LokiCommandDecision`, was hoisted to `src/lib/allowlist.ps1` on
+2026-07-18 (ADR-0006 Hoist, issue #50). `src/commands/ask.ps1` is thin wiring.
 
 - **`Get-LokiPreToolUseDecision -HookInputJson`** is the headless gate. It fails closed on anything it
   cannot positively parse (empty/malformed JSON, missing `tool_name`, a non-Bash tool, a missing/blank
