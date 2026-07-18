@@ -11,8 +11,8 @@ BeforeAll {
     . "$PSScriptRoot\..\src\lib\collect.ps1"    # ConvertTo-LokiCollectText (Read-LokiOfflineDump's .json path, via offline.ps1)
     . "$PSScriptRoot\..\src\lib\engine.ps1"     # Get-LokiEngineManifest (mocked in the command tests)
     . "$PSScriptRoot\..\src\lib\models.ps1"     # Get-LokiModelManifest / Get-LokiModelLayout
-    . "$PSScriptRoot\..\src\lib\allowlist.ps1"  # Get-LokiCommandClass (the pure classifier under the gate)
-    . "$PSScriptRoot\..\src\lib\claude.ps1"     # Resolve-LokiCommandDecision (the shared runtime-safe gate, #21)
+    . "$PSScriptRoot\..\src\lib\allowlist.ps1"  # Get-LokiCommandClass + Resolve-LokiCommandDecision (the shared runtime-safe gate, #21/#50)
+    . "$PSScriptRoot\..\src\lib\claude.ps1"     # Get-LokiJsonProp (still lives here; the gate moved to allowlist.ps1, #50)
     . "$PSScriptRoot\..\src\lib\agent.ps1"      # Invoke-LokiWithEngine (the engine harness the loop will use, #22)
     . "$PSScriptRoot\..\src\lib\offline.ps1"    # Invoke-LokiEngineChat / Protect-LokiOfflineDumpText / Get-LokiOfflineFailure
     . "$PSScriptRoot\..\src\lib\offline-agent.ps1"

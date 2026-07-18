@@ -4,9 +4,10 @@
 # the CURRENT CULTURE. In tr-TR / az-Latn the regex engine folds 'I' to the dotless 'i' (U+0131), which is NOT in
 # [A-Za-z]. So '^Get-[A-Za-z][A-Za-z0-9]*$' stopped matching 'Get-ChildItem' / 'Get-CimInstance' / 'Get-Item' on a
 # Turkish host: Loki's own read-only diagnostics were classified 'mutate' and denied on the very machine it was
-# brought to diagnose. lib/allowlist.ps1 and lib/claude.ps1 carry the SAME pattern, and the claude.ps1 one decides
-# whether the ADR-0006 runtime Cmdlet check runs at all -- fixing only one would leave a hijacking Function named
-# Get-ChildItem classified 'read'. Both use [regex]::IsMatch(..., 'IgnoreCase,CultureInvariant').
+# brought to diagnose. lib/allowlist.ps1 now carries BOTH copies of this pattern -- Get-LokiCommandClass (the pure
+# classifier) and Resolve-LokiCommandDecision (whose copy decides whether the ADR-0006 runtime Cmdlet check runs at
+# all) -- so fixing only one would leave a hijacking Function named Get-ChildItem classified 'read'. Both use
+# [regex]::IsMatch(..., 'IgnoreCase,CultureInvariant').
 #
 # WHY A CHILD PROCESS, and why this file exists at all instead of a few extra rows in allowlist.Tests.ps1:
 # the culture must be set BEFORE the pattern is first compiled. PowerShell caches compiled regexes by
@@ -35,7 +36,6 @@ param([string]`$Culture)
 [Globalization.CultureInfo]::DefaultThreadCurrentCulture = [Globalization.CultureInfo]::GetCultureInfo(`$Culture)
 Set-StrictMode -Version Latest
 . '$libDir\allowlist.ps1'
-. '$libDir\claude.ps1'
 $Body
 "@
         [System.IO.File]::WriteAllText($file, $content, (New-Object System.Text.UTF8Encoding($false)))

@@ -32,7 +32,7 @@ guard broken once on purpose to prove it can fail (CLAUDE.md section 6).
 **1. Slice 2a is read-only. No mutations, at all, in this increment.**
 
 Every command the model proposes goes through the one runtime-safe gate, `Resolve-LokiCommandDecision` (ADR-0006, in
-`lib/claude.ps1` -- see Decision point 4). Only a `read` decision (`.Class -eq 'read'`) executes. A `mutate` or
+`lib/allowlist.ps1` -- see Decision point 4). Only a `read` decision (`.Class -eq 'read'`) executes. A `mutate` or
 `denied` decision is **refused this slice** with a short
 notice -- not queued, not confirmed. Confirmation-gated mutation is real work with its own interaction model
 (ADR-0008) and its own review; it is Slice 2b, deferred deliberately so the safe half ships first and the review
@@ -90,9 +90,10 @@ residual; **(b)** a hard block on any command that targets the secret or the pro
 on side-effecting/exfiltrating commands (UNC/NTLM, browser launch). Slice 2a executes ONLY a `read` decision; `mutate`
 and `denied` are refused and **never run** -- the security property this whole slice exists to make.
 
-(`Resolve-LokiCommandDecision` lives in `lib/claude.ps1` today; hoisting it to `lib/allowlist.ps1` as the
-engine-agnostic home is a clean follow-up the review can weigh. It is reused in place here rather than refactoring a
-security-critical shared function mid-slice.)
+(`Resolve-LokiCommandDecision` lived in `lib/claude.ps1` when this slice shipped; it was reused in place here rather
+than refactoring a security-critical shared function mid-slice. The follow-up landed on 2026-07-18, issue #50: it was
+hoisted to `lib/allowlist.ps1` -- its engine-agnostic home, next to the pure classifier -- as a pure,
+behaviour-preserving relocation with its tests. ADR-0006 records the hoist.)
 
 Execution runs the vetted command in an **isolated child Windows PowerShell**: `-NoProfile` (no profile-defined
 `Function`/`Alias` can shadow the command name -- the execution-layer half of the Cmdlet check); a **PATH pinned to
@@ -122,12 +123,14 @@ framing is defense-in-depth on top of the structural gate, not a substitute for 
   the router exists) are explicit, named follow-ups, not forgotten corners.
 * **New file `src/lib/offline-agent.ps1`** owns the loop, the tool protocol, and the gated execution. It **reuses**
   `Invoke-LokiEngineChat` / `Protect-LokiOfflineDumpText` / `Get-LokiOfflineContextSize` from `lib/offline.ps1`,
-  `Invoke-LokiWithEngine` from `lib/agent.ps1`, and the runtime-safe gate `Resolve-LokiCommandDecision` +
-  `Get-LokiJsonProp` from `lib/claude.ps1` (**NOT** the weaker `Get-LokiAllowDecision`, which lacks the
-  cmdlet-resolution / secret-target / side-effect blocks); it re-implements none of them (CLAUDE.md section 2, "one
-  source of truth per concept"). `Get-LokiOfflineFailure` reuse lives in the `offline` command, which grows a `--agent`
-  route only -- the dispatcher stays thin. The `claude.ps1`-resident gate is a real offline->online-module coupling;
-  hoisting it to `lib/allowlist.ps1` as the engine-agnostic home is the recorded follow-up in Decision point 4.
+  `Invoke-LokiWithEngine` from `lib/agent.ps1`, the runtime-safe gate `Resolve-LokiCommandDecision` from
+  `lib/allowlist.ps1` (as of issue #50 -- **NOT** the weaker `Get-LokiAllowDecision`, which lacks the
+  cmdlet-resolution / secret-target / side-effect blocks), and `Get-LokiJsonProp` from `lib/claude.ps1`; it
+  re-implements none of them (CLAUDE.md section 2, "one source of truth per concept"). `Get-LokiOfflineFailure` reuse
+  lives in the `offline` command, which grows a `--agent` route only -- the dispatcher stays thin. The gate's original
+  `claude.ps1` home was a real offline->online-module coupling; it was hoisted to `lib/allowlist.ps1` on 2026-07-18
+  (issue #50, ADR-0006), removing that coupling. The remaining `Get-LokiJsonProp` dependency on `claude.ps1` is benign
+  JSON plumbing (noted in ADR-0006), not a security surface.
 * **`Invoke-LokiEngineChat` gains an optional `Tools` path** (#20). That is a `lib/` signature change to a function
   ADR-0015 already declared "shared with Slice 2"; it is additive (existing analyze callers pass none, and the return
   shape only grows a `ToolCalls` field when tools are sent), and is the one contract touched.

