@@ -178,6 +178,17 @@
     'hwscan.forceNeedsModel'    = '--force gilt nur zusammen mit --model, z. B. "loki hwscan --model mid --force". Allein würde es nichts ändern.'
 
     'collect.summary'           = 'Reinen Diagnose-Dump schreiben (ohne Netz, Modell oder Adminrechte)'
+
+    # --- offline (Offline-Engine: einen Dump mit dem lokalen Modell analysieren) ---
+    'offline.summary'           = 'Einen Diagnose-Dump mit der Offline-Engine analysieren (ohne Netz)'
+    'offline.usage'             = 'Verwendung: loki offline --analyze <dump>'
+    'offline.working'           = 'Analysiere den Dump offline mit {0} (read-only)...'
+    'offline.dumpUnreadable'    = 'Diagnose-Dump nicht lesbar: {0}'
+    'offline.notSetup'          = 'Offline-Engine oder dieses Modell liegen nicht auf dem Stick. Fuehre loki setup auf einem verbundenen Rechner aus.'
+    'offline.cannotRunHere'     = 'Die Offline-Engine kann auf diesem Rechner nicht laufen (zu wenig freier RAM oder die Runtime fehlt).'
+    'offline.tampered'          = 'Offline-Engine oder Modell passen nicht zu ihrem gepinnten Hash. Diesem Stick nicht vertrauen; loki setup auf einem vertrauenswuerdigen Rechner erneut ausfuehren.'
+    'offline.orphan'            = 'Eine Offline-Engine aus einem frueheren Lauf laeuft noch. Schliesse sie (oder starte neu) und versuche es erneut.'
+    'offline.engineFailed'      = 'Die Offline-Engine konnte die Analyse nicht abschliessen.'
     'collect.heading'           = 'loki collect - reiner Diagnose-Dump'
     'collect.working'           = 'Sammle Daten. Ein, zwei Batterien brauchen auf einem ausgelasteten Rechner rund eine Sekunde.'
     'collect.batteryOk'         = '{0,-10} {1,5} ms'
