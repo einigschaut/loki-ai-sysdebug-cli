@@ -36,6 +36,8 @@
 #       (PURE; no DateTime survives this -- see ConvertTo-LokiIsoTimestamp for why).
 #   ConvertTo-LokiCollectJson -Document <o> -> [string] (PURE; culture-invariant).
 #   ConvertTo-LokiCollectText -Document <o> -> [string[]] the rendered report (PURE; structural English).
+#   Get-LokiCollectStatusLabel -Status <string> -> [string] what the TEXT report calls a battery status (PURE;
+#       NEVER throws. The JSON keeps the raw token -- see the function's own notes for why they differ).
 #   Test-LokiCollectRowList -Value <o> -> [bool] is this a list of ROWS (own block each) or a scalar/scalar list
 #       (one joined line)? (PURE; the guard that keeps the renderer's recursion bounded -- see its own notes.)
 #   ConvertTo-LokiCollectSafeText -Text <string> -> [string] flattened to ONE line, control characters removed
@@ -741,6 +743,50 @@ function Test-LokiCollectRowList {
     return ($first -is [psobject])
 }
 
+function Get-LokiCollectStatusLabel {
+    <#
+        PURE. A battery's status token -> what the TEXT report calls it. NEVER throws.
+
+        WHY THE TEXT AND THE JSON DISAGREE ON PURPOSE:
+
+        The token answers "did the PROBE run", never "is this subsystem healthy" -- ADR-0018 draws that line itself
+        when it argues a timeout must not be called a failure, because they are different findings: "this machine is
+        sick here" versus "this probe does not work here". The renderer then blurred the same line back out by
+        printing '[ok] storage', which reads to any reader as a verdict on the storage. Only the '(100 ms)' beside it
+        hints that it is about collection at all.
+
+        MEASURED, against the exact consumer ADR-0018 wrote this artifact for (it says the dump is "fed to a small
+        local model"). Qwen3-1.7B -- the 'nano' tier -- was handed a dump whose storage battery plainly shows
+        'C: FreeGB 1.8 / PercentFree 0.4' out of 476.3 GB, and answered:
+
+            VERDICT: no problem found
+            EVIDENCE: all components (os, hardware, storage, network, processes, services, eventlog, posture)
+                      are reported as "ok" in the diagnostic dump
+            CONFIDENCE: high
+
+        Reproducible on a fixed seed. The model was not hallucinating: it read our word correctly and our word was
+        wrong. Eight lines each asserting '[ok]' over a dying disk is a stronger signal than the disk.
+
+        The JSON keeps the raw token because it is a stable machine interface -- the same convention as hwscan's
+        Verdict and lib/allowlist.ps1 -- and anything parsing a dump would break. Prose is not an interface, so only
+        the prose moves.
+
+        FAILURE STAYS LOUDER THAN SUCCESS. A battery that did not run is itself a finding, and the common case must
+        not be the one that shouts. An unrecognised token is uppercased for the same reason: a status we do not
+        recognise is not a reassuring one, and rendering it quietly would hide the very thing worth noticing.
+    #>
+    param([Parameter(Mandatory = $true)][AllowNull()][AllowEmptyString()]$Status)
+
+    # switch is case-insensitive here by default, which is what we want: a token is a token however it was cased.
+    switch ([string]$Status) {
+        'ok' { return 'collected' }
+        'timeout' { return 'TIMED OUT' }
+        'failed' { return 'FAILED' }
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$Status)) { return 'UNKNOWN' }
+    return ([string]$Status).ToUpperInvariant()
+}
+
 function ConvertTo-LokiCollectText {
     <#
         PURE. The document -> the rendered report lines. Structural English by design (ADR-0018): the field names
@@ -757,7 +803,8 @@ function ConvertTo-LokiCollectText {
     $lines.Add('')
 
     foreach ($battery in @($Document.Batteries)) {
-        $header = '[{0}] {1} ({2} ms)' -f $battery.Status, $battery.Id, $battery.DurationMs
+        # The LABEL, not the token: '[ok] storage' reads as a claim about the storage. See Get-LokiCollectStatusLabel.
+        $header = '[{0}] {1} ({2} ms)' -f (Get-LokiCollectStatusLabel -Status $battery.Status), $battery.Id, $battery.DurationMs
         $lines.Add($header)
         if ($null -ne $battery.Error) {
             $lines.Add(('  error: {0}' -f $battery.Error))
@@ -778,9 +825,12 @@ function ConvertTo-LokiCollectDataLine {
         PURE. Renders one battery's Data.
 
         The branch ORDER is a correctness property, not a style choice: dictionary before list, because a dictionary
-        satisfies the list test but does not survive it (see Test-LokiCollectRowList). The recursion is bounded by
-        construction -- a row list recurses into rows, and a row is rendered flat -- so it cannot walk a
-        self-referential value the way the first version did.
+        satisfies the list test but does not survive it (see Test-LokiCollectRowList). Both the dictionary and the
+        PSObject branch recurse into a nested row list or nested dictionary, so evidence one level down -- a network
+        adapter's IP, a stopped service's name -- reaches the reader instead of collapsing to a type name
+        ("Adapters : System.Collections.Hashtable"). The recursion is bounded by construction: the value is a finite
+        tree (dump -> batteries -> rows -> scalars, built from CIM and surviving a JSON round-trip, no cycle), so it
+        terminates -- it cannot walk a self-referential value the way the first version did.
     #>
     param(
         [Parameter(Mandatory = $true)][AllowNull()]$Value,
@@ -802,8 +852,22 @@ function ConvertTo-LokiCollectDataLine {
             return , $lines.ToArray()
         }
         foreach ($key in $keys) {
-            $label = ([string]$key).PadRight($script:LokiCollectLabelWidth)
-            $lines.Add(('{0}{1}: {2}' -f $pad, $label, (Format-LokiCollectScalar -Value $Value[$key])))
+            $keyValue = $Value[$key]
+            # Symmetry with the PSObject branch below. A value that is itself a row list or a nested dictionary is a
+            # BLOCK and must recurse; rendered as a scalar it collapses to a type name -- a hashtable-shaped
+            # network.Adapters printed "Adapters : System.Collections.Hashtable" and the IP inside it never reached the
+            # reader. The real collector emits pscustomobjects (the PSObject branch, always fine); this closes the same
+            # hole for dictionary input and makes the renderer shape-agnostic.
+            if ((Test-LokiCollectRowList -Value $keyValue) -or ($keyValue -is [System.Collections.IDictionary])) {
+                $lines.Add(('{0}{1}:' -f $pad, $key))
+                foreach ($line in (ConvertTo-LokiCollectDataLine -Value $keyValue -Indent ($Indent + 1))) {
+                    $lines.Add($line)
+                }
+            }
+            else {
+                $label = ([string]$key).PadRight($script:LokiCollectLabelWidth)
+                $lines.Add(('{0}{1}: {2}' -f $pad, $label, (Format-LokiCollectScalar -Value $keyValue)))
+            }
         }
         return , $lines.ToArray()
     }
@@ -838,7 +902,7 @@ function ConvertTo-LokiCollectDataLine {
 
     foreach ($property in $properties) {
         $propertyValue = $property.Value
-        if (Test-LokiCollectRowList -Value $propertyValue) {
+        if ((Test-LokiCollectRowList -Value $propertyValue) -or ($propertyValue -is [System.Collections.IDictionary])) {
             $lines.Add(('{0}{1}:' -f $pad, $property.Name))
             foreach ($line in (ConvertTo-LokiCollectDataLine -Value $propertyValue -Indent ($Indent + 1))) {
                 $lines.Add($line)
