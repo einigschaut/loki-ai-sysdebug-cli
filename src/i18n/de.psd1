@@ -181,7 +181,7 @@
 
     # --- offline (Offline-Engine: einen Dump mit dem lokalen Modell analysieren) ---
     'offline.summary'           = 'Einen Diagnose-Dump mit der Offline-Engine analysieren (ohne Netz)'
-    'offline.usage'             = 'Verwendung: loki offline --analyze <dump>'
+    'offline.usage'             = 'Verwendung: loki offline --analyze <dump> | loki offline --agent'
     'offline.working'           = 'Analysiere den Dump offline mit {0} (read-only)...'
     'offline.dumpUnreadable'    = 'Diagnose-Dump nicht lesbar: {0}'
     'offline.notSetup'          = 'Offline-Engine oder dieses Modell liegen nicht auf dem Stick. Fuehre loki setup auf einem verbundenen Rechner aus.'
@@ -189,6 +189,8 @@
     'offline.tampered'          = 'Offline-Engine oder Modell passen nicht zu ihrem gepinnten Hash. Diesem Stick nicht vertrauen; loki setup auf einem vertrauenswuerdigen Rechner erneut ausfuehren.'
     'offline.orphan'            = 'Eine Offline-Engine aus einem frueheren Lauf laeuft noch. Schliesse sie (oder starte neu) und versuche es erneut.'
     'offline.engineFailed'      = 'Die Offline-Engine konnte die Analyse nicht abschliessen.'
+    'offline.agentTooSmall'     = 'Auf diesem Stick ist kein Agent-taugliches (~8B+) Modell installiert. Fuehre loki setup aus, um eine mid- oder groessere Stufe hinzuzufuegen, oder nutze loki offline --analyze <dump>.'
+    'offline.agentWorking'      = 'Fuehre den Offline-Agent mit {0} aus (read-only, ueberwacht). Das kann einige Minuten dauern...'
     'collect.heading'           = 'loki collect - reiner Diagnose-Dump'
     'collect.working'           = 'Sammle Daten. Ein, zwei Batterien brauchen auf einem ausgelasteten Rechner rund eine Sekunde.'
     'collect.batteryOk'         = '{0,-10} {1,5} ms'
