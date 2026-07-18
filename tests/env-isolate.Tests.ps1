@@ -102,6 +102,86 @@ Describe 'Get-LokiIsolatedEnv' {
     }
 }
 
+Describe 'Get-LokiIsolatedEnv -- System32 PATH pin (S3 online twin, issue #50)' {
+
+    BeforeAll {
+        $script:Root = 'C:\LokiStickTest'
+        # A directory a compromised target already has on PATH, holding a planted native tool
+        # (e.g. C:\Attacker\bin\ipconfig.exe). It must never outrank the real System32.
+        $script:PlantedDir        = 'C:\Attacker\bin'
+        $script:RealSysTail       = 'C:\Windows\System32'   # the genuine System32 as it sits in the target PATH
+        $script:BasePathWithPlant = $script:PlantedDir + ';C:\Windows;' + $script:RealSysTail
+        # A fake, known System32 location injected so ordering is asserted deterministically, independent
+        # of the test host's real system directory. Production never passes -SystemDirectory.
+        $script:FakeSys   = 'C:\FakeReal\System32'
+        $script:Env       = Get-LokiIsolatedEnv -StickRoot $script:Root -BasePath $script:BasePathWithPlant -SystemDirectory $script:FakeSys
+        $script:PathParts = $script:Env['PATH'] -split ';'
+    }
+
+    It 'pins the injected System32 dir into PATH, ahead of the inherited BasePath entries' {
+        $script:PathParts | Should -Contain $script:FakeSys
+        $sysIdx  = [array]::IndexOf($script:PathParts, $script:FakeSys)
+        $baseIdx = [array]::IndexOf($script:PathParts, $script:RealSysTail)   # the System32 that came from BasePath
+        $baseIdx | Should -BeGreaterThan $sysIdx -Because 'the pinned System32 must precede everything inherited from BasePath'
+    }
+
+    It 'also pins the WindowsPowerShell\v1.0 and wbem system subdirs, all before the planted dir' {
+        $psDir   = Join-Path $script:FakeSys 'WindowsPowerShell\v1.0'
+        $wbemDir = Join-Path $script:FakeSys 'wbem'
+        $script:PathParts | Should -Contain $psDir
+        $script:PathParts | Should -Contain $wbemDir
+        $plantIdx = [array]::IndexOf($script:PathParts, $script:PlantedDir)
+        [array]::IndexOf($script:PathParts, $psDir)   | Should -BeLessThan $plantIdx
+        [array]::IndexOf($script:PathParts, $wbemDir) | Should -BeLessThan $plantIdx
+    }
+
+    It 'a PATH-planted native-tool dir in BasePath cannot outrank the pinned System32 (S3 closed)' {
+        # Presence FIRST, so this guard goes RED if the pin is *removed* (not merely reordered): without the
+        # pin FakeSys is absent, IndexOf returns -1, and a bare "-1 < plantIdx" would pass vacuously (the
+        # never-failing-guard trap, CLAUDE.md paragraph 6). The Contain check makes removal fail here too.
+        $script:PathParts | Should -Contain $script:FakeSys   -Because 'the pin must actually inject System32 -- absent if the pin is deleted'
+        $script:PathParts | Should -Contain $script:PlantedDir -Because 'the attacker dir is genuinely still present (additive pin, inherited via BasePath) -- so it really could win if not outranked'
+        $sysIdx   = [array]::IndexOf($script:PathParts, $script:FakeSys)
+        $plantIdx = [array]::IndexOf($script:PathParts, $script:PlantedDir)
+        $sysIdx | Should -BeLessThan $plantIdx -Because 'System32 is pinned first, so ipconfig.exe resolves to the real binary, not the planted one'
+    }
+
+    It 'is additive, not pin-to-only: keeps stick tool dirs first, BasePath last, nothing dropped' {
+        $script:PathParts[0]  | Should -Be (Join-Path $script:Root 'tools\bin')
+        $script:PathParts[-1] | Should -Be $script:RealSysTail   # last element of BasePath survives
+        # Unlike the offline read child (which pins PATH to System32 ONLY), the online child MUST keep
+        # BasePath so Claude Code's own node/git/... resolution is unaffected. Proof it is not dropped:
+        $script:PathParts | Should -Contain 'C:\Windows'
+        $script:PathParts | Should -Contain $script:PlantedDir
+    }
+
+    It 'default source is the OS system directory, NOT the mutable %SystemRoot% (tamper-resistant)' {
+        $osSysDir   = [System.Environment]::SystemDirectory
+        $envDefault = Get-LokiIsolatedEnv -StickRoot $script:Root -BasePath 'C:\Windows'
+        ($envDefault['PATH'] -split ';') | Should -Contain $osSysDir -Because 'production pins the OS-reported System32 (GetSystemDirectory), not a value derived from a poisonable $env:SystemRoot'
+    }
+
+    # The guard is load-bearing, shown two ways (CLAUDE.md paragraph 6):
+    #   (1) the REAL function output (part 1 below) must contain the pinned System32 and place it before the
+    #       plant -- both assertions go RED if the pin is deleted (the injected dir vanishes from the output),
+    #       which the independent review confirmed by reverting the pin and re-running this block;
+    #   (2) the pre-fix shape <tools>;<BasePath> (no pin) is reconstructed to ILLUSTRATE that the planted dir
+    #       would then precede the real System32 -- the exact ordering the pin inverts. Part (2) is a threat
+    #       illustration (it does not call the function); part (1) is the can-fail guard.
+    It 'the pin is load-bearing: removal drops System32 from the real output, re-exposing the planted dir' {
+        # (1) real function output, WITH the pin -- fails on removal:
+        $script:PathParts | Should -Contain $script:FakeSys -Because 'the pin must actually inject System32; it is absent if the pin is deleted'
+        [array]::IndexOf($script:PathParts, $script:FakeSys) |
+            Should -BeLessThan ([array]::IndexOf($script:PathParts, $script:PlantedDir)) -Because 'pinned System32 precedes the plant in the real output'
+        # (2) threat illustration -- the unpinned shape the child would otherwise fall back on:
+        $unpinnedParts = (((Join-Path $script:Root 'tools\bin'), (Join-Path $script:Root 'tools\dns'),
+                           (Join-Path $script:Root 'tools\wireshark'), (Join-Path $script:Root 'tools\sysinternals'),
+                           $script:BasePathWithPlant) -join ';') -split ';'
+        [array]::IndexOf($unpinnedParts, $script:PlantedDir) |
+            Should -BeLessThan ([array]::IndexOf($unpinnedParts, $script:RealSysTail)) -Because 'unpinned, the planted dir resolves before the real System32 -- the hole the pin closes'
+    }
+}
+
 Describe 'New-LokiChildEnvBlock' {
 
     It 'layers the isolated overlay over a copy of BaseEnv' {

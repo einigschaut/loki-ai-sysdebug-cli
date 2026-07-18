@@ -128,7 +128,12 @@ three latent gaps in the SHARED classifier into exploitable ones. Fixed here, so
 * **Native-tool PATH hijack.** The runtime `Get-Command` check guards only the `Get-*` branch; a name-trusted native
   tool (`ipconfig`/`whoami`) has no cmdlet to outrank a PATH-planted `.exe`. The offline read executor now runs the
   child with **PATH pinned to System32** (and the ambient secret stripped), closing the hijack at the execution layer.
-  Extending a resolution check to native tools in the online path is a noted follow-up.
+  The online engine's twin of this hole -- native-read-tool PATH resolution -- landed on 2026-07-18 (issue #50):
+  `Get-LokiIsolatedEnv` pins the real System32 (sourced from `[System.Environment]::SystemDirectory`, tamper-resistant)
+  ahead of the inherited child PATH -- additive, so Claude Code's own `node`/`git` resolution is unaffected. That
+  scoped one hole, not the whole class: the ADR-0016 addendum records the remaining `$env:SystemRoot`/`$env:WINDIR`
+  trust the online/offline engines still carry (the credential-carrying `cmd.exe` launcher included) as a tracked
+  follow-up.
 
 Each fix has a broken-once-on-purpose test (`tests/allowlist.Tests.ps1`, `tests/offline-agent.Tests.ps1`).
 
