@@ -190,6 +190,7 @@
     'offline.orphan'            = 'An offline engine from an earlier run is still active. Close it (or reboot) and try again.'
     'offline.engineFailed'      = 'The offline engine could not complete the analysis.'
     'offline.agentTooSmall'     = 'This model ({0}) is below the ~8B tier the offline agent needs. Run loki collect, then loki offline --analyze <dump>.'
+    'offline.agentWorking'      = 'Running the offline agent with {0} (read-only, supervised). This can take a few minutes...'
     'collect.heading'           = 'loki collect - raw diagnostic dump'
     'collect.working'           = 'Collecting. A battery or two takes about a second on a busy machine.'
     'collect.batteryOk'         = '{0,-10} {1,5} ms'

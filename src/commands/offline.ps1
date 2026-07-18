@@ -63,12 +63,21 @@ function Invoke-LokiCmd_offline {
             Write-LokiErr (Get-LokiText 'offline.agentTooSmall' -ArgumentList @([string]$model.Model))
             return (Get-LokiExitCode 'OfflineEngineMissing')
         }
-        # Capable model -> the read-only agent loop. Invoke-LokiOfflineAgent (returns { Ok; Reason; Answer }) and this
-        # branch's result-to-exit-code mapping are built together across Slice 2a #20-#22 (ADR-0021); until then
-        # Invoke-LokiOfflineAgent is a WIP throw, so the slice merges as one reviewed unit and the throw never ships.
-        Invoke-LokiOfflineAgent -AppRoot $Context.AppRoot -Engine $engineData.Engine `
-            -Runtime $engineData.Runtime -Model $model | Out-Null
-        return (Get-LokiExitCode 'GeneralError')
+        # Capable model -> the read-only agent loop. Ok -> print the answer; otherwise map the harness Reason through
+        # the SAME Get-LokiOfflineFailure that --analyze uses, so the two offline modes cannot drift apart.
+        Write-LokiInfo (Get-LokiText 'offline.agentWorking' -ArgumentList @([string]$model.Model))
+        $agent = Invoke-LokiOfflineAgent -AppRoot $Context.AppRoot -Engine $engineData.Engine `
+            -Runtime $engineData.Runtime -Model $model
+        if ($agent.Ok) {
+            Write-LokiLine ''
+            Write-LokiLine ([string]$agent.Answer)
+            return (Get-LokiExitCode 'Ok')
+        }
+        $agentDetail = ''
+        if (($agent -is [hashtable]) -and $agent.ContainsKey('Detail')) { $agentDetail = [string]$agent.Detail }
+        $agentFail = Get-LokiOfflineFailure -Reason ([string]$agent.Reason) -Detail $agentDetail
+        Write-LokiErr (Get-LokiText $agentFail.MessageKey)
+        return (Get-LokiExitCode $agentFail.ExitName)
     }
 
     # --- --analyze (Slice 1) ---

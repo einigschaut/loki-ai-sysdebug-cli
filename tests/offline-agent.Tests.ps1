@@ -205,12 +205,96 @@ Describe 'Invoke-LokiChildReadCommand (isolated child Windows PowerShell; real p
     }
 }
 
-Describe 'Invoke-LokiOfflineAgent (WIP boundary -- #22 replaces this with the real loop)' {
-    It 'throws an explicit not-yet-wired error rather than pretending to run' {
-        # A security core must never ship a loop that only looks like it runs (CLAUDE.md 9). This guard is replaced by
-        # real loop tests when #22 lands; its presence documents that the scaffold does not fake the loop.
-        { Invoke-LokiOfflineAgent -AppRoot 'x' -Engine @{} -Runtime @{} -Model @{ Id = 'mid' } } |
-            Should -Throw '*not yet wired*'
+Describe 'Invoke-LokiOfflineAgentTurnLoop (the capped multi-turn diagnose loop; engine + executor mocked)' {
+    BeforeAll {
+        function global:New-ToolCall { param([string]$Name, [string]$ArgJson, [string]$Id = 'c1')
+            @([pscustomobject]@{ id = $Id; function = [pscustomobject]@{ name = $Name; arguments = $ArgJson } }) }
+        $script:seed = @(@{ role = 'system'; content = 's' }, @{ role = 'user'; content = 'go' })
+    }
+    AfterAll { Remove-Item Function:\New-ToolCall -ErrorAction SilentlyContinue }
+
+    It 'a final_answer on the first turn stops with that answer' {
+        Mock Invoke-LokiEngineChat { @{ Ok = $true; Reason = 'ok'; ToolCalls = (New-ToolCall 'final_answer' '{"answer":"disk C: is full"}') } }
+        $r = Invoke-LokiOfflineAgentTurnLoop -BaseUri 'x' -Messages $script:seed -Tools @()
+        $r.StopReason | Should -Be 'final'
+        $r.Answer     | Should -Be 'disk C: is full'
+        $r.Iterations | Should -Be 1
+    }
+
+    It 'run_command -> executes, feeds the observation back, then finishes on the next turn' {
+        # Stateless mock: return `run` until an observation (role=tool) is in history, then `final`.
+        Mock Invoke-LokiEngineChat {
+            if ((@($Messages)[-1]).role -eq 'tool') { @{ Ok = $true; Reason = 'ok'; ToolCalls = (New-ToolCall 'final_answer' '{"answer":"done"}' 'c2') } }
+            else { @{ Ok = $true; Reason = 'ok'; ToolCalls = (New-ToolCall 'run_command' '{"command":"Get-Volume"}') } }
+        }
+        Mock Invoke-LokiOfflineAgentCommand { @{ Executed = $true; Class = 'read'; Reason = 'read-allowlisted'; Output = 'FreeGB 1.8'; Truncated = $false } }
+        $r = Invoke-LokiOfflineAgentTurnLoop -BaseUri 'x' -Messages $script:seed -Tools @()
+        $r.StopReason | Should -Be 'final'
+        $r.Iterations | Should -Be 2
+        Should -Invoke Invoke-LokiOfflineAgentCommand -Times 1 -Exactly -ParameterFilter { $CommandLine -eq 'Get-Volume' }
+    }
+
+    It 'a REFUSED command is fed back as an observation and the loop continues (it does not abort)' {
+        Mock Invoke-LokiEngineChat {
+            if ((@($Messages)[-1]).role -eq 'tool') { @{ Ok = $true; Reason = 'ok'; ToolCalls = (New-ToolCall 'final_answer' '{"answer":"done"}' 'c2') } }
+            else { @{ Ok = $true; Reason = 'ok'; ToolCalls = (New-ToolCall 'run_command' '{"command":"Remove-Item C:\\"}') } }
+        }
+        Mock Invoke-LokiOfflineAgentCommand { @{ Executed = $false; Class = 'mutate'; Reason = 'mutation-requires-confirm' } }
+        $r = Invoke-LokiOfflineAgentTurnLoop -BaseUri 'x' -Messages $script:seed -Tools @()
+        $r.StopReason | Should -Be 'final'
+        $r.Iterations | Should -Be 2
+    }
+
+    It 'the ITERATION cap stops a model that never concludes (never an unbounded loop)' {
+        Mock Invoke-LokiEngineChat { @{ Ok = $true; Reason = 'ok'; ToolCalls = (New-ToolCall 'run_command' '{"command":"Get-Process"}') } }
+        Mock Invoke-LokiOfflineAgentCommand { @{ Executed = $true; Class = 'read'; Reason = 'read-allowlisted'; Output = 'x'; Truncated = $false } }
+        $r = Invoke-LokiOfflineAgentTurnLoop -BaseUri 'x' -Messages $script:seed -Tools @() -MaxIterations 3
+        $r.StopReason | Should -Be 'iteration-cap'
+        $r.Iterations | Should -Be 3
+        $r.Answer     | Should -Match 'insufficient-data'
+    }
+
+    It 'the TIME cap stops before any turn when the budget is already spent' {
+        Mock Invoke-LokiEngineChat { throw 'the time cap must stop the loop before any chat' }
+        $r = Invoke-LokiOfflineAgentTurnLoop -BaseUri 'x' -Messages $script:seed -Tools @() -TimeBudgetSec 0
+        $r.StopReason | Should -Be 'time-cap'
+        $r.Iterations | Should -Be 0
+        Should -Invoke Invoke-LokiEngineChat -Times 0 -Exactly
+    }
+
+    It 'a model that produces no usable step gives up after a nudge (stuck), not an endless nudge' {
+        Mock Invoke-LokiEngineChat { @{ Ok = $true; Reason = 'ok' } }   # no ToolCalls, no Content -> ConvertFrom = none
+        $r = Invoke-LokiOfflineAgentTurnLoop -BaseUri 'x' -Messages $script:seed -Tools @() -MaxIterations 8
+        $r.StopReason | Should -Be 'stuck'
+        $r.Iterations | Should -Be 2
+    }
+
+    It 'an ENGINE failure mid-loop is propagated (Ok=$false), not hidden as an answer' {
+        Mock Invoke-LokiEngineChat { @{ Ok = $false; Reason = 'engine-request-failed' } }
+        $r = Invoke-LokiOfflineAgentTurnLoop -BaseUri 'x' -Messages $script:seed -Tools @()
+        $r.Ok     | Should -BeFalse
+        $r.Reason | Should -Be 'engine-request-failed'
+    }
+}
+
+Describe 'Invoke-LokiOfflineAgent (wraps the loop in the engine harness; preflight guard honoured)' {
+    It 'propagates a preflight refusal unchanged and produces no answer' {
+        # Invoke-LokiWithEngine runs the integrity preflight BEFORE any process; a refusal must travel up as its Reason.
+        Mock Invoke-LokiWithEngine { @{ Ok = $false; Reason = 'model-unverified'; Detail = 'mismatch' } }
+        $r = Invoke-LokiOfflineAgent -AppRoot 'x' -Engine @{} -Runtime @{} -Model @{ ContextTokens = 40960 }
+        $r.Ok     | Should -BeFalse
+        $r.Reason | Should -Be 'model-unverified'
+    }
+
+    It 'the happy path runs the real turn loop inside the harness and returns the final answer' {
+        # Invoke-LokiWithEngine is mocked to RUN the Body against a fake loopback ctx; the turn loop + toolset + context
+        # sizing are all REAL, only the chat is canned to finish immediately.
+        Mock Invoke-LokiWithEngine { $res = & $Body @{ Port = 1; BaseUri = 'http://127.0.0.1:1'; Process = $null }; @{ Ok = $true; Reason = 'ok'; Result = $res } }
+        Mock Invoke-LokiEngineChat { @{ Ok = $true; Reason = 'ok'; ToolCalls = @([pscustomobject]@{ id = 'c1'; function = [pscustomobject]@{ name = 'final_answer'; arguments = '{"answer":"VERDICT: disk C: full"}' } }) } }
+        $r = Invoke-LokiOfflineAgent -AppRoot 'x' -Engine @{} -Runtime @{} -Model @{ ContextTokens = 40960 }
+        $r.Ok         | Should -BeTrue
+        $r.Answer     | Should -Match 'disk C: full'
+        $r.StopReason | Should -Be 'final'
     }
 }
 
@@ -238,10 +322,16 @@ Describe 'Command offline --agent (wiring: floor decline, ambiguity, routing)' {
         (Invoke-LokiCmd_offline (New-OfflineCtx @('--agent'))) | Should -Be (Get-LokiExitCode 'OfflineEngineMissing')
     }
 
-    It 'a capable model (mid) -> routes to the agent loop with that model (the loop itself is #20-#22)' {
+    It 'a capable model (mid) -> runs the agent with that model and prints its answer (exit Ok)' {
         Mock Get-LokiModelManifest { , @(@{ Id = 'mid'; Model = 'the-8B'; ContextTokens = 40960; ResidentGB = 7.0; Default = $true }) }
-        Mock Invoke-LokiOfflineAgent { }   # stand in for the (WIP) loop so the test exercises ROUTING, not the throw
-        (Invoke-LokiCmd_offline (New-OfflineCtx @('--agent'))) | Out-Null
-        Should -Invoke Invoke-LokiOfflineAgent -Times 1 -ParameterFilter { $Model.Id -eq 'mid' }
+        Mock Invoke-LokiOfflineAgent { @{ Ok = $true; Reason = 'ok'; Answer = 'VERDICT: disk C: full'; StopReason = 'final'; Iterations = 2 } }
+        (Invoke-LokiCmd_offline (New-OfflineCtx @('--agent'))) | Should -Be (Get-LokiExitCode 'Ok')
+        Should -Invoke Invoke-LokiOfflineAgent -Times 1 -Exactly -ParameterFilter { $Model.Id -eq 'mid' }
+    }
+
+    It 'a capable model whose agent run fails maps the Reason to an exit code (mirrors --analyze, not a crash)' {
+        Mock Get-LokiModelManifest { , @(@{ Id = 'mid'; Model = 'the-8B'; ContextTokens = 40960; ResidentGB = 7.0; Default = $true }) }
+        Mock Invoke-LokiOfflineAgent { @{ Ok = $false; Reason = 'insufficient-ram' } }
+        (Invoke-LokiCmd_offline (New-OfflineCtx @('--agent'))) | Should -Be (Get-LokiExitCode 'OfflineEngineMissing')
     }
 }
