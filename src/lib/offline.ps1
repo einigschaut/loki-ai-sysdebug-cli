@@ -19,6 +19,7 @@
 #       PURE. Maps a non-ok harness/analyze Reason to a central exit-code name + i18n key. Fails to GeneralError,
 #       never to Ok, on an unforeseen Reason.
 #   Read-LokiOfflineDump -Path <string> -> [hashtable]{ Ok; Text?; Reason }   (READ-ONLY; renders a collect .json)
+#   Protect-LokiOfflineDumpText -DumpText <string> -> [string]   (PURE; neutralizes the <dump> fence in untrusted text)
 #   Invoke-LokiEngineChat -BaseUri <string> -Messages <array> [...] -> [hashtable]{ Ok; Content?; Reason }
 #   Invoke-LokiOfflineAnalyze -AppRoot -Engine -Runtime -Model -DumpText [...] -> [hashtable]{ Ok; Reason; Analysis? }
 # ASCII-only file -> no BOM (CLAUDE.md section 1).
@@ -79,6 +80,22 @@ EVIDENCE: <the exact field or line from the dump that supports it>
 CONFIDENCE: high | medium | low | insufficient-data
 Do not invent fields that are not in the dump. If the dump shows no fault, say so in VERDICT rather than guessing.
 '@
+
+function Protect-LokiOfflineDumpText {
+    <#
+        PURE. Neutralize the <dump> fence inside the UNTRUSTED dump so it cannot close its own fence. The dump is
+        data, never instructions (CLAUDE.md 5), and on the hostile machine Loki is plugged into an attacker can plant
+        a literal '</dump>' in a field that ends up in the render -- an event-log message, a file name, a service
+        description -- or in an operator-supplied .txt. Left raw, that closing tag breaks out of the fence built in
+        Invoke-LokiOfflineAnalyze and lets planted text pose as a top-level instruction or a forged
+        VERDICT/EVIDENCE/CONFIDENCE answer the operator reads as real. The system-prompt framing stays as
+        defense-in-depth; this makes the structural breakout impossible rather than merely discouraged. Matters more
+        once Slice 2 (offline --agent) reuses this path with a model that is allowed to act. (Review finding 2026-07-18.)
+    #>
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$DumpText)
+    # Any spelling of the opening or closing tag (case, inner spaces) -> a visible, inert marker.
+    return ($DumpText -replace '(?i)<\s*/?\s*dump\s*>', '[dump-tag removed]')
+}
 
 function Get-LokiOfflineFailure {
     <#
@@ -196,7 +213,7 @@ function Invoke-LokiOfflineAnalyze {
 
     $messages = @(
         @{ role = 'system'; content = $script:LokiOfflineSystemPrompt },
-        @{ role = 'user';   content = ("<dump>`r`n" + $DumpText + "`r`n</dump>") }
+        @{ role = 'user';   content = ("<dump>`r`n" + (Protect-LokiOfflineDumpText -DumpText $DumpText) + "`r`n</dump>") }
     )
 
     # A PLAIN scriptblock, NOT .GetNewClosure(): GetNewClosure rebinds the body to a fresh module scope that cannot
