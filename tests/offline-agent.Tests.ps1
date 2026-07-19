@@ -372,6 +372,39 @@ Describe 'Invoke-LokiChildReadCommand (isolated child Windows PowerShell; real p
         $r.TimedOut | Should -BeTrue
         $r.Ok       | Should -BeFalse
     }
+    It 'BREAK-THE-GUARD: pins the child working directory to System32, not the inherited cwd (issue #56)' {
+        # Direct proof of the pin: the child reports its own cwd, which must be the real System32 -- NOT the ambient
+        # directory the parent happens to be in. Remove the $psi.WorkingDirectory line in Invoke-LokiChildReadCommand
+        # and this flips (the child inherits the launcher cwd), so the guard is proven load-bearing.
+        $r = Invoke-LokiChildReadCommand -CommandLine '(Get-Location).Path' -TimeoutSec 30
+        $r.Ok | Should -BeTrue
+        $r.StdOut.Trim() | Should -Be ([System.Environment]::SystemDirectory)
+    }
+    It 'BREAK-THE-GUARD: a RELATIVE home-path read does not resolve from the pinned cwd even when the parent cwd holds it (#56 vector)' {
+        # Reproduce the exact secret-at-rest vector: the parent process cwd IS a stick-like root that contains home\, the
+        # way AppRoot does at runtime. An unset WorkingDirectory would make the child inherit this cwd, so a relative
+        # home\<name> read (the 8.3/wildcard family the gate can only downgrade to a confirmable mutate) would resolve to
+        # the secret. The pin to System32 means home\marker.txt does not resolve from the child at all -> nothing read,
+        # regardless of the gate or an operator confirming. SetCurrentDirectory is restored in finally (process-global).
+        $root = Join-Path $TestDrive 'stickroot'
+        New-Item -ItemType Directory -Force -Path (Join-Path $root 'home') | Out-Null
+        $marker = 'SECRET_MARKER_bd7e2e2'
+        Set-Content -LiteralPath (Join-Path $root 'home\marker.txt') -Value $marker -Encoding utf8
+        $prev = [System.IO.Directory]::GetCurrentDirectory()
+        try {
+            [System.IO.Directory]::SetCurrentDirectory($root)   # what an unpinned child would inherit as its cwd
+            $r = Invoke-LokiChildReadCommand -CommandLine 'Get-Content home\marker.txt' -TimeoutSec 30
+            ($r.StdOut + $r.StdErr) | Should -Not -Match $marker
+        }
+        finally {
+            [System.IO.Directory]::SetCurrentDirectory($prev)
+        }
+        # Positive control: the SAME file IS readable by absolute path, so the negative above is the cwd pin at work,
+        # not a broken read or a missing file.
+        $abs = Join-Path $root 'home\marker.txt'
+        $r2 = Invoke-LokiChildReadCommand -CommandLine "Get-Content '$abs'" -TimeoutSec 30
+        $r2.StdOut | Should -Match $marker
+    }
 }
 
 Describe 'Invoke-LokiOfflineAgentTurnLoop (the capped multi-turn diagnose loop; engine + executor mocked)' {

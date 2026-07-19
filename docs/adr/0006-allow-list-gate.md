@@ -225,3 +225,16 @@ removes the auto-read; the real closure is storage-layer -- the secret must not 
 agent's cwd during a run (disable 8.3 on the AppRoot volume, or don't leave the decrypted key as a readable file in
 AppRoot: load to memory / relocate / ACL). Tracked as a separate HIGH-priority issue; the gate belt reduces, but does
 not eliminate, the exposure until then.
+
+### Durable closure landed (2026-07-19, issue #56 -> ADR-0023)
+
+The storage-layer closure above is now in place for the **offline agent**: `Invoke-LokiChildReadCommand` pins the gated
+child's **working directory to System32** (`Get-LokiSystemDirectory`), never the inherited ambient cwd (which on the
+stick *is* AppRoot). From a cwd that is neither `home\` nor an ancestor of it, **no relative name** -- 8.3 short name,
+wildcard, hardlink, ADS or symlink under `home\` -- resolves to `home\.env`, on any filesystem and without ACLs. This
+delivers the property the gate could not: the secret-at-rest is unreadable by relative name **regardless of the gate's
+classification or of an operator confirming** a downgraded `read -> mutate` (the residual the Slice 2b review left, see
+ADR-0022). The gate rules here stay as defence-in-depth (name-layer belt); the cwd pin is the structural closure. The
+**online** Claude Code child keeps cwd = AppRoot by design (its project model) and relies on the PreToolUse hook gate +
+Claude Code's own permission prompt; relocating its cwd is a separate follow-up if desired. See ADR-0023 for the full
+decision and the bounded absolute-path/`..`-traversal residual (both name-gated).
