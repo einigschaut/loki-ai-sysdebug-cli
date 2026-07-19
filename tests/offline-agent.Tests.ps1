@@ -13,6 +13,7 @@ BeforeAll {
     . "$PSScriptRoot\..\src\lib\models.ps1"     # Get-LokiModelManifest / Get-LokiModelLayout
     . "$PSScriptRoot\..\src\lib\allowlist.ps1"  # Get-LokiCommandClass + Resolve-LokiCommandDecision (the shared runtime-safe gate, #21/#50)
     . "$PSScriptRoot\..\src\lib\claude.ps1"     # Get-LokiJsonProp (still lives here; the gate moved to allowlist.ps1, #50)
+    . "$PSScriptRoot\..\src\lib\env-isolate.ps1" # Get-LokiSystemDirectory (used by Get-LokiOfflineChildReadEnv, #55)
     . "$PSScriptRoot\..\src\lib\agent.ps1"      # Invoke-LokiWithEngine (the engine harness the loop will use, #22)
     . "$PSScriptRoot\..\src\lib\offline.ps1"    # Invoke-LokiEngineChat / Protect-LokiOfflineDumpText / Get-LokiOfflineFailure
     . "$PSScriptRoot\..\src\lib\offline-agent.ps1"
@@ -210,6 +211,22 @@ Describe 'Get-LokiOfflineChildReadEnv (child env hardening: PATH pinned, secrets
         $e['PATH'] | Should -Match '(?i)System32'
         $e['PATH'] | Should -Not -Match '(?i)evil'
         $e['FOO']  | Should -Be 'bar'   # non-sensitive machine state is preserved for diagnosis
+    }
+
+    It 'pins the child PATH to the REAL System32 even when $env:WINDIR is poisoned (break-once, issue #55)' {
+        # The read-child PATH is built from Get-LokiSystemDirectory (the OS answer), not $env:WINDIR. A compromised
+        # target that repoints WINDIR must NOT be able to slip an attacker dir into the pinned PATH.
+        $realSys = Get-LokiSystemDirectory
+        $saved = $env:WINDIR
+        try {
+            $env:WINDIR = 'C:\poison-windir'
+            $e = Get-LokiOfflineChildReadEnv -BaseEnv @{ PATH = 'C:\x'; FOO = 'bar' }
+            $e['PATH'] | Should -BeLike ($realSys + '*')   # starts with the real System32
+            $e['PATH'] | Should -Not -Match '(?i)poison'   # the poisoned WINDIR never entered the PATH
+        }
+        finally {
+            $env:WINDIR = $saved
+        }
     }
     It 'strips every known auth/secret var, case-insensitively (S6)' {
         $e = Get-LokiOfflineChildReadEnv -BaseEnv @{ ANTHROPIC_API_KEY = 'sk'; anthropic_auth_token = 't'; CLAUDE_CODE_OAUTH_TOKEN = 'o'; LOKI_SECRET = 's'; SAFE = 'ok' }
