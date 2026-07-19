@@ -232,9 +232,20 @@ The storage-layer closure above is now in place for the **offline agent**: `Invo
 child's **working directory to System32** (`Get-LokiSystemDirectory`), never the inherited ambient cwd (which on the
 stick *is* AppRoot). From a cwd that is neither `home\` nor an ancestor of it, **no relative name** -- 8.3 short name,
 wildcard, hardlink, ADS or symlink under `home\` -- resolves to `home\.env`, on any filesystem and without ACLs. This
-delivers the property the gate could not: the secret-at-rest is unreadable by relative name **regardless of the gate's
-classification or of an operator confirming** a downgraded `read -> mutate` (the residual the Slice 2b review left, see
-ADR-0022). The gate rules here stay as defence-in-depth (name-layer belt); the cwd pin is the structural closure. The
-**online** Claude Code child keeps cwd = AppRoot by design (its project model) and relies on the PreToolUse hook gate +
-Claude Code's own permission prompt; relocating its cwd is a separate follow-up if desired. See ADR-0023 for the full
-decision and the bounded absolute-path/`..`-traversal residual (both name-gated).
+delivers the property the gate could not: the secret-at-rest is unreadable by *cwd-relative* name **regardless of the
+gate's classification or of an operator confirming** a downgraded `read -> mutate` (the residual the Slice 2b review
+left, see ADR-0022). The gate rules here stay as defence-in-depth (name-layer belt); the cwd pin is the structural
+closure.
+
+The adversarial review of that fix (2026-07-19) found the one form a cwd pin cannot cover — a **drive-qualified** path
+(`X:home\...` drive-relative, or `X:\home\...` drive-absolute-root) resolves against drive X's own root *regardless* of
+the child cwd, so `Get-Content X:home\*` reaches the stick's `X:\home\.env` even from the System32-pinned child. That is
+now closed **in this gate**: `LokiSecretTargetPatterns` gained `[A-Za-z]:[\\/]?home(?:[\\/]|$|[\s=,;'"()])`, which
+hard-denies every drive-qualified reference to a root-level `home\` directory (any leaf, any drive letter) — so
+`X:home\ENV~1` / `X:home\*` are `denied`, not the confirmable mutate the leaf rule alone yields. Plain relative
+`home\...` is deliberately left to the cwd pin (denying it would over-block, and it no longer resolves to the stick
+from a System32 cwd).
+
+The **online** Claude Code child keeps cwd = AppRoot by design (its project model) and relies on the PreToolUse hook
+gate + Claude Code's own permission prompt; relocating its cwd is a separate follow-up if desired. See ADR-0023 for the
+full decision and the narrowed residual.

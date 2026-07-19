@@ -229,12 +229,21 @@ function Get-LokiAllowDecision {
 # Secret-target deny (defense in depth -- adversarial review, ADR-0007). The pure classifier above is engine-agnostic
 # and trusts any Get-* by verb, so on its own it would auto-allow a genuine read cmdlet pointed at the process
 # environment or the secret-at-rest file -- letting a model read the very API key the online engine runs under and
-# surface it. These patterns block any otherwise-read command that targets the Env: PSDrive, a .env file, or an
-# auth-variable name. Case-insensitive (-match default). Deliberately broad (fail-closed): blocking an unrelated
-# *.env read is an acceptable cost for a read-only diagnosis.
+# surface it. These patterns block any otherwise-read command that targets the Env: PSDrive, a .env file, an
+# auth-variable name, or a DRIVE-QUALIFIED root-level home\ directory (issue #56). Case-insensitive (-match default).
+# Deliberately broad (fail-closed): blocking an unrelated *.env read, or a root-level home\ read on some data drive,
+# is an acceptable cost for a read-only diagnosis.
 $script:LokiSecretTargetPatterns = @(
     '\bEnv:',                    # the Env: PSDrive: Get-ChildItem Env:, Get-Item Env:\ANTHROPIC_API_KEY, ...
     '\.env\b',                   # the secret-at-rest file (home\.env), absolute or relative
+    # A DRIVE-QUALIFIED root-level home\ dir (E:home\, E:\home\, E:home, E:home\ENV~1, E:home\*). The secret lives at
+    # <stickdrive>:\home\.env (AppRoot = the stick's drive root, DESIGN.md). A drive-relative path 'X:home\...' (NO
+    # separator after the colon) resolves against drive X's OWN current directory -- which defaults to that drive's
+    # ROOT -- REGARDLESS of the child process cwd, so it reaches the stick secret even from the System32-pinned child
+    # (issue #56 review); and the leaf rule below would only DOWNGRADE the 8.3/bare-* forms to a confirmable mutate.
+    # Hard-deny every drive-qualified form here. Plain relative 'home\...' is left to the cwd pin (ADR-0023) and is
+    # deliberately NOT denied -- from a System32 cwd it does not resolve to the stick, and denying it would over-block.
+    '[A-Za-z]:[\\/]?home(?:[\\/]|$|[\s=,;''"()])',
     'GetEnvironmentVariable',    # .NET [*.Environment]::GetEnvironmentVariable(s)(...) -- reads the process env directly
     'ANTHROPIC_API_KEY',
     'CLAUDE_CODE_OAUTH_TOKEN',

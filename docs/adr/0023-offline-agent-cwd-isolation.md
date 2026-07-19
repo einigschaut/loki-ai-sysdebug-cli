@@ -31,10 +31,24 @@ The maintainer chose **variant 2** (the safe one).
 **Pin the offline agent's gated child working directory to System32, never the inherited ambient cwd.**
 `Invoke-LokiChildReadCommand` now sets `$psi.WorkingDirectory = (Get-LokiSystemDirectory)` — the tamper-resistant OS
 answer (`[System.Environment]::SystemDirectory`, Win32 `GetSystemDirectory`) that this file already anchors the PATH pin
-to (ADR-0016 / issue #55). From a working directory that is **neither `home\` nor an ancestor of it**, no relative name
-— 8.3 short name, wildcard, hardlink, ADS, or symlink under `home\` — resolves to `home\.env`. This holds on **any**
-filesystem (NTFS/exFAT/FAT), needs **no** ACLs (which exFAT lacks and which don't bind a same-user child anyway), and
-moves **no** credential (so there is no crash-window where the key is lost or a stale copy lingers).
+to (ADR-0016 / issue #55). From a working directory that is **neither `home\` nor an ancestor of it**, no
+**cwd-relative** name — 8.3 short name, wildcard, hardlink, ADS, or symlink under `home\` — resolves to `home\.env`.
+This holds on **any** filesystem (NTFS/exFAT/FAT), needs **no** ACLs (which exFAT lacks and which don't bind a
+same-user child anyway), and moves **no** credential (so there is no crash-window where the key is lost or a stale copy
+lingers).
+
+**One form the cwd pin cannot cover — closed at the gate (adversarial review, 2026-07-19).** A **drive-qualified**
+path (`X:home\.env` — drive-relative, no separator after the colon — or `X:\home\.env`) resolves against drive X's
+**own** current directory, which defaults to that drive's **root**, *regardless* of the child's cwd. Because AppRoot is
+the stick's drive root (`home\` sits directly under `<StickRoot>`, DESIGN.md), `Get-Content X:home\*` reaches
+`X:\home\.env` even from the System32-pinned child — and the drive letter is discoverable via the auto-run
+`Win32_LogicalDisk` the prompt recommends. The cwd pin is drive-scoped and structurally cannot see this. It is therefore
+closed in the **shared gate** (`Resolve-LokiCommandDecision`, `LokiSecretTargetPatterns`): a new pattern
+`[A-Za-z]:[\\/]?home(?:[\\/]|$|[\s=,;'"()])` **hard-denies** every drive-qualified reference to a root-level `home\`
+directory (relative, absolute, bare, quoted, any drive letter) — so `X:home\ENV~1` / `X:home\*` are `denied`, never the
+confirmable mutate the leaf rule alone would yield. Plain relative `home\...` is deliberately **not** added to that deny
+(it does not resolve to the stick from a System32 cwd, and denying it would over-block); the cwd pin handles it. The two
+layers are complementary: cwd pin for cwd-relative names, gate deny for drive-qualified names.
 
 Why System32 specifically, and unconditionally (no new parameter threaded through the call chain):
 
@@ -57,14 +71,17 @@ structural closure; the gate belt still reduces auto-read to confirm-required an
 * **Closed:** the demonstrated #56 vector (`Get-Content home\ENV~1` / `home\.e*` / `home\*` reaching the secret by a
   relative name from the agent cwd) — including the "operator mistakenly confirms a downgraded mutate" residual ADR-0022
   left open. The secret-at-rest is unreadable by relative name from the offline agent, structurally.
-* **Residual (name-gated, bounded):** an **absolute** path to the secret (`X:\...\home\.env`) or an upward **`..`
-  traversal** (`..\..\home\ENV~1`) still names it. Both are bounded by the ADR-0006 gate, which is leaf-based and thus
-  cwd-independent: the literal `.env` is hard-denied; a `.env`-globbing leaf is hard-denied; an 8.3 / bare-wildcard leaf
-  is downgraded to a confirmable mutate — and the model does not know the stick's absolute path (it is not in the
-  charter/context). A hardlink/ADS/symlink *named* as an innocuous leaf still requires a prior **write** (a gated,
-  confirmed mutate) to create, so it is covered by the mutation gate, not this change. Net: the auto-read and
-  mistaken-confirm paths are gone; the remaining paths need either information the agent lacks or a separately-gated
-  write.
+* **Residual (bounded, after the 2026-07-19 review closure).** Every path form that *names* the drive-root
+  `home\.env` is now closed by three complementary layers: the **cwd pin** (cwd-relative `home\...` no longer resolves
+  to the stick), the **gate's `.env`/leaf rules** (literal `.env` and `.env`-globbing leaves hard-denied; 8.3/bare-`*`
+  leaves downgraded), and the **drive-qualified `home\` deny** added here (`X:home\...` drive-relative *and* `X:\home\...`
+  drive-absolute-root, any leaf, hard-denied). What remains is narrow: (i) an upward `..` traversal — from the System32
+  cwd it stays on the OS drive (C:) and cannot reach a stick mounted on another drive letter; (ii) a filesystem alias
+  (hardlink/ADS/symlink) to the secret placed at an absolute path *outside* `home\` — but the agent cannot **forge**
+  one, because creating it is a mutate whose target names `home\.env` (a `home\`/`.env` form the gate denies) or a
+  relative target that from the System32 cwd does not resolve to the stick; a **pre-existing** planted alias is
+  out-of-model host tampering, not something this agent introduces. Net: both the auto-read **and** the
+  mistaken-confirm paths to the secret are gone.
 * **Online path unchanged (documented, not silently scoped out — CLAUDE.md §8):** the Claude Code child keeps cwd =
   AppRoot by design (its project/workspace model) and is defended by the PreToolUse hook gate (the same
   `Resolve-LokiCommandDecision`) plus Claude Code's own permission prompt. Relocating Claude Code's project cwd is a
@@ -85,3 +102,13 @@ structural closure; the gate belt still reduces auto-read to confirm-required an
   pin sends its cwd to System32); a positive control reads the same file by **absolute** path to prove the file and
   command are valid. Deleting the pin makes the child inherit the marker-bearing cwd and read it — the guard is proven
   load-bearing.
+
+`tests/allowlist.Tests.ps1`, the drive-qualified `home\` deny (added by the 2026-07-19 review):
+
+* Every drive-qualified form (`X:home\.env`, `X:home\ENV~1`, `X:home\*`, `X:\home\ENV~1`, bare `X:home`,
+  `X:home -Recurse`, another drive letter, quoted) resolves to `denied` / `secret-target-blocked`.
+* **Break-once:** drive-letter-agnostic cases (`D:home\ENV~1`, `Z:home\*`, `E:home\.env`) stay `denied` — delete the
+  pattern and each drops back to a confirmable mutate / read whose drive-relative path reads the stick secret.
+* **No over-block:** a *deep* `home\` segment (`C:\Users\bob\home\config.txt`) and a home-named *file* (`C:home.txt`)
+  stay `read` — the deny is specific to a root-level `home\` directory, and plain relative `home\ENV~1` stays the
+  existing confirmable mutate (the cwd pin, not the gate, neutralizes it).
