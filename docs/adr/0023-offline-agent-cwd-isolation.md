@@ -38,16 +38,19 @@ same-user child anyway), and moves **no** credential (so there is no crash-windo
 lingers).
 
 **One form the cwd pin cannot cover — closed at the gate (adversarial review, 2026-07-19).** A **drive-qualified**
-path (`X:home\.env` — drive-relative, no separator after the colon — or `X:\home\.env`) resolves against drive X's
-**own** current directory, which defaults to that drive's **root**, *regardless* of the child's cwd. Because AppRoot is
+path — `X:home\.env` (drive-relative, no separator after the colon), `X:\home\.env` (drive-absolute), or a navigated
+`X:.\home\...` / `X:..\home\...` — resolves against drive X's **own** current directory, which defaults to that drive's
+**root** (and `.\` / `..\` clamp there), *regardless* of the child's cwd. Because AppRoot is
 the stick's drive root (`home\` sits directly under `<StickRoot>`, DESIGN.md), `Get-Content X:home\*` reaches
 `X:\home\.env` even from the System32-pinned child — and the drive letter is discoverable via the auto-run
 `Win32_LogicalDisk` the prompt recommends. The cwd pin is drive-scoped and structurally cannot see this. It is therefore
 closed in the **shared gate** (`Resolve-LokiCommandDecision`, `LokiSecretTargetPatterns`): a new pattern
-`[A-Za-z]:[\\/]?home(?:[\\/]|$|[\s=,;'"()])` **hard-denies** every drive-qualified reference to a root-level `home\`
-directory (relative, absolute, bare, quoted, any drive letter) — so `X:home\ENV~1` / `X:home\*` are `denied`, never the
-confirmable mutate the leaf rule alone would yield. Plain relative `home\...` is deliberately **not** added to that deny
-(it does not resolve to the stick from a System32 cwd, and denying it would over-block); the cwd pin handles it. The two
+`[A-Za-z]:(?:[\\/]|\.{1,2}[\\/])*home(?:[\\/]|$|[\s=,;'"()])` **hard-denies** every drive-qualified path whose first
+segment (after any `.\` / `..\` / separators) is a root-level `home\` (relative, absolute, bare, quoted, `.`/`..`
+navigated, any drive letter) — so `X:home\ENV~1` / `X:.\home\*` are `denied`, never the
+confirmable mutate the leaf rule alone would yield. The pattern matches `home` **only at the drive root**, so a *deep*
+path (`C:\Users\x\home\log`) is **not** over-blocked, and plain relative `home\...` is deliberately **not** denied (it
+does not resolve to the stick from a System32 cwd, and denying it would over-block); the cwd pin handles that. The two
 layers are complementary: cwd pin for cwd-relative names, gate deny for drive-qualified names.
 
 Why System32 specifically, and unconditionally (no new parameter threaded through the call chain):

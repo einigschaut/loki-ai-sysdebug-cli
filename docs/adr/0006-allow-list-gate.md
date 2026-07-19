@@ -240,11 +240,13 @@ closure.
 The adversarial review of that fix (2026-07-19) found the one form a cwd pin cannot cover — a **drive-qualified** path
 (`X:home\...` drive-relative, or `X:\home\...` drive-absolute-root) resolves against drive X's own root *regardless* of
 the child cwd, so `Get-Content X:home\*` reaches the stick's `X:\home\.env` even from the System32-pinned child. That is
-now closed **in this gate**: `LokiSecretTargetPatterns` gained `[A-Za-z]:[\\/]?home(?:[\\/]|$|[\s=,;'"()])`, which
-hard-denies every drive-qualified reference to a root-level `home\` directory (any leaf, any drive letter) — so
-`X:home\ENV~1` / `X:home\*` are `denied`, not the confirmable mutate the leaf rule alone yields. Plain relative
-`home\...` is deliberately left to the cwd pin (denying it would over-block, and it no longer resolves to the stick
-from a System32 cwd).
+now closed **in this gate**: `LokiSecretTargetPatterns` gained
+`[A-Za-z]:(?:[\\/]|\.{1,2}[\\/])*home(?:[\\/]|$|[\s=,;'"()])`, which hard-denies every drive-qualified path whose first
+segment (after any `.\` / `..\` / separators) is a root-level `home\` — `X:home\...`, `X:\home\...`, `X:.\home\...`,
+bare `X:home`, any drive letter — so `X:home\ENV~1` / `X:.\home\*` are `denied`, not the confirmable mutate the leaf
+rule alone yields. It matches `home` only at the drive root, so a deep `C:\Users\x\home\...` is not over-blocked; plain
+relative `home\...` is deliberately left to the cwd pin (denying it would over-block, and it no longer resolves to the
+stick from a System32 cwd).
 
 The **online** Claude Code child keeps cwd = AppRoot by design (its project model) and relies on the PreToolUse hook
 gate + Claude Code's own permission prompt; relocating its cwd is a separate follow-up if desired. See ADR-0023 for the

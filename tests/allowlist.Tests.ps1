@@ -528,6 +528,8 @@ Describe 'Resolve-LokiCommandDecision - wildcard secret-target bypass (adversari
         @{ cmd = 'Get-Content E:home\.env' }        # drive-relative (no separator after the colon) -> E:\home\.env
         @{ cmd = 'Get-Content E:home\ENV~1' }       # drive-relative + 8.3 alias -- the leaf rule would only downgrade
         @{ cmd = 'Get-Content E:home\*' }           # drive-relative + bare glob
+        @{ cmd = 'Get-Content E:.\home\ENV~1' }     # drive-relative with .\ navigation (clamps at the drive root)
+        @{ cmd = 'Get-Content E:..\home\*' }        # drive-relative with ..\ navigation
         @{ cmd = 'Get-Content E:\home\ENV~1' }      # drive-ABSOLUTE at the drive root
         @{ cmd = 'Get-ChildItem E:home' }           # bare drive-relative listing of the secret dir (recon)
         @{ cmd = 'Get-ChildItem E:home -Recurse' }
