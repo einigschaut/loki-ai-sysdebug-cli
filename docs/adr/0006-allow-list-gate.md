@@ -160,3 +160,68 @@ Two honest consequences, recorded rather than hidden:
   gate, so it does not belong in the pure-classifier module, and relocating it to a shared util module was out of
   scope for this security-focused move. The offline agent's remaining dependency on `claude.ps1` for that one reader
   is benign (no security surface) and is noted for a later tidy-up.
+
+## Refinement (2026-07-19) -- wildcard secret-target bypass (issue #54, CRITICAL)
+
+A parallel adversarial review found, and this repo independently reproduced against the real gate, that the
+secret-target deny (ADR-0007) is defeated by PowerShell **wildcards**. The deny matches the literal `\.env\b`; a glob
+never contains the literal `.env` yet still resolves to the secret at run time:
+
+```
+Get-Content home\.env         -> denied  secret-target-blocked   (literal: already blocked)
+Get-Content home\.e*          -> read    read-allowlisted        <-- BYPASS
+Get-Content home\.en?         -> read                            <-- BYPASS
+Get-Content home\[.]env       -> read                            <-- BYPASS
+Get-Content home\*            -> read                            <-- BYPASS (scoops the whole home dir, incl .env)
+Select-String -Path home\.e*  -> read                            <-- BYPASS (reads file CONTENTS)
+```
+
+Root cause: the classifier's unsafe-char disqualifier -- designed to stop a **second command** (separators, pipes,
+subexpressions) -- does not include the wildcard metacharacters `* ? [`, which are a **different** threat: target
+ambiguity. A glob picks *which file* is read, and can pick the secret. Two rules, both in
+`Resolve-LokiCommandDecision`, close it -- on `read` OR `mutate`, path-form and case independent:
+
+1. **A wildcard read is not provably safe -> `read` downgraded to `mutate`** (`read-downgraded-wildcard`). Necessary,
+   not just belt-and-suspenders: `Get-Content home\*` scoops the secret and its leaf `*` is not "secret-specific", so
+   no surgical rule alone suffices -- any wildcard must leave the auto-allow path. Headless/offline refuse a mutate;
+   interactive may confirm it (the operator sees the glob).
+2. **A wildcard whose LEAF globs specifically to `.env` -> HARD `denied`** (`secret-target-blocked`), never confirmable
+   -- matching the other secret-target denies, and applied to `mutate` too so `Remove-Item home\.e*` is blocked.
+   "Secret-specific" = `WildcardPattern.IsMatch('.env')` (IgnoreCase) AND NOT `IsMatch('safe.txt')`, so a bare `*`
+   (matches everything) is not hard-denied by this rule -- rule 1 downgrades it. Leaf-only, so a directory prefix
+   (`home\`, `.\`, an absolute path) does not change the verdict.
+
+**Behaviour change, recorded (CLAUDE.md section 8, no silent deviation):** legitimate wildcard reads
+(`Get-Content C:\logs\*.log`) now require confirmation instead of auto-running. That is the intended
+security/convenience trade for a credential handler on a hostile machine; the agent can still enumerate a directory
+without a wildcard (`Get-ChildItem C:\logs`) and read named files.
+
+**Accepted residual:** in **interactive** mode a human could still confirm a bare-`*` read of a directory that happens
+to contain the secret (`Get-Content home\*`) -- rule 1 makes it confirmable, not auto. The gate is engine-agnostic and
+does not know the AppRoot, so it cannot tell "the `*`'s directory is the secret dir" from "it is a logs dir". Bounded
+(human-in-the-loop; the secret would be one file among a batch the operator explicitly approved) and documented rather
+than papered over. The obvious secret-targeting globs are hard-denied by rule 2 regardless of confirmation.
+
+Broken-once tests (`tests/allowlist.Tests.ps1`): the bypass matrix is now denied/mutate, the pre-fix classifier still
+returns `read` for the glob (proving the resolver rule is the load-bearing part), and legit non-wildcard reads are
+unaffected.
+
+**Adversarial review of this fix (2026-07-19) found two more evasions of the SAME class -- a name that resolves to the
+secret without the literal `.env` -- both now closed here:**
+
+* **8.3 short name (was `read`, CRITICAL).** `home\.env` has a deterministic NTFS/exFAT short name `ENV~1` -- no
+  wildcard, no `.env` -- so `Get-Content home\ENV~1` slipped past both rules above AND the literal deny and auto-read
+  the key (proven at runtime: `dir /x` -> `ENV~1`; `Get-Content home\ENV~1` -> the key). A read whose leaf matches the
+  8.3 shape `~[0-9]` is now downgraded `read -> mutate` (`read-downgraded-shortname`) -- out of auto-allow. It cannot be
+  hard-denied at the string layer (`ENV~1` is indistinguishable from `PROGRA~1`), and the leaf-only check does not
+  over-block a directory 8.3 (`C:\PROGRA~1\app\log.txt` stays `read`).
+* **Trailing separator (was `mutate`, MEDIUM).** `Get-Content home\.e*\` left an empty leaf (last split segment ''),
+  so rule 2's hard-deny was skipped though the glob still reads the secret. Fixed by `TrimEnd`-ing separators/quotes
+  before leaf extraction; it is now hard-denied like `home\.e*`.
+
+**The durable fix is NOT in the gate (flagged, not solved here).** A string classifier fundamentally cannot enumerate
+every filesystem alias (8.3, and in principle hardlink/ADS/symlink). The 8.3 downgrade is belt-and-suspenders that
+removes the auto-read; the real closure is storage-layer -- the secret must not be readable by ANY name from the
+agent's cwd during a run (disable 8.3 on the AppRoot volume, or don't leave the decrypted key as a readable file in
+AppRoot: load to memory / relocate / ACL). Tracked as a separate HIGH-priority issue; the gate belt reduces, but does
+not eliminate, the exposure until then.

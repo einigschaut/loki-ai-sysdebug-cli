@@ -37,12 +37,16 @@
 #     THE runtime-safe gate both engines call (online via lib/claude.ps1 -> Get-LokiPreToolUseDecision, offline via
 #     lib/offline-agent.ps1) -- ONE engine-agnostic decision, DESIGN.md section 5.1. Get-LokiCommandClass PLUS:
 #     (1) the Get-* -> Get-Command Cmdlet-resolution check that closes the residual above (a hijacking
-#     Function/Alias/Application, or an unresolvable name, downgrades read -> mutate); (2) a hard 'denied' for any
-#     command carrying a non-space/tab control char, targeting the secret / process-env
+#     Function/Alias/Application, or an unresolvable name, downgrades read -> mutate); (1b) a NAME that resolves to the
+#     secret home\.env WITHOUT the literal '.env' the deny below matches is not provably safe -- a WILDCARD glob
+#     (home\.e*, home\*, home\[.]env) or the 8.3 SHORT NAME (home\ENV~1, an NTFS/exFAT alias of .env). A read carrying
+#     * ? [ or a NAME~digit leaf is downgraded read -> mutate; a wildcard whose leaf globs specifically to '.env' is
+#     HARD denied (issue #54; string-gate belt -- durable closure is storage-layer, tracked separately); (2) a hard
+#     'denied' for any command carrying a non-space/tab control char, targeting the secret / process-env
 #     ($script:LokiSecretTargetPatterns), or side-effecting/exfiltrating -- UNC in either slash direction, a
-#     remote-target parameter, or a browser launch ($script:LokiReadSideEffectPatterns). Reason adds the machine
-#     tokens read-downgraded-unresolved | read-downgraded-noncmdlet | nonascii-control-blocked |
-#     secret-target-blocked | read-side-effect-blocked. Deterministic given the command table; unit-tested by
+#     remote-target parameter, or a browser launch ($script:LokiReadSideEffectPatterns). Reason adds the machine tokens
+#     read-downgraded-unresolved | read-downgraded-noncmdlet | read-downgraded-wildcard | read-downgraded-shortname |
+#     nonascii-control-blocked | secret-target-blocked | read-side-effect-blocked. Deterministic given the command table; unit-tested by
 #     mocking Get-Command. Use THIS, never Get-LokiAllowDecision, to gate a proposed command.
 # CLAUDE.md section 5: allow-list, not deny-list, is the gate (read-only automatic, anything
 # mutating requires confirmation); deny only defense-in-depth. Get-LokiCommandClass / Get-LokiAllowDecision are
@@ -290,6 +294,60 @@ function Resolve-LokiCommandDecision {
             elseif ($resolved.CommandType -ne 'Cmdlet') {
                 $class = 'mutate'; $reason = 'read-downgraded-noncmdlet'
             }
+        }
+    }
+
+    # Name-based secret-target evasion of the literal '\.env\b' deny (adversarial review 2026-07-19, issue #54).
+    # A read is classified by its command NAME and a literal unsafe-char check that does NOT include the wildcard
+    # metacharacters * ? [ -- and the deny below is the literal '\.env\b'. Two families of a NAME that resolves to the
+    # secret home\.env WITHOUT containing the literal '.env':
+    #   (a) WILDCARDS (home\.e*, home\.en?, home\[.]env, home\*, Select-String -Path home\*env*) -- the glob picks
+    #       which file is read, and can pick .env;
+    #   (b) the 8.3 SHORT NAME (home\ENV~1) -- an NTFS/exFAT filesystem alias of .env, no wildcard and no '.env'.
+    # Neither is provably safe. Close it here, on read OR mutate (a mutate like `Remove-Item home\.e*` targeting the
+    # secret must hard-deny, never merely confirm), path-form & case independent. NOTE (belt-and-suspenders): a string
+    # gate cannot enumerate EVERY filesystem alias (8.3, hardlink, ADS, symlink); the durable fix is storage-layer
+    # (the secret must not be readable by any name from the agent cwd) -- tracked separately.
+    if ($class -ne 'denied') {
+        # First whitespace token is the command name (metachars there are not path targets); scan the argument tokens.
+        # We only SPLIT and INSPECT -- never execute -- so this is safe even for a 'mutate' that carries unsafe chars.
+        $argTokens = @($CommandLine.Trim() -split '\s+' | Select-Object -Skip 1)
+        $sawWildcard  = $false
+        $sawShortName = $false
+        foreach ($tok in $argTokens) {
+            # Leaf = last path segment. Strip TRAILING separators first (so 'home\.e*\' -> leaf '.e*', not '' -- an
+            # empty leaf would silently skip the hard-deny) and surrounding quotes ("home\.e*" -> .e*).
+            $leaf = (($tok.TrimEnd('\', '/', '"', "'") -split '[\\/]')[-1]).Trim('"', "'")
+            if ($leaf -match '[*?\[]') {
+                $sawWildcard = $true
+                # Secret-specific: the leaf globs to the secret filename '.env' but NOT to an arbitrary safe name. A
+                # bare '*' matches BOTH (everything), so it is NOT hard-denied -- it is downgraded below. Leaf-only +
+                # IgnoreCase => independent of the path prefix (home\, .\, absolute) and of casing.
+                try {
+                    $wp = [System.Management.Automation.WildcardPattern]::new($leaf, [System.Management.Automation.WildcardOptions]::IgnoreCase)
+                    if ($wp.IsMatch('.env') -and (-not $wp.IsMatch('safe.txt'))) {
+                        $class = 'denied'; $reason = 'secret-target-blocked'
+                        break
+                    }
+                }
+                catch {
+                    # A malformed wildcard near the secret is not provably safe -> fall through to the downgrade below
+                    # (never auto-allowed); do not throw out of the gate.
+                    $null = $_
+                }
+            }
+            elseif ($leaf -match '~[0-9]') {
+                # 8.3 short name (NAME~digit): a filesystem alias that can name the secret (.env -> ENV~1) with no
+                # wildcard and no literal '.env'. Cannot tell ENV~1 (the secret) from PROGRA~1 at the string level ->
+                # not provably safe -> out of auto-allow (downgrade). The durable closure is storage-layer (above).
+                $sawShortName = $true
+            }
+        }
+        if ($class -eq 'read' -and ($sawWildcard -or $sawShortName)) {
+            # Not secret-specific, but a wildcard/short-name read is not provably targeting a safe file -> out of
+            # auto-allow. Headless/offline refuse a mutate; interactive may confirm it (the operator sees the name).
+            $class = 'mutate'
+            $reason = if ($sawWildcard) { 'read-downgraded-wildcard' } else { 'read-downgraded-shortname' }
         }
     }
 
