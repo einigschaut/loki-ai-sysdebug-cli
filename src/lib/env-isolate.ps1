@@ -5,9 +5,17 @@
 #   clean up for env (no leak by construction). Teardown exists ONLY for the few things that
 #   outlive the process itself (wrapper/registry) -> paired LIFO undo.
 # Contract:
-#   Get-LokiIsolatedEnv -StickRoot <string> [-BasePath <string>] -> [hashtable]
-#     All env var->value pairs to set, every path anchored under $StickRoot. Pure:
-#     reads no global state besides the BasePath default, does not mutate Env: itself.
+#   Get-LokiIsolatedEnv -StickRoot <string> [-BasePath <string>] [-SystemDirectory <string>] -> [hashtable]
+#     All env var->value pairs to set, every path anchored under $StickRoot (except the pinned System32
+#     dirs, see below). Pure: reads no global state besides the BasePath and SystemDirectory defaults,
+#     does not mutate Env: itself.
+#     PATH is built as: <stick tools dirs> ; <System32> ; <System32\WindowsPowerShell\v1.0> ;
+#     <System32\wbem> ; <BasePath>. (The stick's own tool dirs precede System32 -- they are trusted,
+#     shipped on Loki's encrypted medium.) The real System32 is pinned AHEAD of the inherited BasePath so a
+#     gate-approved native read tool cannot resolve to a PATH-planted binary on a compromised target
+#     (S3, online twin of the offline read executor -- issue #50). System32 is sourced from
+#     [System.Environment]::SystemDirectory (the OS API, tamper-resistant), NOT the mutable %SystemRoot%.
+#     -SystemDirectory overrides that source for tests only; production callers never pass it.
 #   New-LokiChildEnvBlock -Isolated <hashtable> [-BaseEnv <IDictionary>] -> [hashtable]
 #     Copy of BaseEnv (default: current process env as a new hashtable) with Isolated overlaid.
 #     Does NOT mutate the passed-in BaseEnv. Result is meant for handoff to a child process.
@@ -25,7 +33,8 @@ Set-StrictMode -Version Latest
 function Get-LokiIsolatedEnv {
     param(
         [Parameter(Mandatory = $true)][string]$StickRoot,
-        [string]$BasePath = $env:PATH
+        [string]$BasePath = $env:PATH,
+        [ValidateNotNullOrEmpty()][string]$SystemDirectory = [System.Environment]::SystemDirectory
     )
 
     $homeDir         = Join-Path $StickRoot 'home'
@@ -46,7 +55,22 @@ function Get-LokiIsolatedEnv {
     $toolsDnsDir          = Join-Path $toolsRoot 'dns'
     $toolsWiresharkDir    = Join-Path $toolsRoot 'wireshark'
     $toolsSysinternalsDir = Join-Path $toolsRoot 'sysinternals'
-    $pathValue = '{0};{1};{2};{3};{4}' -f $toolsBinDir, $toolsDnsDir, $toolsWiresharkDir, $toolsSysinternalsDir, $BasePath
+
+    # System32 PATH pin (S3, online twin of the offline read executor -- ADR-0006 refinement, issue #50).
+    # Pin the REAL Windows system dirs AHEAD of the inherited target PATH ($BasePath) so a gate-approved
+    # native read tool (ipconfig/whoami/netstat/...) resolves to the genuine System32 binary, never a
+    # PATH-planted <name>.exe sitting in a directory the compromised target already has on PATH.
+    #   * Source = [System.Environment]::SystemDirectory, the OS's own answer (Win32 GetSystemDirectory),
+    #     NOT the mutable %SystemRoot%/%WINDIR% env var: on a compromised target a poisoned SystemRoot
+    #     would otherwise make this "pin" prepend an attacker-chosen dir -- self-defeating for the very
+    #     threat model it closes. Injectable as -SystemDirectory only so the guard is table-testable.
+    #   * Additive, not pin-to-only: $BasePath still follows, so Claude Code's own child resolution of
+    #     node/git/... (not present in System32) is unchanged. The stick's bundled tool dirs stay first
+    #     (Loki ships known-good copies on its own encrypted medium).
+    $sysDir     = $SystemDirectory
+    $sysPsDir   = Join-Path $SystemDirectory 'WindowsPowerShell\v1.0'
+    $sysWbemDir = Join-Path $SystemDirectory 'wbem'
+    $pathValue = ($toolsBinDir, $toolsDnsDir, $toolsWiresharkDir, $toolsSysinternalsDir, $sysDir, $sysPsDir, $sysWbemDir, $BasePath) -join ';'
 
     return @{
         USERPROFILE                            = $homeDir

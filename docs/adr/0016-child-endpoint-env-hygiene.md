@@ -88,3 +88,63 @@ customer networks, which is exactly why the certain-outage risk outweighed the c
 * Users who genuinely route Claude Code through an LLM gateway on their own machine will find that **Loki ignores that
   setup**. That is intended: Loki's session is Loki's, and "the ambient environment configures my credential's
   destination" is the property being removed.
+
+## Addendum (2026-07-18) — System32 PATH pin (issue #50, online twin of the offline read executor)
+
+The Consequences above named `PATH` out loud as an unhardened surface of the patch-model child env ("it touches
+`PATH`, `SystemRoot`, proxy and CA configuration ... deserves its own ADR"). This addendum closes one concrete hole in
+that surface; it does **not** claim the full allow-list env model or the `HTTPS_PROXY` + `NODE_EXTRA_CA_CERTS` pair
+above — those stay open, recorded as before.
+
+**The hole (S3, online).** `env-isolate.ps1` built the child `PATH` as `<stick tools dirs> ; <inherited target PATH>`.
+System32 was not pinned ahead of the inherited PATH, so on a compromised target whose PATH places a hostile directory
+before System32, a **gate-approved native read** (`ipconfig`, `whoami`, `netstat`, ...) run by Claude Code's own
+PowerShell tool would resolve to the **planted** `<name>.exe`. This is the exact twin of the S3 hole the offline read
+executor already closed (ADR-0006 refinement, 2026-07-18) — the online engine had been the noted follow-up.
+
+**The fix — three decisions, all recorded so none is silent (CLAUDE.md §8):**
+
+1. **Pin the real Windows system dirs ahead of the inherited BasePath** in `Get-LokiIsolatedEnv`:
+   `<stick tools dirs> ; <System32> ; <System32\WindowsPowerShell\v1.0> ; <System32\wbem> ; <BasePath>`. A native read
+   now resolves to the genuine System32 binary; a planted one earlier in the target PATH is outranked.
+2. **Additive, not pin-to-only.** The offline read child (`Get-LokiOfflineChildReadEnv`) can pin PATH to System32
+   *only*, because it runs one bare diagnostic command and needs nothing else. The **online** child is `claude.exe`
+   itself: it must still resolve `node`/`git`/... from the target PATH, so `BasePath` is kept and merely demoted below
+   System32. This directly honours ADR-0016's "machines Loki must keep working on" constraint — the change cannot break
+   the engine, unlike a pin-to-only would. (Tools that exist in *both* System32 and the target PATH now resolve to the
+   canonical System32 copy — which is precisely the intended security property.)
+3. **Source System32 from the OS, not the mutable `%SystemRoot%`/`%WINDIR%`.** `[System.Environment]::SystemDirectory`
+   (Win32 `GetSystemDirectory`) is the kernel's own answer and cannot be repointed by an env var. Deriving the "trusted"
+   dir from `$env:SystemRoot` on a *compromised* target would be self-defeating: a poisoned value would make the pin
+   prepend an attacker-chosen directory ahead of everything — strictly worse than no pin. It is injectable as
+   `-SystemDirectory` for table-testing only; production never passes it. Adding the optional parameter is additive —
+   all four callers (`agent.ps1`, `claude.ps1` ×2, `footprint.ps1`) pass only `-StickRoot`, so no contract breaks.
+
+Guard proven able to fail per CLAUDE.md §6 (`tests/env-isolate.Tests.ps1`): a planted dir in BasePath is outranked by
+the pinned System32, and the reconstructed pre-fix ordering shows the planted dir winning without the pin.
+
+**Honest residual — a whole `$env:SystemRoot`/`$env:WINDIR`-trust class, flagged not fixed here.** This addendum
+closes exactly **one** hole: PATH resolution of gate-approved native *read* tools by Claude Code's child. It does **not**
+close the broader class — the independent adversarial review (2026-07-18) found the same mutable-source trust in
+several runtime-on-target sites this change does not touch:
+
+* **The online engine's own launcher (most severe).** `lib/claude.ps1` spawns `cmd.exe` via
+  `Join-Path $env:SystemRoot 'System32\cmd.exe'` (`:516`, `:610`, `:701`), and two of those install the child env block
+  that carries the **decrypted credential**. On a compromised target that poisons `$env:SystemRoot` and plants
+  `<poison>\System32\cmd.exe`, the `.cmd`/`.bat` claude-shim launch path (npm/Volta installs, ADR-0007) would run an
+  attacker `cmd.exe` **holding Loki's key** — arguably higher severity than the read-tool hole this PR closes.
+* **The footprint guard.** `lib/footprint.ps1:189` locates `powershell.exe` the same way.
+* **The offline read executor.** `lib/offline-agent.ps1` (`:220`, `:245`, `:283`) locates System32 / powershell.exe /
+  taskkill via `$env:WINDIR`, and its child PATH is **pin-to-only** — so a poisoned `WINDIR` there compromises the
+  *entire* read-child PATH plus its launcher.
+
+The fix for all of them is the same `[System.Environment]::SystemDirectory` this addendum adopts. They are
+**deliberately not bundled** here — each is a separate security core (`claude.ps1`, `footprint`, `offline-agent`) with
+its own mandatory Opus review, one focused PR per §8 — but this is a **near-term, tracked** follow-up, not an
+indefinite one (a dedicated hardening issue), because the credential-carrying launcher and the offline pin-to-only are
+as severe as the hole just closed. So the earlier "online twin closed" wording is scoped down to what actually landed:
+one PATH-resolution hole, not the whole class.
+
+**Context boundary (not a contradiction).** ADR-0012's trust of `%SystemRoot%\System32` is fine in *its* context —
+`setup.ps1` runs on the operator's **own, trusted** setup machine, not the compromised target. The class above is only
+a weakness at **runtime on the target**. Recorded so the asymmetry is a decision, not an accident.

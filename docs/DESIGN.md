@@ -308,7 +308,11 @@ CLAUDE_CONFIG_DIR             → <StickRoot>\home\.claude
 APPDATA, LOCALAPPDATA         → <StickRoot>\home\appdata   (own vars — not derived
                                                              from USERPROFILE)
 TEMP, TMP, TMPDIR             → <StickRoot>\temp
-PATH                          = <Stick>\tools\...; + $env:PATH  (read-only tools only)
+PATH                          = <Stick>\tools\...; + System32 dirs + $env:PATH  (bundled read-only
+                                                             tools first, then the REAL System32
+                                                             pinned ahead of the inherited PATH so a
+                                                             native read can't hit a planted .exe --
+                                                             ADR-0016 addendum, #50)
 CLAUDE_CODE_SKIP_PROMPT_HISTORY=1, DISABLE_TELEMETRY=1, DO_NOT_TRACK=1,
 DISABLE_UPDATES=1, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1,
 CLAUDE_CODE_DISABLE_AUTO_MEMORY=1, CLAUDE_CODE_CERT_STORE=system
