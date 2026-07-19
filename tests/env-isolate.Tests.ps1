@@ -5,6 +5,33 @@ BeforeAll {
     . "$PSScriptRoot\..\src\lib\env-isolate.ps1"
 }
 
+Describe 'Get-LokiSystemDirectory (tamper-resistant System32 source, issue #55)' {
+
+    It 'returns the OS system directory (a real, existing System32 path)' {
+        $d = Get-LokiSystemDirectory
+        $d | Should -Not -BeNullOrEmpty
+        (Test-Path -LiteralPath $d) | Should -BeTrue
+        $d | Should -BeLike '*[Ss]ystem32'
+    }
+
+    It 'reads the OS, NOT the mutable $env:SystemRoot / $env:WINDIR (break-once: a poisoned env cannot move it)' {
+        $realSys = Get-LokiSystemDirectory
+        $savedSR = $env:SystemRoot
+        $savedWD = $env:WINDIR
+        try {
+            $env:SystemRoot = 'C:\poison-systemroot'
+            $env:WINDIR     = 'C:\poison-windir'
+            # If the helper (or any site that uses it) ever derived System32 from these env vars, THIS would change.
+            Get-LokiSystemDirectory   | Should -Be $realSys
+            (Get-LokiSystemDirectory) | Should -Not -BeLike '*poison*'
+        }
+        finally {
+            $env:SystemRoot = $savedSR
+            $env:WINDIR     = $savedWD
+        }
+    }
+}
+
 Describe 'Get-LokiIsolatedEnv' {
 
     BeforeAll {

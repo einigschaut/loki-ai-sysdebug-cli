@@ -30,11 +30,20 @@
 #     not set to an empty string. Clears the stack afterward.
 Set-StrictMode -Version Latest
 
+function Get-LokiSystemDirectory {
+    # The Windows system directory (System32) from the OS itself: [System.Environment]::SystemDirectory wraps the Win32
+    # GetSystemDirectory (reads the kernel), NOT the mutable %SystemRoot%/%WINDIR% env vars, which a compromised target
+    # can repoint. Every security-critical spawn/PATH that locates a system binary at RUNTIME-ON-TARGET must use this,
+    # so a poisoned SystemRoot cannot steer it (issue #55, ADR-0016). ONE source of truth for the real System32 path.
+    param()
+    return [System.Environment]::SystemDirectory
+}
+
 function Get-LokiIsolatedEnv {
     param(
         [Parameter(Mandatory = $true)][string]$StickRoot,
         [string]$BasePath = $env:PATH,
-        [ValidateNotNullOrEmpty()][string]$SystemDirectory = [System.Environment]::SystemDirectory
+        [ValidateNotNullOrEmpty()][string]$SystemDirectory = (Get-LokiSystemDirectory)
     )
 
     $homeDir         = Join-Path $StickRoot 'home'

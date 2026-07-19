@@ -186,7 +186,9 @@ foreach ($v in @('USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'TEMP')) {
     [System.IO.File]::WriteAllText($scriptPath, $body, (New-Object System.Text.UTF8Encoding($false)))
 
     $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName = (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe')
+    # powershell.exe located via Get-LokiSystemDirectory (tamper-resistant OS answer), NOT the mutable %SystemRoot% --
+    # a poisoned SystemRoot on a compromised target must not steer this runtime-on-target spawn (#55).
+    $psi.FileName = (Join-Path (Get-LokiSystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe')
     # The only argument that can contain a space is the script path; it can never contain a quote (guid-named), so a
     # simple double-quote wrap is CommandLineToArgvW-correct here without pulling in the argv quoter from another lib.
     $psi.Arguments = '-NoProfile -ExecutionPolicy Bypass -File "' + $scriptPath + '"'

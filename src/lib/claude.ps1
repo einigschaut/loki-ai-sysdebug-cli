@@ -511,9 +511,13 @@ function Invoke-LokiClaude {
     # A `.cmd`/`.bat` shim (e.g. an npm/Volta-installed `claude.cmd`) cannot be launched by CreateProcess directly
     # (UseShellExecute=$false throws "not a valid Win32 application"); route it through cmd.exe /c. A native
     # `claude.exe` is spawned directly. (Best-effort; complex arg quoting through cmd is a pending live-test item.)
+    # cmd.exe is located via Get-LokiSystemDirectory ([System.Environment]::SystemDirectory / Win32 GetSystemDirectory)
+    # -- the tamper-resistant OS answer, NOT the mutable %SystemRoot%: this child carries the DECRYPTED credential, so a
+    # poisoned SystemRoot + a planted <poison>\System32\cmd.exe on a compromised target must not be able to steer the
+    # launch (issue #55, ADR-0016). The same source is used by the two other cmd.exe launchers below.
     $ext = ([System.IO.Path]::GetExtension([string]$plan.FilePath)).ToLowerInvariant()
     if ($ext -eq '.cmd' -or $ext -eq '.bat') {
-        $psi.FileName = (Join-Path $env:SystemRoot 'System32\cmd.exe')
+        $psi.FileName = (Join-Path (Get-LokiSystemDirectory) 'cmd.exe')
         $psi.Arguments = '/c ' + (ConvertTo-LokiArgString -ArgumentList @($plan.FilePath)) + ' ' + $plan.ArgString
     }
     else {
@@ -607,7 +611,7 @@ function Invoke-LokiClaudeInteractive {
     # Same `.cmd`/`.bat` routing as the headless path (CreateProcess cannot launch a batch file directly).
     $ext = ([System.IO.Path]::GetExtension([string]$plan.FilePath)).ToLowerInvariant()
     if ($ext -eq '.cmd' -or $ext -eq '.bat') {
-        $psi.FileName = (Join-Path $env:SystemRoot 'System32\cmd.exe')
+        $psi.FileName = (Join-Path (Get-LokiSystemDirectory) 'cmd.exe')
         $psi.Arguments = '/c ' + (ConvertTo-LokiArgString -ArgumentList @($plan.FilePath)) + ' ' + $plan.ArgString
     }
     else {
@@ -698,7 +702,7 @@ function Invoke-LokiClaudeSetupToken {
     # Same `.cmd`/`.bat` routing as the other spawns (CreateProcess cannot launch a batch file directly).
     $ext = ([System.IO.Path]::GetExtension([string]$filePath)).ToLowerInvariant()
     if ($ext -eq '.cmd' -or $ext -eq '.bat') {
-        $psi.FileName = (Join-Path $env:SystemRoot 'System32\cmd.exe')
+        $psi.FileName = (Join-Path (Get-LokiSystemDirectory) 'cmd.exe')
         $psi.Arguments = '/c ' + (ConvertTo-LokiArgString -ArgumentList @($filePath)) + ' ' + $argString
     }
     else {

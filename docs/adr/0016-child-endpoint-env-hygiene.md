@@ -148,3 +148,16 @@ one PATH-resolution hole, not the whole class.
 **Context boundary (not a contradiction).** ADR-0012's trust of `%SystemRoot%\System32` is fine in *its* context —
 `setup.ps1` runs on the operator's **own, trusted** setup machine, not the compromised target. The class above is only
 a weakness at **runtime on the target**. Recorded so the asymmetry is a decision, not an accident.
+
+### Part 3 landed (2026-07-19, issue #55) — the runtime-on-target sites now use the OS source
+
+The residual class above is **closed for every runtime-on-target site**. A single helper `Get-LokiSystemDirectory` (in
+this module) returns `[System.Environment]::SystemDirectory` (Win32 `GetSystemDirectory`, kernel-sourced, not
+env-derived), and the three cores now locate their system binaries through it: `lib/claude.ps1`'s three `cmd.exe`
+launchers (the credential-carrying ones), `lib/footprint.ps1`'s `powershell.exe`, and `lib/offline-agent.ps1`'s
+read-child PATH / `powershell.exe` / `taskkill.exe`. `Get-LokiIsolatedEnv`'s own System32 pin (the #52 fix) routes
+through the same helper too, so there is now **one** tamper-resistant source. Break-once tested: a poisoned
+`$env:SystemRoot`/`$env:WINDIR` no longer moves the helper or the offline child PATH (`tests/env-isolate.Tests.ps1`,
+`tests/offline-agent.Tests.ps1`). `setup.ps1` keeps `%SystemRoot%` by design (trusted setup machine, per the context
+boundary above). The **different** alias residual for the secret-at-rest (8.3/hardlink/ADS reads of `home\.env`) is
+tracked separately at #56.

@@ -217,8 +217,11 @@ function Get-LokiOfflineChildReadEnv {
     param([Parameter(Mandatory = $true)][System.Collections.IDictionary]$BaseEnv)
     $result = @{}
     foreach ($k in @($BaseEnv.Keys)) { $result[[string]$k] = [string]$BaseEnv[$k] }
-    $sys = Join-Path $env:WINDIR 'System32'
-    $result['PATH'] = '{0};{1};{2}' -f $sys, $env:WINDIR, (Join-Path $sys 'WindowsPowerShell\v1.0')
+    # System dirs from Get-LokiSystemDirectory (tamper-resistant OS answer), NOT the mutable %WINDIR%: this is the read
+    # child's PATH on a compromised target, so a poisoned WINDIR must not repoint it (issue #55).
+    $sys = Get-LokiSystemDirectory
+    $winDir = Split-Path -Path $sys -Parent
+    $result['PATH'] = '{0};{1};{2}' -f $sys, $winDir, (Join-Path $sys 'WindowsPowerShell\v1.0')
     foreach ($secret in $script:LokiOfflineChildScrubVars) {
         foreach ($existing in @($result.Keys)) {
             if ($existing -ieq $secret) { [void]$result.Remove($existing) }
@@ -242,7 +245,7 @@ function Invoke-LokiChildReadCommand {
         [Parameter(Mandatory = $true)][string]$CommandLine,
         [int]$TimeoutSec = 20
     )
-    $psExe = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $psExe = Join-Path (Get-LokiSystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'  # tamper-resistant source (#55)
     if (-not (Test-Path -LiteralPath $psExe)) { $psExe = 'powershell.exe' }  # fall back to PATH; still target 5.1
 
     # Pass the (already-gated) command as a base64 -EncodedCommand: it travels VERBATIM with no argument-quoting seam
@@ -280,7 +283,7 @@ function Invoke-LokiChildReadCommand {
         $timedOut = $true
         # taskkill /T kills the whole PROCESS TREE -- Process.Kill() on 5.1 is not a tree-kill, so a native grandchild
         # (pathping/tracert against an attacker host) would keep running and beaconing after the parent dies (S5).
-        try { & (Join-Path $env:WINDIR 'System32\taskkill.exe') '/F' '/T' '/PID' $p.Id 2>$null | Out-Null } catch { $null = $_ }
+        try { & (Join-Path (Get-LokiSystemDirectory) 'taskkill.exe') '/F' '/T' '/PID' $p.Id 2>$null | Out-Null } catch { $null = $_ }
         try { $p.Kill() } catch { $null = $_ }                    # fallback if taskkill is unavailable
         try { [void]$p.WaitForExit(2000) } catch { $null = $_ }
     }
