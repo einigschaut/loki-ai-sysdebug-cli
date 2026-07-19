@@ -323,7 +323,10 @@ function Get-LokiMemoryConsumer {
         # answer that matters and it does not depend on this.
         return , ([object[]]@())
     }
+    # Clamp -Top to >= 0: Select-Object -First rejects a negative count with a terminating error, and this line is
+    # OUTSIDE the try/catch above, so a negative -Top would crash rather than degrade. No caller passes one today;
+    # this keeps a future one graceful (an empty list, like the catch) instead of a landmine (#58).
     $sorted = @($rows | Sort-Object -Property @{ Expression = { [double]$_.ResidentGB } ; Descending = $true },
-        @{ Expression = { [string]$_.Name } } | Select-Object -First $Top)
+        @{ Expression = { [string]$_.Name } } | Select-Object -First ([math]::Max(0, $Top)))
     return , $sorted   # leading comma: the caller must ASSIGN (see Get-LokiTierFitReport)
 }

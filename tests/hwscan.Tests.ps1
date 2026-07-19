@@ -340,6 +340,15 @@ Describe 'Get-LokiHardwareProfile (impure; probes this machine)' {
 
 Describe 'Get-LokiMemoryConsumer (impure; probes this machine)' {
 
+    It 'a NEGATIVE -Top degrades to an empty list, never a crash -- Select-Object -First rejects a negative count (#58)' {
+        # This sort/select line is OUTSIDE the try/catch, so before the clamp a negative -Top threw uncaught. No caller
+        # passes one today; the clamp keeps a future one graceful (empty, like the catch). Remove [math]::Max(0, $Top)
+        # and this throws.
+        { Get-LokiMemoryConsumer -Top -1 } | Should -Not -Throw
+        $c = Get-LokiMemoryConsumer -Top -1   # ASSIGN first -- the function returns `, $sorted` (see its own note)
+        @($c).Count | Should -Be 0
+    }
+
     It 'never throws and reports the documented fields' {
         { Get-LokiMemoryConsumer } | Should -Not -Throw
         $c = Get-LokiMemoryConsumer -Top 3

@@ -458,6 +458,15 @@ Describe 'ConvertTo-LokiCollectSafeText' {
         ConvertTo-LokiCollectSafeText -Text $null | Should -Be ''
         ConvertTo-LokiCollectSafeText -Text '' | Should -Be ''
     }
+
+    It 'flattens the Unicode line/paragraph separators NEL/LS/PS, not only the C0 controls (#58)' {
+        # NEL (U+0085), LS (U+2028) and PS (U+2029) sit OUTSIDE [\x00-\x1F\x7F] but several renderers treat them as line
+        # breaks, so dump content could inject apparent line structure into the flattened report. Built via [char] codes
+        # so the test source stays ASCII. Drop the U+0085/U+2028/U+2029 members from the class and this reintroduces
+        # line breaks (the value would render across multiple lines instead of one).
+        $r = ConvertTo-LokiCollectSafeText -Text ("a" + [char]0x0085 + "b" + [char]0x2028 + "c" + [char]0x2029 + "d")
+        $r | Should -Be 'a b c d'
+    }
 }
 
 Describe 'Limit-LokiCollectText' {
