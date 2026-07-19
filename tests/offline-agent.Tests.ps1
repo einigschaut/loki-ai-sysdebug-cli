@@ -205,6 +205,106 @@ Describe 'Invoke-LokiOfflineAgentCommand (read-only gate: only a provable read r
     }
 }
 
+Describe 'Invoke-LokiOfflineAgentCommand -- Slice 2b confirm-gated mutations (SECURITY CORE, ADR-0022)' {
+
+    It 'a mutate with NO -ConfirmCallback stays refused (Slice 2a behaviour preserved)' {
+        Mock Invoke-LokiChildReadCommand { throw 'an unconfirmed mutate must never execute' }
+        $r = Invoke-LokiOfflineAgentCommand -CommandLine 'Restart-Service Spooler'
+        $r.Executed | Should -BeFalse
+        $r.Class    | Should -Be 'mutate'
+        Should -Invoke Invoke-LokiChildReadCommand -Times 0 -Exactly
+    }
+
+    It 'a mutate the operator APPROVES runs in the isolated child (Confirmed = $true)' {
+        Mock Invoke-LokiChildReadCommand { @{ Ok = $true; ExitCode = 0; StdOut = 'Service restarted'; StdErr = ''; TimedOut = $false } }
+        $r = Invoke-LokiOfflineAgentCommand -CommandLine 'Restart-Service Spooler' -ConfirmCallback { param($c, $rsn) $true }
+        $r.Executed  | Should -BeTrue
+        $r.Class     | Should -Be 'mutate'
+        $r.Confirmed | Should -BeTrue
+        $r.Output    | Should -Match 'Service restarted'
+        Should -Invoke Invoke-LokiChildReadCommand -Times 1 -Exactly
+    }
+
+    It 'a mutate the operator DECLINES is NOT executed (Declined = $true, executor never reached)' {
+        Mock Invoke-LokiChildReadCommand { throw 'a declined mutate must never execute' }
+        $r = Invoke-LokiOfflineAgentCommand -CommandLine 'Restart-Service Spooler' -ConfirmCallback { param($c, $rsn) $false }
+        $r.Executed | Should -BeFalse
+        $r.Declined | Should -BeTrue
+        $r.Reason   | Should -Be 'mutation-declined'
+        Should -Invoke Invoke-LokiChildReadCommand -Times 0 -Exactly
+    }
+
+    It 'a confirm callback that THROWS is treated as No (fail-safe), not executed' {
+        Mock Invoke-LokiChildReadCommand { throw 'a fail-safe-declined mutate must never execute' }
+        $r = Invoke-LokiOfflineAgentCommand -CommandLine 'Restart-Service Spooler' -ConfirmCallback { param($c, $rsn) throw 'confirm blew up' }
+        $r.Executed | Should -BeFalse
+        Should -Invoke Invoke-LokiChildReadCommand -Times 0 -Exactly
+    }
+
+    It 'BREAK-THE-GUARD: a DENIED command NEVER reaches the confirm callback and never executes (Class stays denied)' {
+        # An approving callback is injected: if a denied command ever reached it, the class would flip to mutate/declined.
+        # Class == denied proves the denied branch returned BEFORE the callback -- the never-confirmable guarantee.
+        Mock Invoke-LokiChildReadCommand { throw 'a denied command must never execute' }
+        $r = Invoke-LokiOfflineAgentCommand -CommandLine 'Get-Content home\.env' -ConfirmCallback { param($c, $rsn) $true }
+        $r.Executed | Should -BeFalse
+        $r.Class    | Should -Be 'denied'
+        Should -Invoke Invoke-LokiChildReadCommand -Times 0 -Exactly
+    }
+
+    It 'a read executes without being confirmed (Confirmed = $false), even with a callback present' {
+        Mock Invoke-LokiChildReadCommand { @{ Ok = $true; ExitCode = 0; StdOut = 'ok'; StdErr = ''; TimedOut = $false } }
+        $r = Invoke-LokiOfflineAgentCommand -CommandLine 'Get-Process' -ConfirmCallback { param($c, $rsn) $true }
+        $r.Executed  | Should -BeTrue
+        $r.Class     | Should -Be 'read'
+        $r.Confirmed | Should -BeFalse
+        Should -Invoke Invoke-LokiChildReadCommand -Times 1 -Exactly
+    }
+}
+
+Describe 'Confirm-LokiOfflineMutation + Test-LokiConfirmAnswer (Loki-side confirm UI, ADR-0022)' {
+
+    It 'Test-LokiConfirmAnswer: only an explicit yes is true (<answer>)' -ForEach @(
+        @{ answer = 'y';    expected = $true }
+        @{ answer = 'yes';  expected = $true }
+        @{ answer = 'Y';    expected = $true }
+        @{ answer = 'YES';  expected = $true }
+        @{ answer = 'j';    expected = $true }    # de
+        @{ answer = 'ja';   expected = $true }    # de
+        @{ answer = '';     expected = $false }   # default No
+        @{ answer = 'n';    expected = $false }
+        @{ answer = 'no';   expected = $false }
+        @{ answer = 'yeah'; expected = $false }   # not an exact affirmative
+        @{ answer = 'yo';   expected = $false }
+        @{ answer = ' y ';  expected = $true }    # trimmed
+    ) {
+        (Test-LokiConfirmAnswer -Answer $answer) | Should -Be $expected
+    }
+
+    It 'BREAK-THE-GUARD: Test-LokiConfirmAnswer distinguishes yes from no (not a constant)' {
+        (Test-LokiConfirmAnswer -Answer 'y') | Should -BeTrue
+        (Test-LokiConfirmAnswer -Answer 'n') | Should -BeFalse
+    }
+
+    It 'Confirm-LokiOfflineMutation fail-safe: a NON-interactive host refuses WITHOUT ever prompting' {
+        Mock Test-LokiHostInteractive { $false }
+        Mock Read-Host { throw 'must not prompt when non-interactive' }
+        Mock Write-LokiLine { }
+        Mock Get-LokiText { 'x' }
+        (Confirm-LokiOfflineMutation -CommandLine 'Restart-Service Spooler' -Reason 'mutation-requires-confirm') | Should -BeFalse
+        Should -Invoke Read-Host -Times 0 -Exactly
+    }
+
+    It 'Confirm-LokiOfflineMutation interactive: an explicit yes runs it, anything else does not' {
+        Mock Test-LokiHostInteractive { $true }
+        Mock Write-LokiLine { }
+        Mock Get-LokiText { 'x' }
+        Mock Read-Host { 'y' }
+        (Confirm-LokiOfflineMutation -CommandLine 'Restart-Service Spooler' -Reason 'r') | Should -BeTrue
+        Mock Read-Host { 'n' }
+        (Confirm-LokiOfflineMutation -CommandLine 'Restart-Service Spooler' -Reason 'r') | Should -BeFalse
+    }
+}
+
 Describe 'Get-LokiOfflineChildReadEnv (child env hardening: PATH pinned, secrets stripped)' {
     It 'pins PATH to the Windows system dirs so a PATH-planted binary elsewhere cannot resolve (S3)' {
         $e = Get-LokiOfflineChildReadEnv -BaseEnv @{ PATH = 'C:\evil;C:\other'; FOO = 'bar' }
@@ -296,6 +396,28 @@ Describe 'Invoke-LokiOfflineAgentTurnLoop (the capped multi-turn diagnose loop; 
         $r = Invoke-LokiOfflineAgentTurnLoop -BaseUri 'x' -Messages $script:seed -Tools @()
         $r.StopReason | Should -Be 'final'
         $r.Iterations | Should -Be 2
+    }
+
+    It 'a DECLINED mutation is fed back and the loop continues, not aborts (Slice 2b, ADR-0022)' {
+        Mock Invoke-LokiEngineChat {
+            if ((@($Messages)[-1]).role -eq 'tool') { @{ Ok = $true; Reason = 'ok'; ToolCalls = (New-ToolCall 'final_answer' '{"answer":"done"}' 'c2') } }
+            else { @{ Ok = $true; Reason = 'ok'; ToolCalls = (New-ToolCall 'run_command' '{"command":"Restart-Service Spooler"}') } }
+        }
+        Mock Invoke-LokiOfflineAgentCommand { @{ Executed = $false; Class = 'mutate'; Reason = 'mutation-declined'; Declined = $true } }
+        $r = Invoke-LokiOfflineAgentTurnLoop -BaseUri 'x' -Messages $script:seed -Tools @()
+        $r.StopReason | Should -Be 'final'
+        $r.Iterations | Should -Be 2
+    }
+
+    It 'threads the -ConfirmCallback down to the gated command (Slice 2b, ADR-0022)' {
+        Mock Invoke-LokiEngineChat {
+            if ((@($Messages)[-1]).role -eq 'tool') { @{ Ok = $true; Reason = 'ok'; ToolCalls = (New-ToolCall 'final_answer' '{"answer":"done"}' 'c2') } }
+            else { @{ Ok = $true; Reason = 'ok'; ToolCalls = (New-ToolCall 'run_command' '{"command":"Restart-Service Spooler"}') } }
+        }
+        Mock Invoke-LokiOfflineAgentCommand { @{ Executed = $true; Class = 'mutate'; Confirmed = $true; Reason = 'mutation-requires-confirm'; Output = 'ok'; Truncated = $false } }
+        $r = Invoke-LokiOfflineAgentTurnLoop -BaseUri 'x' -Messages $script:seed -Tools @() -ConfirmCallback { param($c, $rsn) $true }
+        $r.StopReason | Should -Be 'final'
+        Should -Invoke Invoke-LokiOfflineAgentCommand -Times 1 -Exactly -ParameterFilter { $null -ne $ConfirmCallback }
     }
 
     It 'the ITERATION cap stops a model that never concludes (never an unbounded loop)' {
