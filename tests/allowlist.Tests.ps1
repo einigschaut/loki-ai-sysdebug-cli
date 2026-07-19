@@ -431,3 +431,96 @@ Describe 'Resolve-LokiCommandDecision - side-effect/exfil deny (adversarial revi
         (Resolve-LokiCommandDecision -CommandLine 'Get-ChildItem C:\Windows\System32').Class | Should -Be 'read'
     }
 }
+
+Describe 'Resolve-LokiCommandDecision - wildcard secret-target bypass (adversarial review 2026-07-19, issue #54)' {
+
+    It 'HARD-denies a wildcard glob whose leaf resolves to the secret .env, though it never contains the literal ".env": <cmd>' -ForEach @(
+        @{ cmd = 'Get-Content home\.e*' }
+        @{ cmd = 'Get-Content home\.en?' }
+        @{ cmd = 'Get-Content home\[.]env' }
+        @{ cmd = 'Get-ChildItem home\*env*' }
+        @{ cmd = 'Select-String -Path home\.e* geheim' }   # Select-String reads file CONTENTS
+        @{ cmd = 'Get-Content .env*' }
+        @{ cmd = 'Get-Content C:\loki\home\.e*' }           # absolute path -- leaf-only match is path-form independent
+        @{ cmd = 'Get-Content "home\.e*"' }                 # double-quoted glob -- quote-trim keeps the leaf match
+        @{ cmd = "Get-Content 'home\.e*'" }                 # single-quoted glob
+        @{ cmd = 'Get-Content home\.e*\' }                  # trailing separator must not empty the leaf (review F2)
+        @{ cmd = 'Get-Content home\.e*/' }                  # forward-slash trailing separator
+    ) {
+        $d = Resolve-LokiCommandDecision -CommandLine $cmd
+        $d.Class  | Should -Be 'denied'
+        $d.Reason | Should -Be 'secret-target-blocked'
+    }
+
+    It 'HARD-denies a MUTATE that targets the secret via a glob (never merely confirmable): Remove-Item home\.e*' {
+        $d = Resolve-LokiCommandDecision -CommandLine 'Remove-Item home\.e*'
+        $d.Class  | Should -Be 'denied'
+        $d.Reason | Should -Be 'secret-target-blocked'
+    }
+
+    It 'a bare glob that scoops the secret directory is NOT auto-allowed (downgraded to mutate): <cmd>' -ForEach @(
+        @{ cmd = 'Get-Content home\*' }         # scoops every file in home, incl .env -- but leaf '*' is not secret-specific
+        @{ cmd = 'Get-ChildItem home\*' }
+    ) {
+        $d = Resolve-LokiCommandDecision -CommandLine $cmd
+        $d.Class  | Should -Be 'mutate'
+        $d.Reason | Should -Be 'read-downgraded-wildcard'
+    }
+
+    It 'an 8.3 SHORT NAME of the secret (ENV~1) is out of auto-allow -- aliases .env with no wildcard/no ".env" (review F1): <cmd>' -ForEach @(
+        @{ cmd = 'Get-Content home\ENV~1' }
+        @{ cmd = 'Get-Content home\env~1' }               # case-insensitive
+        @{ cmd = 'Select-String -Path home\ENV~1 sk-' }   # reads file CONTENTS
+        @{ cmd = 'Get-Item home\ENV~1' }
+    ) {
+        $d = Resolve-LokiCommandDecision -CommandLine $cmd
+        $d.Class  | Should -Be 'mutate'
+        $d.Reason | Should -Be 'read-downgraded-shortname'
+    }
+
+    It 'does NOT over-block an 8.3 name in a DIRECTORY segment (the leaf is a normal file): Get-Content C:\PROGRA~1\app\log.txt' {
+        (Resolve-LokiCommandDecision -CommandLine 'Get-Content C:\PROGRA~1\app\log.txt').Class | Should -Be 'read'
+    }
+
+    It 'a legit non-secret wildcard read is downgraded to mutate (confirm), NOT auto-allowed and NOT denied: <cmd>' -ForEach @(
+        @{ cmd = 'Get-Content C:\logs\*.log' }
+        @{ cmd = 'Get-ChildItem C:\Windows\Temp\*.txt' }
+        @{ cmd = 'Get-ChildItem C:\logs\*' }
+    ) {
+        $d = Resolve-LokiCommandDecision -CommandLine $cmd
+        $d.Class  | Should -Be 'mutate'
+        $d.Reason | Should -Be 'read-downgraded-wildcard'
+    }
+
+    It 'does NOT over-block a legit NON-wildcard read (no false positive, the auto-read path is intact): <cmd>' -ForEach @(
+        @{ cmd = 'Get-Content C:\logs\app.log' }
+        @{ cmd = 'Get-ChildItem C:\Windows' }
+        @{ cmd = 'ipconfig /all' }
+        @{ cmd = 'Get-Process' }
+        @{ cmd = 'Select-String -Path C:\logs\app.log error' }
+    ) {
+        (Resolve-LokiCommandDecision -CommandLine $cmd).Class | Should -Be 'read'
+    }
+
+    It 'BREAK-THE-GUARD: no glob OR 8.3 alias at the secret can ever come back as read: <cmd>' -ForEach @(
+        @{ cmd = 'Get-Content home\.e*' }
+        @{ cmd = 'Get-Content home\*' }
+        @{ cmd = 'Select-String -Path home\[.]env x' }
+        @{ cmd = 'Get-Content home\ENV~1' }        # 8.3 short-name alias (review F1)
+        @{ cmd = 'Get-Content home\.e*\' }         # trailing-separator glob (review F2)
+    ) {
+        (Resolve-LokiCommandDecision -CommandLine $cmd).Class | Should -Not -Be 'read'
+    }
+
+    It 'PROOF the wildcard guard is load-bearing: the pure classifier still auto-reads the glob; the resolver closes it' {
+        # The pure string classifier has no wildcard awareness -- it sees a Get-* read. That IS the bypass this fix closes.
+        Get-LokiCommandClass -CommandLine 'Get-Content home\.e*' | Should -Be 'read'
+        # The runtime resolver's wildcard block is what denies it. Delete that block and this assertion flips to 'read'.
+        (Resolve-LokiCommandDecision -CommandLine 'Get-Content home\.e*').Class | Should -Be 'denied'
+    }
+
+    It 'the glob really resolves to the secret (the bypass is real, not theoretical)' {
+        $wp = [System.Management.Automation.WildcardPattern]::new('home\.e*', [System.Management.Automation.WildcardOptions]::IgnoreCase)
+        $wp.IsMatch('home\.env') | Should -BeTrue
+    }
+}
