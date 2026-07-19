@@ -259,6 +259,22 @@ Describe 'Invoke-LokiOfflineAgentCommand -- Slice 2b confirm-gated mutations (SE
         $r.Confirmed | Should -BeFalse
         Should -Invoke Invoke-LokiChildReadCommand -Times 1 -Exactly
     }
+
+    It 'BREAK-THE-GUARD: a secret-SPECIFIC glob is denied and NEVER reaches the confirm callback (needs #54 in base): <cmd>' -ForEach @(
+        @{ cmd = 'Remove-Item home\.e*' }     # mutate-by-glob at the secret -- must be denied, NOT confirmable/executable
+        @{ cmd = 'Get-Content home\.e*' }      # read-by-glob at the secret -- must be denied, NOT auto-run
+        @{ cmd = 'Get-Content home\[.]env' }
+        @{ cmd = 'Get-ChildItem home\*env*' }
+    ) {
+        # With the #54 gate fix in this branch's base, a secret-specific glob classifies 'denied', so Slice 2b returns
+        # BEFORE the callback and never executes -- even when the callback would approve. This pins the #54 dependency:
+        # without it these would be a confirmable/auto-run path to the secret-at-rest (the review's CRITICAL-1).
+        Mock Invoke-LokiChildReadCommand { throw 'a secret-glob must never execute' }
+        $r = Invoke-LokiOfflineAgentCommand -CommandLine $cmd -ConfirmCallback { param($c, $rsn) $true }
+        $r.Executed | Should -BeFalse
+        $r.Class    | Should -Be 'denied'
+        Should -Invoke Invoke-LokiChildReadCommand -Times 0 -Exactly
+    }
 }
 
 Describe 'Confirm-LokiOfflineMutation + Test-LokiConfirmAnswer (Loki-side confirm UI, ADR-0022)' {
