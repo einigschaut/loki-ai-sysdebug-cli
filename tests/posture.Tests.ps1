@@ -96,6 +96,55 @@ Describe 'Get-LokiVolumePosture' {
         $r | Should -Not -BeNullOrEmpty
     }
 
+    Context 'Removable tracks the queried Win32_LogicalDisk.DriveType (value, not just key presence)' {
+        # The "keys exist" test above proves the SHAPE but never the VALUE: an inverted or hard-wired
+        # DriveType mapping would survive it. Removable is the signal ConvertTo-LokiDoctorChecks turns into
+        # the "running off an unencrypted removable stick" warning, so its value is load-bearing. These mock
+        # the CIM query and pin the boolean. DriveType 2 == "Removable Disk"; everything else is not-removable.
+        # Test-LokiElevated is pinned $false so the BitLocker probe stays a no-op and cannot colour the result.
+        # Note the $null trap: `Should -BeFalse` also passes for $null (`-not $null` is $true), so each $false
+        # case carries an `-is [bool]` companion that a $null sneaking through would fail.
+
+        It 'DriveType 2 (removable media) -> $true' {
+            Mock Test-LokiElevated { $false }
+            Mock Get-CimInstance { [pscustomobject]@{ DriveType = 2 } }
+            $r = Get-LokiVolumePosture -Path $script:Work
+            $r.Removable | Should -BeTrue
+            ($r.Removable -is [bool]) | Should -BeTrue
+        }
+
+        It 'DriveType 3 (fixed local disk) -> $false (a real bool, not $null)' {
+            Mock Test-LokiElevated { $false }
+            Mock Get-CimInstance { [pscustomobject]@{ DriveType = 3 } }
+            $r = Get-LokiVolumePosture -Path $script:Work
+            $r.Removable | Should -BeFalse
+            ($r.Removable -is [bool]) | Should -BeTrue
+        }
+
+        It 'DriveType 5 (CD-ROM) is also not-removable -> $false (only 2 counts as removable)' {
+            Mock Test-LokiElevated { $false }
+            Mock Get-CimInstance { [pscustomobject]@{ DriveType = 5 } }
+            $r = Get-LokiVolumePosture -Path $script:Work
+            $r.Removable | Should -BeFalse
+            ($r.Removable -is [bool]) | Should -BeTrue
+        }
+
+        It 'a CIM query that throws degrades Removable to unknown ($null), never outward' {
+            Mock Test-LokiElevated { $false }
+            Mock Get-CimInstance { throw 'WMI/CIM unavailable' }
+            { Get-LokiVolumePosture -Path $script:Work } | Should -Not -Throw
+            (Get-LokiVolumePosture -Path $script:Work).Removable | Should -BeNullOrEmpty
+        }
+
+        It 'a query that returns no disk row -> $false (asked and found nothing removable), not unknown' {
+            Mock Test-LokiElevated { $false }
+            Mock Get-CimInstance { $null }
+            $r = Get-LokiVolumePosture -Path $script:Work
+            $r.Removable | Should -BeFalse
+            ($r.Removable -is [bool]) | Should -BeTrue
+        }
+    }
+
     Context 'the BitLocker probe is not paid for when it cannot succeed' {
 
         It 'BREAK-THE-GUARD: without provable elevation the BitLocker cmdlet is never called' {
