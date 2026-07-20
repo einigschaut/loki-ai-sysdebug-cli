@@ -68,6 +68,10 @@ function Invoke-LokiCmd_scan {
             Write-LokiErr (Get-LokiText 'scan.engineMissing')
             return (Get-LokiExitCode 'GeneralError')
         }
+        if ($res.Reason -eq 'cmd-shim-unsafe') {
+            Write-LokiErr (Get-LokiText 'scan.engineShimUnsafe')
+            return (Get-LokiExitCode 'GeneralError')
+        }
         if ($res.Reason -eq 'timeout') {
             Write-LokiErr (Get-LokiText 'scan.timeout')
             return (Get-LokiExitCode 'GeneralError')

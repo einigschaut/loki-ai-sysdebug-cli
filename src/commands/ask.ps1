@@ -45,6 +45,10 @@ function Invoke-LokiCmd_ask {
             Write-LokiErr (Get-LokiText 'ask.engineMissing')
             return (Get-LokiExitCode 'GeneralError')
         }
+        if ($res.Reason -eq 'cmd-shim-unsafe') {
+            Write-LokiErr (Get-LokiText 'ask.engineShimUnsafe')
+            return (Get-LokiExitCode 'GeneralError')
+        }
         if ($res.Reason -eq 'timeout') {
             Write-LokiErr (Get-LokiText 'ask.timeout')
             return (Get-LokiExitCode 'GeneralError')

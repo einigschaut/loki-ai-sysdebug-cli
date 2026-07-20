@@ -120,6 +120,7 @@
     'ask.working'               = 'Asking the online engine (read-only diagnosis)...'
     'ask.authMissing'           = "No credential set for the online engine. Run 'loki auth login' (Claude subscription or API key)."
     'ask.engineMissing'         = 'Claude Code (the `claude` CLI) was not found. Install it to use the online engine.'
+    'ask.engineShimUnsafe'      = 'Claude resolved to a `.cmd`/`.bat` shim, and this request contains characters cmd.exe would reinterpret (e.g. %). Point Loki at a native `claude.exe` to run it safely.'
     'ask.timeout'               = 'The online engine did not respond in time.'
     'ask.failed'                = 'The online engine could not complete the request.'
     'ask.cost'                  = 'Cost: ${0} USD'
@@ -130,6 +131,7 @@
     'scan.working'              = 'Scanning {0} with the online engine (read-only diagnosis)...'
     'scan.authMissing'          = "No credential set for the online engine. Run 'loki auth login' (Claude subscription or API key)."
     'scan.engineMissing'        = 'Claude Code (the `claude` CLI) was not found. Install it to use the online engine.'
+    'scan.engineShimUnsafe'     = 'Claude resolved to a `.cmd`/`.bat` shim, and this request contains characters cmd.exe would reinterpret (e.g. %). Point Loki at a native `claude.exe` to run it safely.'
     'scan.timeout'              = 'The online engine did not respond in time.'
     'scan.failed'               = 'The online engine could not complete the scan.'
     'scan.cost'                 = 'Cost: ${0} USD'
@@ -139,6 +141,7 @@
     'chat.starting'             = 'Starting an interactive diagnostic session (read-only auto, changes need confirmation)...'
     'chat.authMissing'          = "No credential set for the online engine. Run 'loki auth login' (Claude subscription or API key)."
     'chat.engineMissing'        = 'Claude Code (the `claude` CLI) was not found. Install it to use the online engine.'
+    'chat.engineShimUnsafe'     = 'Claude resolved to a `.cmd`/`.bat` shim, and this request contains characters cmd.exe would reinterpret (e.g. %). Point Loki at a native `claude.exe` to start the session safely.'
     'chat.ended'                = 'Session ended.'
     'chat.failed'               = 'The online engine could not start the interactive session.'
 
