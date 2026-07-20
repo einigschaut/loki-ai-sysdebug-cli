@@ -44,6 +44,16 @@ Describe 'Get-LokiText - lookup, fallback, formatting' {
         Get-LokiText -Key 'error.didYouMean' -ArgumentList @('version') | Should -Be "Did you mean 'loki version'?"
     }
 
+    It 'formats a FALSY sole argument (0 / empty) instead of dropping it -- the guard is a null check, not truthiness (#58)' {
+        Set-LokiLocale -Locale 'en' | Out-Null
+        # @(0.0) collapses to $false in a bare boolean test (PowerShell unrolls a 1-item array to its element), which
+        # used to SKIP formatting and render a literal '{0}' for a legitimate zero. Delete the `$null -ne` guard and
+        # each of these renders the placeholder instead of the value.
+        Get-LokiText -Key '{0}'       -ArgumentList @([double]0.0) | Should -Be '0'
+        Get-LokiText -Key 'Cost: {0}' -ArgumentList @([int]0)      | Should -Be 'Cost: 0'
+        Get-LokiText -Key '[{0}]'     -ArgumentList @('')          | Should -Be '[]'
+    }
+
     Context 'numbers follow the MESSAGE locale, not the machine' {
         # Every value here has a FRACTIONAL PART on purpose. This whole bug survived because the one pre-existing
         # test that formatted numbers used 44 and 16 -- both whole -- so en-US and de-DE rendered identically and the

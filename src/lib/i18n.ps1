@@ -127,7 +127,11 @@ function Get-LokiText {
     }
     if ($null -eq $text) { $text = $Key }
 
-    if ($ArgumentList -and $ArgumentList.Count -gt 0) {
+    # `$null -ne $ArgumentList`, NOT a bare `$ArgumentList`: a single-element list whose sole element is falsy --
+    # @(0.0), @(0), @(''), @($false) -- collapses to $false in a boolean test (PowerShell unrolls a 1-item array to
+    # its element), which would SKIP formatting and render a literal `{0}` for a legitimate zero/empty argument
+    # (#58: e.g. a $0.00 cost). The explicit null check + Count is value-agnostic.
+    if ($null -ne $ArgumentList -and $ArgumentList.Count -gt 0) {
         # NOT `$text -f $ArgumentList`: the -f operator formats in the ambient CurrentCulture, which is a property of
         # the machine, not of the message. See the note at the top of this file.
         return [string]::Format($script:LokiI18nCulture, $text, $ArgumentList)

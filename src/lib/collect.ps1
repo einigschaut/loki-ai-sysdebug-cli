@@ -647,8 +647,11 @@ function ConvertTo-LokiCollectSafeText {
     if ($null -eq $Text) { return '' }
     $s = [string]$Text
     if ($s.Length -eq 0) { return '' }
-    # C0 controls + DEL -> a space, then collapse the runs a CRLF pair or an indented block would leave behind.
-    $s = [regex]::Replace($s, '[\x00-\x1F\x7F]', ' ')
+    # C0 controls + DEL, plus the Unicode line/paragraph separators NEL (U+0085), LS (U+2028) and PS (U+2029) -> a
+    # space. The latter three are NOT in the C0 range but several renderers treat them as line breaks, so leaving them
+    # through would let dump content inject apparent line structure into the flattened human report (#58). Escaped in the
+    # class (ASCII source, no BOM). Then collapse the runs a CRLF pair or an indented block would leave behind.
+    $s = [regex]::Replace($s, '[\x00-\x1F\x7F\u0085\u2028\u2029]', ' ')
     $s = [regex]::Replace($s, ' {2,}', ' ')
     return $s.Trim()
 }
