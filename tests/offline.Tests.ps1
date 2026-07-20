@@ -8,6 +8,7 @@ BeforeAll {
     . "$PSScriptRoot\..\src\lib\collect.ps1"   # ConvertTo-LokiCollectText, for Read-LokiOfflineDump's .json path
     . "$PSScriptRoot\..\src\lib\engine.ps1"    # Get-LokiEngineManifest (mocked in the command tests)
     . "$PSScriptRoot\..\src\lib\models.ps1"    # Get-LokiModelManifest / Get-LokiModelLayout
+    . "$PSScriptRoot\..\src\lib\hwscan.ps1"    # Get-LokiModelRamLimit -- the RAM budget Resolve-LokiOfflineCtxInputs reuses
     . "$PSScriptRoot\..\src\lib\agent.ps1"     # Invoke-LokiWithEngine (mocked -- the preflight guard lives here)
     . "$PSScriptRoot\..\src\lib\offline.ps1"
     . "$PSScriptRoot\..\src\commands\offline.ps1"
@@ -66,6 +67,107 @@ Describe 'Get-LokiOfflineContextSize (the context policy ADR-0015 left to the co
     }
     It 'rejects a non-positive model max rather than inventing a window' {
         { Get-LokiOfflineContextSize -ModelMaxContext 0 -DumpChars 100 } | Should -Throw
+    }
+}
+
+Describe 'Get-LokiKvBytesPerToken (F16 KV cost of one token; ADR-0025)' {
+    It 'computes 2 * Layers * KVHeads * HeadDim * 2 (F16) -- small-tier ground truth' {
+        # Cross-verified against the Qwen3-4B GGUF header (block_count=36, head_count_kv=8, key_length=128).
+        Get-LokiKvBytesPerToken -Layers 36 -KVHeads 8 -HeadDim 128 | Should -Be 147456
+    }
+    It 'scales with each dimension: the 32B tier (64 layers) costs the most per token' {
+        Get-LokiKvBytesPerToken -Layers 64 -KVHeads 8 -HeadDim 128 | Should -Be 262144
+    }
+    It 'returns a [long] -- a full window times this must not overflow [int]' {
+        Get-LokiKvBytesPerToken -Layers 36 -KVHeads 8 -HeadDim 128 | Should -BeOfType [long]
+    }
+    It 'returns 0 on a non-positive geometry field rather than inventing a cost (break-the-guard)' -ForEach @(
+        @{ L = 0; H = 8; D = 128 }, @{ L = 36; H = 0; D = 128 }, @{ L = 36; H = 8; D = 0 }
+    ) {
+        Get-LokiKvBytesPerToken -Layers $L -KVHeads $H -HeadDim $D | Should -Be 0
+    }
+}
+
+Describe 'Get-LokiOfflineContextSize -- RAM-aware adaptive ceiling (ADR-0025)' {
+    # $bpt = the small tier's F16 KV cost/token (2*36*8*128*2). A BIG dump (2 MB) is used wherever the ceiling must
+    # bind; the point of every case is what the ceiling does, not the dump.
+    It 'a plentiful RAM budget lets a huge dump exceed the old fixed 16384, up to the model max' {
+        # ~40 GB free for KV / 144 KiB per token >> the 262144 model max -> the model max binds, not 16384.
+        Get-LokiOfflineContextSize -ModelMaxContext 262144 -DumpChars 2000000 `
+            -KvBudgetBytes ([long]40 * 1GB) -KvBytesPerToken 147456 | Should -Be 262144
+    }
+    It 'a mid RAM budget caps a huge dump between the floor and the model max, well above 16384' {
+        # 4 GB / 147456 = 29127 -> snap DOWN to a multiple of 256 = 28928.
+        Get-LokiOfflineContextSize -ModelMaxContext 262144 -DumpChars 2000000 `
+            -KvBudgetBytes ([long]4 * 1GB) -KvBytesPerToken 147456 | Should -Be 28928
+    }
+    It 'a TIGHT RAM budget caps BELOW the old 16384 -- the OOM the fixed proxy would have allowed' {
+        # 0.45 GB / 147456 = 3276 -> snap to 3072. The fixed proxy would have said 16384 (KV ~2.3 GB -> OOM here).
+        Get-LokiOfflineContextSize -ModelMaxContext 262144 -DumpChars 2000000 `
+            -KvBudgetBytes ([long][math]::Round(0.45 * 1GB)) -KvBytesPerToken 147456 | Should -Be 3072
+    }
+    It 'never pushes the window below the floor, however tiny the budget (break-the-guard)' {
+        # 1 KB budget -> 0 tokens -> floored at LokiOfflineCtxFloor (2048), then capped by the model max.
+        Get-LokiOfflineContextSize -ModelMaxContext 262144 -DumpChars 2000000 `
+            -KvBudgetBytes 1024 -KvBytesPerToken 147456 | Should -Be 2048
+    }
+    It 'stays a multiple of 256 even when the byte budget does not divide evenly' {
+        $ctx = Get-LokiOfflineContextSize -ModelMaxContext 262144 -DumpChars 2000000 `
+            -KvBudgetBytes 500000000 -KvBytesPerToken 147456
+        ($ctx % 256) | Should -Be 0
+    }
+    It 'leaves a small dump unaffected by the budget: the ceiling only binds when the dump is large' {
+        $withBudget = Get-LokiOfflineContextSize -ModelMaxContext 262144 -DumpChars 2500 `
+            -KvBudgetBytes ([long]40 * 1GB) -KvBytesPerToken 147456
+        $machineBlind = Get-LokiOfflineContextSize -ModelMaxContext 262144 -DumpChars 2500
+        $withBudget | Should -Be $machineBlind
+    }
+    It 'falls back to the fixed proxy when RAM is unknown (KvBudgetBytes = -1), even with geometry known' {
+        Get-LokiOfflineContextSize -ModelMaxContext 262144 -DumpChars 2000000 `
+            -KvBudgetBytes -1 -KvBytesPerToken 147456 | Should -Be 16384
+    }
+    It 'falls back to the fixed proxy when the geometry is unknown (KvBytesPerToken = 0), even with RAM known' {
+        Get-LokiOfflineContextSize -ModelMaxContext 262144 -DumpChars 2000000 `
+            -KvBudgetBytes ([long]40 * 1GB) -KvBytesPerToken 0 | Should -Be 16384
+    }
+}
+
+Describe 'Resolve-LokiOfflineCtxInputs (geometry + RAM -> the two ceiling inputs; ADR-0025)' {
+    BeforeAll {
+        $script:modelSmall = @{ Id = 'small'; ResidentGB = 4.5; ContextTokens = 262144
+            KVCache = @{ Layers = 36; KVHeads = 8; HeadDim = 128 } }
+    }
+    It 'derives KvBytesPerToken from the model geometry' {
+        $r = Resolve-LokiOfflineCtxInputs -Model $script:modelSmall -HardwareProfile @{ TotalRamGB = 16.0; AvailableRamGB = 10.0 }
+        $r.KvBytesPerToken | Should -Be 147456
+    }
+    It 'derives a positive KvBudgetBytes ~= 0.9 * (usable-now - resident) from the machine RAM' {
+        # usable-now = 10 - 1.5 = 8.5; minus resident 4.5 = 4.0 GB; * 0.9 = 3.6 GB.
+        $r = Resolve-LokiOfflineCtxInputs -Model $script:modelSmall -HardwareProfile @{ TotalRamGB = 16.0; AvailableRamGB = 10.0 }
+        $r.KvBudgetBytes | Should -BeGreaterThan (3.5 * 1GB)
+        $r.KvBudgetBytes | Should -BeLessThan (3.7 * 1GB)
+    }
+    It 'returns KvBudgetBytes = -1 when RAM is unknown (probe gave $null) -> fixed proxy upstream' {
+        $r = Resolve-LokiOfflineCtxInputs -Model $script:modelSmall -HardwareProfile @{ TotalRamGB = $null; AvailableRamGB = $null }
+        $r.KvBudgetBytes | Should -Be -1
+        $r.KvBytesPerToken | Should -Be 147456   # geometry is a model fact, independent of the machine RAM
+    }
+    It 'returns KvBudgetBytes = -1 when RAM is implausible (available > total)' {
+        $r = Resolve-LokiOfflineCtxInputs -Model $script:modelSmall -HardwareProfile @{ TotalRamGB = 4.0; AvailableRamGB = 64.0 }
+        $r.KvBudgetBytes | Should -Be -1
+    }
+    It 'returns KvBytesPerToken = 0 when the model has no KVCache (older-shaped entry) -> fixed proxy upstream' {
+        $noGeom = @{ Id = 'x'; ResidentGB = 4.5; ContextTokens = 262144 }
+        $r = Resolve-LokiOfflineCtxInputs -Model $noGeom -HardwareProfile @{ TotalRamGB = 16.0; AvailableRamGB = 10.0 }
+        $r.KvBytesPerToken | Should -Be 0
+        $r.KvBudgetBytes | Should -BeGreaterThan 0   # the RAM side is still computed
+    }
+    It 'end-to-end: a tight machine yields a smaller window than the fixed proxy for a big dump' {
+        $tight = Resolve-LokiOfflineCtxInputs -Model $script:modelSmall -HardwareProfile @{ TotalRamGB = 8.0; AvailableRamGB = 6.5 }
+        $ctx = Get-LokiOfflineContextSize -ModelMaxContext 262144 -DumpChars 2000000 `
+            -KvBudgetBytes $tight.KvBudgetBytes -KvBytesPerToken $tight.KvBytesPerToken
+        $ctx | Should -BeLessThan 16384
+        $ctx | Should -BeGreaterOrEqual 2048
     }
 }
 

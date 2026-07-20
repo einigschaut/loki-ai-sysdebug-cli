@@ -12,6 +12,15 @@
 #
 # Quant = Q4_K_M throughout (community size/quality knee; best fit for CPU diagnostics). Model picks are the
 # best-in-class FREE model per size class as of 2026-07 (see ADR-0011 for the benchmark rationale + alternates).
+#
+# KVCache = the model's attention geometry, used to size the offline context window to the machine's free RAM
+# (ADR-0025). KV-cache bytes/token at llama-server's default F16 cache = 2 (K and V) * Layers * KVHeads * HeadDim * 2.
+# Pinned, like Sha256, from an authoritative source and NOT hand-guessed: each base model's config.json
+# (Layers = num_hidden_layers, KVHeads = num_key_value_heads, HeadDim = head_dim -- and where head_dim is absent,
+# hidden_size / num_attention_heads, exactly as llama.cpp derives it). Cross-verified against the small tier's GGUF
+# header (block_count=36, head_count_kv=8, key_length=128 -> matches). Wrong-HIGH is safe (a smaller window than the
+# RAM could hold); wrong-LOW could over-fill RAM -- so tests/offline.live.Tests.ps1 re-reads any INSTALLED GGUF's
+# header and fails if it disagrees with the geometry below.
 @{
     Models = @(
         @{
@@ -25,6 +34,7 @@
             SizeBytes     = 1107409472
             ResidentGB      = 2.5
             ContextTokens = 32768
+            KVCache       = @{ Layers = 28; KVHeads = 8; HeadDim = 128 }
             Default       = $false
             Note          = 'Low-RAM fallback. Universal llama.cpp support (pure transformer).'
         },
@@ -39,6 +49,7 @@
             SizeBytes     = 2497281120
             ResidentGB      = 4.5
             ContextTokens = 262144
+            KVCache       = @{ Layers = 36; KVHeads = 8; HeadDim = 128 }
             Default       = $true
             Note          = 'Recommended default. Best small free model; non-thinking (concise); 262K context.'
         },
@@ -53,6 +64,7 @@
             SizeBytes     = 5027784512
             ResidentGB      = 7.0
             ContextTokens = 32768
+            KVCache       = @{ Layers = 36; KVHeads = 8; HeadDim = 128 }
             Default       = $false
             Note          = 'Higher-accuracy mid tier. Best verified free ~8B (IFEval/MMLU-Pro).'
         },
@@ -67,6 +79,7 @@
             SizeBytes     = 9053114816
             ResidentGB      = 12.0
             ContextTokens = 16384
+            KVCache       = @{ Layers = 40; KVHeads = 10; HeadDim = 128 }
             Default       = $false
             Note          = 'Best reasoning-per-token at 14B (MIT). 16K context -> chunk long logs.'
         },
@@ -81,6 +94,7 @@
             SizeBytes     = 9001753632
             ResidentGB      = 12.0
             ContextTokens = 131072
+            KVCache       = @{ Layers = 40; KVHeads = 8; HeadDim = 128 }
             Default       = $false
             Note          = 'Large alternative for long / German logs (131K context, Apache).'
         },
@@ -95,6 +109,7 @@
             SizeBytes     = 14333908672
             ResidentGB      = 18.0
             ContextTokens = 32768
+            KVCache       = @{ Layers = 40; KVHeads = 8; HeadDim = 128 }
             Default       = $false
             Note          = 'Practical CPU ceiling: text-only 24B, top instruction-following (IFEval 82.9), Apache.'
         },
@@ -109,6 +124,7 @@
             SizeBytes     = 19762149696
             ResidentGB      = 24.0
             ContextTokens = 32768
+            KVCache       = @{ Layers = 64; KVHeads = 8; HeadDim = 128 }
             Default       = $false
             Note          = 'Highest free reasoning ceiling. Slow on CPU (~1-2 tok/s); needs ~24-32 GB RAM.'
         }

@@ -109,6 +109,7 @@ BeforeAll {
             Id = 'nano'; Model = 'Test-1.7B'; Tier = 'Nano'; License = 'Apache-2.0'
             Url = 'https://example.invalid/nano.gguf'; FileName = 'nano.gguf'
             Sha256 = '$modelHash'; SizeBytes = $modelSize; ResidentGB = 2.5; ContextTokens = 32768
+            KVCache = @{ Layers = 28; KVHeads = 8; HeadDim = 128 }
             Default = `$true
         }
     )
