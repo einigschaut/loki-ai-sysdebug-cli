@@ -120,6 +120,13 @@ Describe 'Command chat' {
             $r.AllText | Should -BeLike '*claude*'
         }
 
+        It 'cmd-shim-unsafe -> GeneralError exit with the actionable native-exe message (issue #58)' {
+            Mock Invoke-LokiClaudeInteractive { @{ Ok = $false; Reason = 'cmd-shim-unsafe' } }
+            $r = Invoke-ChatCommand -Context (New-TestChatContext)
+            $r.Code | Should -Be (Get-LokiExitCode 'GeneralError')
+            $r.AllText | Should -BeLike '*claude.exe*'
+        }
+
         It 'a generic build failure -> GeneralError exit' {
             Mock Invoke-LokiClaudeInteractive { @{ Ok = $false; Reason = 'some-other-failure' } }
             $r = Invoke-ChatCommand -Context (New-TestChatContext)

@@ -38,8 +38,10 @@
 #       Reason 'cmd-shim-unsafe') when any argument is cmd-unsafe (issue #58), so the spawn wrappers return that refusal.
 #   Get-LokiClaudeCommand [-Override <string>] -> [string] path, or $null if `claude` cannot be resolved.
 #   Get-LokiClaudeInvocation -Prompt <string> -AppRoot <string> -Config <hashtable> [-Model] [-PermissionMode]
-#       [-MaxBudgetUsd] [-ClaudePath] [-Secret] [-Interactive] -> [hashtable]{ Ok; Reason; FilePath; ArgString;
-#       ChildEnv; SettingsPath; SettingsJson }  (Ok=$false with Reason 'claude-not-found'|'auth-missing' short-circuits).
+#       [-MaxBudgetUsd] [-ClaudePath] [-Secret] [-Interactive] -> [hashtable]{ Ok; Reason; FilePath; ArgString; ArgList;
+#       ChildEnv; SettingsPath; SettingsJson; Model }  (Ok=$false Reason 'claude-not-found'|'auth-missing' short-circuits).
+#       ArgList is the argument ARRAY the spawn wrappers hand to Get-LokiChildProcessTarget (ArgString is its joined form,
+#       kept as the tested "secret never in argv" contract).
 #       PURE-ISH + testable: builds the full invocation WITHOUT spawning anything. The SECRET lands ONLY in
 #       ChildEnv (ANTHROPIC_API_KEY), NEVER in ArgString -- a unit test asserts exactly this (CLAUDE.md section 5).
 #       -Interactive builds the chat form: no -p (claude runs attached to the terminal), the chat charter, and
@@ -402,6 +404,16 @@ function Get-LokiChildProcessTarget {
     $ext = ([System.IO.Path]::GetExtension([string]$FilePath)).ToLowerInvariant()
     if (($ext -ne '.cmd') -and ($ext -ne '.bat')) {
         return @{ Ok = $true; Reason = 'ready'; FileName = $FilePath; Arguments = (ConvertTo-LokiArgString -ArgumentList $ArgumentList) }
+    }
+    # cmd's `/c` rule strips the FIRST and LAST quote of the whole line whenever the line BEGINS with a quote -- i.e.
+    # when the shim path (always the first token) is quoted because it contains whitespace. That parity shift re-exposes
+    # a following QUOTED metacharacter OUTSIDE quotes, so a gate-allowed quoted `&` in a later argument injects a command
+    # into THIS credential-bearing child (adversarial review 2026-07-20, real-process repro). Refuse a would-be-quoted
+    # shim path so the /c line never opens with a quote; a bare (whitespace-free) shim path keeps every argument's quotes
+    # intact and the bare/quoted tier sound. A native .exe is spawned directly and never reaches here; a literal `"` in
+    # the path is additionally caught by the per-argument scan below.
+    if ($FilePath -match '\s') {
+        return @{ Ok = $false; Reason = 'cmd-shim-unsafe'; FileName = $null; Arguments = $null }
     }
     foreach ($a in (@($FilePath) + $ArgumentList)) {
         if (Test-LokiCmdShimArgUnsafe -Argument ([string]$a)) {

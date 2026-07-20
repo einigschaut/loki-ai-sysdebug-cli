@@ -27,6 +27,12 @@ review made the hazards concrete:
   CommandLineToArgvW convention), but cmd.exe does **not** honor `\"` — it toggles quote state on every `"`. So a `"`
   closes the quote early and re-exposes any following metacharacter: `a"&calc` becomes `... a\ ` (quoted) then `&calc`
   (unquoted) → cmd runs `calc`. **CR/LF** likewise end the `/c` line and begin a fresh command.
+* **cmd's `/c` whole-line quote-strip (found by adversarial review, 2026-07-20).** When the `/c` command line *begins*
+  with a quote — i.e. when the shim PATH (always the first token) is quoted because it contains **whitespace** (an npm
+  shim under `C:\Users\John Doe\…`) — cmd strips the outer quote pair and shifts quote parity, so a **quoted** later
+  argument's metacharacter (a `&` the per-argument rule allowed *because* it was quoted) lands OUTSIDE quotes and
+  executes. An injected `& set` / `& reg query` then reads the secret from the child env with **no `%` at all**. This is
+  a whole-line property the per-argument view misses; a real-process test reproduces the injection.
 
 The failure is reachable only on a shim-only machine (the native-`.exe` path spawns directly and never touches cmd.exe),
 but on such a machine the credential-bearing launch is exactly the one that must not leak.
@@ -46,8 +52,12 @@ all three claude spawns (`Invoke-LokiClaude`, `Invoke-LokiClaudeInteractive`, `I
   re-exposes a following metacharacter), and CR/LF (they break the `/c` line). **Bare-only**: a command metacharacter
   (`& | < > ^ ( )`), unsafe only when the argument would be emitted **without** quotes — and the bare/quoted predicate
   **mirrors `ConvertTo-LokiArgString` exactly**, so the gate never trips on the structural quotes that function adds.
-  Any unsafe argument → `Ok=$false, Reason 'cmd-shim-unsafe'`. The spawn wrappers surface that as a refusal, and
-  `ask`/`scan`/`chat` print an actionable message (`*.engineShimUnsafe`: point Loki at a native `claude.exe`).
+* **Plus one whole-line rule:** the shim **path** must not contain whitespace, so the `/c` line never opens with a quote
+  and cmd performs no whole-line quote-strip. The bare/quoted argument tier is sound only while the first token is bare;
+  a would-be-quoted shim path is refused (this also fixes the pre-existing "spaces-in-shim-path doesn't launch" bug).
+* Any unsafe argument **or** a whitespace shim path → `Ok=$false, Reason 'cmd-shim-unsafe'`. The spawn wrappers surface
+  that as a refusal, and `ask`/`scan`/`chat` print an actionable message (`*.engineShimUnsafe`: point Loki at a native
+  `claude.exe`).
 
 **Why fail closed rather than escape.** Correctly escaping arbitrary arguments for cmd.exe's two parsing layers (cmd
 first, then the shim's CommandLineToArgvW) is a known-hard, never-live-tested problem — the same class as CVE-2024-24576
@@ -67,13 +77,18 @@ prompts — is unaffected.
   injection, on the `.cmd`/`.bat` route. A real-process test proves cmd.exe **does** expand a child-env secret when
   ungated (positive control) and that the gate refuses that exact argument.
 * **Capability trade (documented, not silent — CLAUDE.md §8):** on a shim-only machine (npm-global install with no
-  native `claude.exe`), a prompt — or a stick path — containing `%`, `!`, or a bare command metacharacter is refused with
-  an actionable message (install / point Loki at a native `claude.exe`). This is rare and strictly safer than silently
-  corrupting the prompt or leaking the credential. The offline engine is unaffected.
-* **Residual (bounded), the `/c` quote-stripping robustness:** a shim **path** that itself contains spaces produces a
-  multi-quote `/c` line whose cmd `/c` quote-stripping is still the documented "pending live-test" **correctness** item —
-  NOT a security hole. With `%`/`!`/bare-metacharacters refused, a mis-split can at worst hand claude a malformed prompt
-  (it errors); it can never expand the secret or inject a command. Left as a correctness follow-up.
+  native `claude.exe`), a launch is refused — with an actionable message — when a prompt/stick path carries `%`, `!`,
+  `"`, CR/LF, or a bare command metacharacter, OR when the resolved shim path itself contains whitespace (e.g. under
+  `C:\Users\John Doe\…`). Each refusal is rare and strictly safer than silently corrupting the prompt, mis-launching, or
+  leaking the credential; the message points the operator at a native `claude.exe` (which bypasses cmd entirely). The
+  offline engine is unaffected.
+* **The `/c` whole-line quote-strip is CLOSED, not residual (adversarial review, 2026-07-20).** An earlier draft of this
+  ADR wrongly called a spaces-in-shim-path launch a correctness-only item that "can never inject a command." A
+  real-process repro proved otherwise: with a whitespace shim path, cmd's quote-strip re-exposes a gate-allowed quoted
+  `&`, executing an injected command in the credential-bearing child (which can then read the secret via `set`/`reg query`
+  with no `%` at all). Refusing a whitespace shim path removes the trigger, and a bare-path real-process control confirms
+  a quoted `&` then stays literal end-to-end. No known cmd re-parse vector remains open on the shim route; a native
+  `.exe` bypasses cmd entirely.
 * **No secret reaches this decision:** the guard inspects the argument **strings Loki built** (flags + the operator
   prompt), never the secret, which lives only in the child env block. The refusal path also drops the hook-settings temp
   file the plan already wrote (the spawn's `finally` runs only once the process starts), so a refusal leaves no trace.
@@ -94,5 +109,9 @@ prompts — is unaffected.
   a SAFE quoted argument arrives at the shim **intact**; a **POSITIVE CONTROL** proves the hazard is real — ungated,
   cmd.exe expands a secret-shaped child-env variable onto the shim's argv; the gate **REFUSES** that same argument so it
   never reaches cmd.exe (no output file is written).
-* **Break-once (performed):** dropping `%` from the expand-char set turns exactly the three `%`-dependent assertions red,
-  while the positive control (guard-independent) and the `&`-path case stay green — the guard is proven load-bearing.
+* **Real process, the `/c` quote-strip:** a **POSITIVE CONTROL** proves a whitespace shim path lets an injected `&` run
+  (a marker file is created via the un-quoted `& echo …`); the gate **REFUSES** a whitespace shim path; and a **bare**
+  shim path keeps a quoted `&` **literal** (no marker) — the bare/quoted tier proven sound end-to-end.
+* **Break-once (performed):** dropping `%` from the always-unsafe set turns exactly the three `%`-dependent assertions
+  red (positive control + `&`-path stay green); separately, dropping `"` turns exactly the two quote assertions red — the
+  guard is proven load-bearing per-character.
