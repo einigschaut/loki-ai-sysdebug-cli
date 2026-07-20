@@ -45,7 +45,9 @@
 #       PURE. The env for a read child: PATH pinned to System32 (no PATH-planted binary, S3) + auth/secret vars stripped (S6).
 #   Invoke-LokiChildReadCommand -CommandLine <string> [-TimeoutSec] -> [hashtable]{ Ok; ExitCode; StdOut; StdErr; TimedOut }   (#21)
 #       Run ONE already-gated read in an isolated child Windows PowerShell (-NoProfile, -NonInteractive, command as a
-#       base64 -EncodedCommand, System32-pinned PATH, hard timeout + tree-kill). A failure is data, never a throw.
+#       base64 -EncodedCommand, System32-pinned PATH, working directory pinned to System32 so no CWD-relative name
+#       reaches the secret-at-rest home\.env -- drive-qualified forms are denied at the gate (issue #56), hard timeout
+#       + tree-kill). A failure is data, never a throw.
 #       The CALLER must have gated the command first.
 #   Invoke-LokiOfflineAgentTurnLoop -BaseUri -Messages -Tools [-MaxIterations -TimeBudgetSec -MaxObservationChars] -> [hashtable]{ Ok; Answer?; StopReason; Iterations; Reason? }   (#22)
 #       The multi-turn read-only diagnose loop, engine-free (calls Invoke-LokiEngineChat + Invoke-LokiOfflineAgentCommand
@@ -241,8 +243,11 @@ function Invoke-LokiChildReadCommand {
         let it outlive its welcome. The CALLER must have vetted it read-only first (Invoke-LokiOfflineAgentCommand does)
         -- this function does NOT gate, it only isolates. Isolation: -NoProfile (no profile-defined Function/Alias can
         shadow the command); a PATH pinned to System32 so a native read tool resolves to the real binary, not a
-        PATH-planted .exe (S3), with any ambient secret stripped (S6); -NonInteractive (never prompts, never hangs); a
-        hard timeout that TREE-KILLS the child and any grandchildren (S5). The command travels as a base64
+        PATH-planted .exe (S3), with any ambient secret stripped (S6); a WORKING DIRECTORY pinned to System32, NOT the
+        inherited ambient cwd, so no RELATIVE name (8.3 short name / wildcard / hardlink / ADS / symlink under home\)
+        resolves to the secret-at-rest home\.env -- durable regardless of the gate or operator judgement (issue #56);
+        -NonInteractive (never prompts, never hangs); a hard timeout that TREE-KILLS the child and any grandchildren
+        (S5). The command travels as a base64
         -EncodedCommand, verbatim, so there is no argument-quoting seam (base64 has no quoting to break out of). The
         captured output is hard-capped (S4). Returns { Ok; ExitCode; StdOut; StdErr; TimedOut } -- failure is data, never a throw.
     #>
@@ -267,6 +272,19 @@ function Invoke-LokiChildReadCommand {
     $psi.RedirectStandardError = $true
     $psi.UseShellExecute = $false
     $psi.CreateNoWindow = $true
+
+    # Pin the child's WORKING DIRECTORY to System32, NEVER the inherited ambient cwd (issue #56, durable secret-at-rest
+    # closure). The gate already downgrades/denies secret-target NAMES (.env literal, home\ENV~1 8.3, home\* wildcard --
+    # ADR-0006 #54), but that is a name defence that ends in an operator confirm for the 8.3/bare-* residual. The durable
+    # property must not rest on the gate or on operator judgement: from a cwd that is NOT home\ nor an ancestor of it, no
+    # CWD-relative name -- 8.3 short name, wildcard, hardlink, ADS, or symlink under home\ -- resolves to home\.env, on
+    # ANY filesystem (NTFS/exFAT/FAT) and without ACLs. (A DRIVE-QUALIFIED name like E:home\... resolves against that
+    # drive's OWN root REGARDLESS of the cwd, so the cwd pin cannot see it; that form is hard-denied at the gate instead
+    # -- allowlist.ps1 secret-target patterns, #56 review.) System32 (Get-LokiSystemDirectory: the tamper-resistant OS answer
+    # this file already anchors the PATH pin to) is guaranteed to exist, carries no Loki secret, and is never the ambient
+    # secret-adjacent AppRoot -- so even a mutate an operator MISTAKENLY confirms (e.g. Get-Content home\ENV~1) reads
+    # nothing. An empty WorkingDirectory would inherit the operator's ambient cwd, which on the stick IS AppRoot (#56).
+    $psi.WorkingDirectory = (Get-LokiSystemDirectory)
 
     # Isolate the child env: PATH pinned to System32 (no PATH-planted binary can shadow a native read tool, S3) and any
     # ambient secret stripped (S6). Built from the CURRENT process env so real machine state stays visible for diagnosis.

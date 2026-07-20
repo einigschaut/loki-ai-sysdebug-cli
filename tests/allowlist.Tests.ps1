@@ -523,4 +523,39 @@ Describe 'Resolve-LokiCommandDecision - wildcard secret-target bypass (adversari
         $wp = [System.Management.Automation.WildcardPattern]::new('home\.e*', [System.Management.Automation.WildcardOptions]::IgnoreCase)
         $wp.IsMatch('home\.env') | Should -BeTrue
     }
+
+    It 'HARD-denies a DRIVE-QUALIFIED root-level home\ path -- it resolves to the stick X:\home\.env regardless of the child cwd, bypassing the System32 cwd pin (issue #56 review): <cmd>' -ForEach @(
+        @{ cmd = 'Get-Content E:home\.env' }        # drive-relative (no separator after the colon) -> E:\home\.env
+        @{ cmd = 'Get-Content E:home\ENV~1' }       # drive-relative + 8.3 alias -- the leaf rule would only downgrade
+        @{ cmd = 'Get-Content E:home\*' }           # drive-relative + bare glob
+        @{ cmd = 'Get-Content E:.\home\ENV~1' }     # drive-relative with .\ navigation (clamps at the drive root)
+        @{ cmd = 'Get-Content E:..\home\*' }        # drive-relative with ..\ navigation
+        @{ cmd = 'Get-Content E:\home\ENV~1' }      # drive-ABSOLUTE at the drive root
+        @{ cmd = 'Get-ChildItem E:home' }           # bare drive-relative listing of the secret dir (recon)
+        @{ cmd = 'Get-ChildItem E:home -Recurse' }
+        @{ cmd = 'Get-Content K:home\.e*' }         # any drive letter
+        @{ cmd = "Get-Content 'E:home\ENV~1'" }     # quoted
+    ) {
+        $d = Resolve-LokiCommandDecision -CommandLine $cmd
+        $d.Class  | Should -Be 'denied'
+        $d.Reason | Should -Be 'secret-target-blocked'
+    }
+
+    It 'BREAK-THE-GUARD: the drive-qualified home deny is load-bearing and drive-letter-agnostic -- the drive-relative bypass the cwd pin cannot see: <cmd>' -ForEach @(
+        @{ cmd = 'Get-Content D:home\ENV~1' }
+        @{ cmd = 'Get-Content Z:home\*' }
+        @{ cmd = 'Get-Content E:home\.env' }
+    ) {
+        # Delete the '[A-Za-z]:[\\/]?home...' secret-target pattern and each drops back to read / a confirmable mutate,
+        # and the drive-relative path reads the stick secret from the System32-pinned child. The deny makes them
+        # non-executable AND non-confirmable.
+        (Resolve-LokiCommandDecision -CommandLine $cmd).Class | Should -Be 'denied'
+    }
+
+    It 'the drive-qualified deny is ROOT-specific (no over-block): a DEEP home\ segment or a home-named FILE stays read: <cmd>' -ForEach @(
+        @{ cmd = 'Get-Content C:\Users\bob\home\config.txt' }   # home is deep, not at the drive root -> not the secret
+        @{ cmd = 'Get-Content C:home.txt' }                     # a FILE named home.txt, not the home DIR
+    ) {
+        (Resolve-LokiCommandDecision -CommandLine $cmd).Class | Should -Be 'read'
+    }
 }
