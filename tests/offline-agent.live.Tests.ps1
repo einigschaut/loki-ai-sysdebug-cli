@@ -36,10 +36,17 @@ Describe 'offline --agent against the REAL engine (opt-in; ADR-0015 section 6)' 
         Mock Get-LokiTierFit { @{ Verdict = 'fits'; NeedFreeGB = 0 } }
 
         $engineData = Get-LokiEngineManifest -Path (Join-Path $script:liveStick 'engine\manifest.psd1')
-        $models = Get-LokiModelManifest -Path (Get-LokiModelLayout -AppRoot $script:liveStick).ManifestPath
-        $model = @($models) | Where-Object { Test-LokiOfflineAgentCapable -Model $_ } | Select-Object -First 1
+        $layout = Get-LokiModelLayout -AppRoot $script:liveStick
+        $models = Get-LokiModelManifest -Path $layout.ManifestPath
+        # Filter to what is actually ON the stick BEFORE the capability check. The manifest lists EVERY tier (mid/8B+
+        # among them), so choosing an agent-capable model from the manifest can pick a tier that was never downloaded
+        # and then fail preflight with model-unverified/not-installed instead of skipping. Get-LokiInstalledTiers is
+        # presence + pinned size, so a small-only rig correctly yields no agent-capable model and this SKIPS -- which
+        # is exactly what the file header promises for a below-floor stick.
+        $installed = Get-LokiInstalledTiers -Models $models -ModelsDir $layout.Dir
+        $model = @($installed) | Where-Object { Test-LokiOfflineAgentCapable -Model $_ } | Select-Object -First 1
         if ($null -eq $model) {
-            Set-ItResult -Skipped -Because 'no agent-capable (mid+, ~8B) model is installed on the live stick; the agent floor cannot be exercised'
+            Set-ItResult -Skipped -Because 'no agent-capable (mid+, ~8B) model is INSTALLED on the live stick; the agent floor cannot be exercised'
             return
         }
 
