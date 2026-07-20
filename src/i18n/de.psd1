@@ -18,6 +18,7 @@
     'help.unknownCommand'       = 'Unbekanntes Command: {0}'
 
     'auth.notSet'               = '(nicht gesetzt)'
+    'auth.status.heading'       = 'loki auth status'
     'auth.status.method'        = 'Methode:'
     'auth.status.variable'      = 'Variable:'
     'auth.status.secretSet'     = 'Secret gesetzt ({0})'
@@ -47,6 +48,10 @@
     'auth.unknownSub'           = "Unbekanntes Sub-Command: '{0}'."
     'auth.usage'                = 'Verwendung: loki auth <login|status|use|set|clear>'
 
+    'status.heading'            = 'loki status  (v{0})'
+    'status.label.appRoot'      = 'App-Root:'
+    'status.label.powershell'   = 'PowerShell:'
+    'status.label.auth'         = 'Auth:'
     'status.net.online'         = 'Netz: erreichbar (Online-Engine nutzbar)'
     'status.net.offline'        = 'Netz: nicht erreichbar - die Online-Engine fällt aus. "loki collect" schreibt trotzdem einen reinen Diagnose-Dump.'
     'status.postureRollup'      = '{0} ok, {1} Warnung(en), {2} Problem(e)'
@@ -82,6 +87,7 @@
     'doctor.volume.encrypted'       = 'Wechseldatenträger, BitLocker an'
     'doctor.volume.plain'           = 'kein verschlüsselter Wechseldatenträger'
 
+    'doctor.heading'            = 'loki doctor'
     'doctor.footer'             = '{0} OK, {1} Warnung(en), {2} Fehler'
 
     # loki doctor --engine (ADR-0014): die Integritaetskette zur Ladezeit als reiner Lese-Report.

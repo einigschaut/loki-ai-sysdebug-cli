@@ -36,7 +36,7 @@ function Invoke-LokiCmd_auth {
         $cfg = Read-LokiConfig -Path $configPath
         $st = Get-LokiAuthStatus -EnvFilePath $envPath -Config $cfg
 
-        Write-LokiHeading 'loki auth status'
+        Write-LokiHeading (Get-LokiText 'auth.status.heading')
         Write-LokiLine ("{0,-14} {1}" -f (Get-LokiText 'auth.status.method'), $st.Method)
         Write-LokiLine ("{0,-14} {1}" -f (Get-LokiText 'auth.status.variable'), $st.VarName)
         if ($st.Present) {

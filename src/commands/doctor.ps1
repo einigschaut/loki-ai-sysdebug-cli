@@ -121,7 +121,7 @@ function Invoke-LokiCmd_doctor {
 
     $checks = ConvertTo-LokiDoctorChecks -HostPosture $host_ -VolumePosture $vol -AuthStatus $auth
 
-    Write-LokiHeading 'loki doctor'
+    Write-LokiHeading (Get-LokiText 'doctor.heading')
     Write-LokiLine ''
 
     Write-LokiDoctorReport -Checks $checks
