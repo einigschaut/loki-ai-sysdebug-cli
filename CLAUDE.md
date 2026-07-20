@@ -66,8 +66,9 @@ src/skills/, playbooks/, grammars/  Data/assets for the engines.
   text — see §10 and ADR-0004. `Usage`/`Examples` are literal command syntax (not localized).
 - `lib/registry.ps1` enumerates the `Get-LokiCmdMeta_*` functions, checks required fields **and**
   that the handler exists (consistency gate, throws otherwise).
-- From this are **generated** (not hand-maintained): `loki help`, `loki <cmd> --help`, the README
-  command table, the CLI matrix, `loki completion`.
+- From this are **generated** (not hand-maintained): `loki help`, `loki <cmd> --help`, and the README
+  command table. (A separate CLI matrix and `loki completion` are **not** built — completion is a
+  planned Stage-3 item, DESIGN.md §7; the README command table is the command reference.)
 - **New commands ONLY via `build/New-LokiCommand.ps1`** (scaffolding) — generates metadata + handler
   + test stub + doc stub in the standard shape.
 - A command without a registry entry does not exist; a registered one without handler/test → CI red.
@@ -101,11 +102,12 @@ src/skills/, playbooks/, grammars/  Data/assets for the engines.
 - Use mocks sparingly: Anthropic/llama-server behind a local fake; real engine starts at least once for real.
 
 ## 7 — CI gates (red = no merge)
-Pester green · PSScriptAnalyzer clean · **docs gate** (command↔help↔README↔matrix, tool manifest ==
-allow-list, CHANGELOG entry) · **dead-code scan** (never-called exports, orphaned/unregistered
-commands) · **coverage gate** (security modules branch-complete) · **registry consistency**
-(`commands/` == registry == matrix) · **i18n parity** (every locale complete, §10). The footprint &
-security suites are release blockers.
+Pester green · PSScriptAnalyzer clean · **docs gate** (command↔help↔README stay in sync) ·
+**single-gate security** (both engines route every command through the one allow-list,
+`Resolve-LokiCommandDecision`) · **dead-code scan** (never-called exports, orphaned/unregistered
+commands) · **security-core tests** (property/table-tested, §6) · **registry consistency**
+(`commands/` == registry == README table) · **i18n parity** (every locale complete, §10). The
+footprint & security suites are release blockers.
 
 ## 8 — Process / Definition of Done
 - **Small, focused PRs** — one command/feature per PR. No drifting catch-all commit.
