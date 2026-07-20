@@ -28,10 +28,20 @@
 #   ConvertTo-LokiArgString -ArgumentList <string[]> -> [string]
 #       Windows CommandLineToArgvW-correct quoting of an argument array into a single command-line string (PS 5.1
 #       ProcessStartInfo has no ArgumentList). Every arg is round-trippable; the SECRET is never an argument here.
+#   Test-LokiCmdShimArgUnsafe -Argument <string> -> [bool]
+#       PURE. True if cmd.exe would re-interpret $Argument on a `.cmd`/`.bat`-shim `/c` launch: % or ! (expand even
+#       inside quotes -> a `%NAME%` pulls the child's secret onto argv) anywhere, or a command metacharacter in an
+#       argument ConvertTo-LokiArgString would emit bare. The .cmd-shim safety gate (issue #58).
+#   Get-LokiChildProcessTarget -FilePath <string> -ArgumentList <string[]> -> [hashtable]{ Ok; Reason; FileName;
+#       Arguments }  -- the ONE launch-target builder shared by all three claude spawns: a native .exe is spawned
+#       directly; a .cmd/.bat shim goes through cmd.exe (System32-pinned, issue #55) but FAILS CLOSED (Ok=$false,
+#       Reason 'cmd-shim-unsafe') when any argument is cmd-unsafe (issue #58), so the spawn wrappers return that refusal.
 #   Get-LokiClaudeCommand [-Override <string>] -> [string] path, or $null if `claude` cannot be resolved.
 #   Get-LokiClaudeInvocation -Prompt <string> -AppRoot <string> -Config <hashtable> [-Model] [-PermissionMode]
-#       [-MaxBudgetUsd] [-ClaudePath] [-Secret] [-Interactive] -> [hashtable]{ Ok; Reason; FilePath; ArgString;
-#       ChildEnv; SettingsPath; SettingsJson }  (Ok=$false with Reason 'claude-not-found'|'auth-missing' short-circuits).
+#       [-MaxBudgetUsd] [-ClaudePath] [-Secret] [-Interactive] -> [hashtable]{ Ok; Reason; FilePath; ArgString; ArgList;
+#       ChildEnv; SettingsPath; SettingsJson; Model }  (Ok=$false Reason 'claude-not-found'|'auth-missing' short-circuits).
+#       ArgList is the argument ARRAY the spawn wrappers hand to Get-LokiChildProcessTarget (ArgString is its joined form,
+#       kept as the tested "secret never in argv" contract).
 #       PURE-ISH + testable: builds the full invocation WITHOUT spawning anything. The SECRET lands ONLY in
 #       ChildEnv (ANTHROPIC_API_KEY), NEVER in ArgString -- a unit test asserts exactly this (CLAUDE.md section 5).
 #       -Interactive builds the chat form: no -p (claude runs attached to the terminal), the chat charter, and
@@ -338,6 +348,89 @@ function ConvertTo-LokiArgString {
     return ($parts -join ' ')
 }
 
+# Two tiers of cmd.exe hazard on a `.cmd`/`.bat` `/c` launch (issue #58). ALWAYS-UNSAFE: characters cmd re-interprets
+# even inside the double quotes ConvertTo-LokiArgString wraps an argument in -- `%` and `!` still EXPAND there (the
+# secret-onto-argv vector), a literal `"` TOGGLES cmd's quote state (cmd does NOT honor the `\"` escape ConvertTo emits,
+# so a `"` closes the quote early and re-exposes any following metacharacter, e.g. `a"&calc` -> `... a\ & calc` runs
+# calc), and CR/LF split the `/c` line into a fresh command. BARE-ONLY: the command metacharacters, which cmd treats as
+# LITERAL inside quotes, so they bite only in an argument emitted without quotes. These drive the shim safety gate below.
+$script:LokiCmdAlwaysUnsafeChars = '["%!\r\n]'   # unsafe regardless of quoting (expansion / quote-toggle / line-break)
+$script:LokiCmdBareMetaChars     = '[&|<>()^]'   # unsafe ONLY when the argument is emitted bare (unquoted)
+
+function Test-LokiCmdShimArgUnsafe {
+    <#
+        PURE. $true if passing $Argument through a `cmd.exe /c <shim> ...` launch could let cmd.exe re-interpret it
+        (issue #58). A .cmd/.bat shim is parsed by cmd.exe BEFORE the target binary sees the argv, and the child Loki
+        spawns here carries the DECRYPTED credential in its environment block. TWO tiers:
+          * ALWAYS-UNSAFE ($script:LokiCmdAlwaysUnsafeChars) -- cmd acts on these even inside the double quotes
+            ConvertTo-LokiArgString wraps an argument in: `%` (immediate expansion; `%ANTHROPIC_API_KEY%` would place
+            the secret on the command line, Win32_Process-readable, breaking "secret NEVER in argv", CLAUDE.md section 5),
+            `!` (the delayed-expansion twin -- off by default for /c but a compromised target can enable it globally
+            via HKLM/HKCU\...\Command Processor\DelayedExpansion), a literal `"` (cmd does NOT honor the `\"` escape
+            ConvertTo emits, so a `"` toggles the quote state and re-exposes any following metacharacter -- `a"&calc`
+            runs calc), and CR/LF (a newline ends the /c line and starts a fresh command).
+          * BARE-ONLY ($script:LokiCmdBareMetaChars: & | < > ^ ( )) -- cmd treats these as LITERAL inside quotes, so
+            they are unsafe only when the argument would be emitted WITHOUT quotes. The bare/quoted test here mirrors
+            ConvertTo-LokiArgString's own quoting rule EXACTLY, so the gate never trips on the structural quotes that
+            function adds: a quoted `CPU & RAM` keeps its & literal -> allowed; a raw `%TEMP%` or a bare `a&b` -> refused.
+    #>
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Argument)
+    if ($Argument -match $script:LokiCmdAlwaysUnsafeChars) { return $true }
+    # Emitted bare exactly when ConvertTo-LokiArgString would NOT quote it (non-empty, no whitespace, no quote).
+    $emittedBare = ($Argument.Length -gt 0) -and ($Argument -notmatch '[\s"]')
+    if ($emittedBare -and ($Argument -match $script:LokiCmdBareMetaChars)) { return $true }
+    return $false
+}
+
+function Get-LokiChildProcessTarget {
+    <#
+        Decide how ProcessStartInfo should launch a resolved program with an argument array, and return
+        { Ok; Reason; FileName; Arguments }. A native .exe is spawned DIRECTLY (CreateProcess, no shell, no re-parse)
+        so it is never gated. A .cmd/.bat shim (e.g. an npm/Volta `claude.cmd`) cannot be launched by CreateProcess
+        directly (UseShellExecute=$false throws "not a valid Win32 application"), so it must go through cmd.exe /c --
+        and cmd.exe RE-PARSES the whole line. This child carries the decrypted credential, so we FAIL CLOSED
+        (Ok=$false, Reason 'cmd-shim-unsafe') rather than emit a line cmd.exe could re-interpret when any argument
+        (the shim path itself included -- cmd parses that too) is cmd-unsafe per Test-LokiCmdShimArgUnsafe (issue #58).
+        cmd.exe is located via Get-LokiSystemDirectory ([Environment]::SystemDirectory / Win32 GetSystemDirectory) --
+        the tamper-resistant OS answer, NOT the mutable %SystemRoot%, so a poisoned SystemRoot + a planted
+        <poison>\System32\cmd.exe cannot steer this credential-bearing launch (issue #55, ADR-0016). PURE apart from
+        that read; one place, so the three spawns below cannot drift.
+    #>
+    [System.Diagnostics.CodeAnalysis.SuppressMessage('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Pure construction of a launch descriptor (FileName/Arguments); no external state is changed.')]
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][string[]]$ArgumentList
+    )
+    # A filesystem-INVALID char in the path (a literal " < > | or a control char -- none legal in a Windows filename,
+    # so only reachable via a bogus -ClaudePath override) makes GetExtension throw. Fail closed with the uniform reason
+    # rather than let an exception escape, so the caller still cleans up and surfaces 'cmd-shim-unsafe' (issue #58).
+    $ext = ''
+    try { $ext = ([System.IO.Path]::GetExtension([string]$FilePath)).ToLowerInvariant() }
+    catch { return @{ Ok = $false; Reason = 'cmd-shim-unsafe'; FileName = $null; Arguments = $null } }
+    if (($ext -ne '.cmd') -and ($ext -ne '.bat')) {
+        return @{ Ok = $true; Reason = 'ready'; FileName = $FilePath; Arguments = (ConvertTo-LokiArgString -ArgumentList $ArgumentList) }
+    }
+    # cmd's `/c` rule strips the FIRST and LAST quote of the whole line whenever the line BEGINS with a quote -- i.e.
+    # when the shim path (always the first token) is quoted because it contains whitespace. That parity shift re-exposes
+    # a following QUOTED metacharacter OUTSIDE quotes, so a gate-allowed quoted `&` in a later argument injects a command
+    # into THIS credential-bearing child (adversarial review 2026-07-20, real-process repro). Refuse a would-be-quoted
+    # shim path so the /c line never opens with a quote; a bare (whitespace-free) shim path keeps every argument's quotes
+    # intact and the bare/quoted tier sound. A native .exe is spawned directly and never reaches here. (A path with a
+    # literal " -- or any other filesystem-invalid quote-forcing char -- already fails closed at the GetExtension guard
+    # above, and no valid resolved path contains one.)
+    if ($FilePath -match '\s') {
+        return @{ Ok = $false; Reason = 'cmd-shim-unsafe'; FileName = $null; Arguments = $null }
+    }
+    foreach ($a in (@($FilePath) + $ArgumentList)) {
+        if (Test-LokiCmdShimArgUnsafe -Argument ([string]$a)) {
+            return @{ Ok = $false; Reason = 'cmd-shim-unsafe'; FileName = $null; Arguments = $null }
+        }
+    }
+    $cmdExe = Join-Path (Get-LokiSystemDirectory) 'cmd.exe'
+    $arguments = '/c ' + (ConvertTo-LokiArgString -ArgumentList @($FilePath)) + ' ' + (ConvertTo-LokiArgString -ArgumentList $ArgumentList)
+    return @{ Ok = $true; Reason = 'ready'; FileName = $cmdExe; Arguments = $arguments }
+}
+
 function Get-LokiClaudeCommand {
     param([string]$Override)
 
@@ -507,23 +600,20 @@ function Invoke-LokiClaude {
         return @{ Ok = $false; Reason = $plan.Reason }
     }
 
+    # Resolve the launch target: native .exe direct, or a .cmd/.bat shim through cmd.exe -- which FAILS CLOSED on a
+    # cmd-unsafe argument so cmd.exe's re-parse can never expand the child's secret onto argv (issue #58). One shared
+    # helper for all three spawns. On refusal, drop the settings temp file the plan already wrote (the finally below
+    # only runs once the process has started) and surface the reason to the caller.
+    $target = Get-LokiChildProcessTarget -FilePath $plan.FilePath -ArgumentList $plan.ArgList
+    if (-not $target.Ok) {
+        if ((-not [string]::IsNullOrEmpty($plan.SettingsPath)) -and (Test-Path -LiteralPath $plan.SettingsPath)) {
+            Remove-Item -LiteralPath $plan.SettingsPath -Force -ErrorAction SilentlyContinue
+        }
+        return @{ Ok = $false; Reason = $target.Reason }
+    }
     $psi = New-Object System.Diagnostics.ProcessStartInfo
-    # A `.cmd`/`.bat` shim (e.g. an npm/Volta-installed `claude.cmd`) cannot be launched by CreateProcess directly
-    # (UseShellExecute=$false throws "not a valid Win32 application"); route it through cmd.exe /c. A native
-    # `claude.exe` is spawned directly. (Best-effort; complex arg quoting through cmd is a pending live-test item.)
-    # cmd.exe is located via Get-LokiSystemDirectory ([System.Environment]::SystemDirectory / Win32 GetSystemDirectory)
-    # -- the tamper-resistant OS answer, NOT the mutable %SystemRoot%: this child carries the DECRYPTED credential, so a
-    # poisoned SystemRoot + a planted <poison>\System32\cmd.exe on a compromised target must not be able to steer the
-    # launch (issue #55, ADR-0016). The same source is used by the two other cmd.exe launchers below.
-    $ext = ([System.IO.Path]::GetExtension([string]$plan.FilePath)).ToLowerInvariant()
-    if ($ext -eq '.cmd' -or $ext -eq '.bat') {
-        $psi.FileName = (Join-Path (Get-LokiSystemDirectory) 'cmd.exe')
-        $psi.Arguments = '/c ' + (ConvertTo-LokiArgString -ArgumentList @($plan.FilePath)) + ' ' + $plan.ArgString
-    }
-    else {
-        $psi.FileName = $plan.FilePath
-        $psi.Arguments = $plan.ArgString
-    }
+    $psi.FileName = $target.FileName
+    $psi.Arguments = $target.Arguments
     $psi.UseShellExecute = $false
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
@@ -607,17 +697,18 @@ function Invoke-LokiClaudeInteractive {
         return @{ Ok = $false; Reason = $plan.Reason }
     }
 
+    # Resolve the launch target via the shared helper (fail closed on a cmd-unsafe .cmd/.bat shim argument, issue
+    # #58); same settings temp-file cleanup on refusal as the headless path.
+    $target = Get-LokiChildProcessTarget -FilePath $plan.FilePath -ArgumentList $plan.ArgList
+    if (-not $target.Ok) {
+        if ((-not [string]::IsNullOrEmpty($plan.SettingsPath)) -and (Test-Path -LiteralPath $plan.SettingsPath)) {
+            Remove-Item -LiteralPath $plan.SettingsPath -Force -ErrorAction SilentlyContinue
+        }
+        return @{ Ok = $false; Reason = $target.Reason }
+    }
     $psi = New-Object System.Diagnostics.ProcessStartInfo
-    # Same `.cmd`/`.bat` routing as the headless path (CreateProcess cannot launch a batch file directly).
-    $ext = ([System.IO.Path]::GetExtension([string]$plan.FilePath)).ToLowerInvariant()
-    if ($ext -eq '.cmd' -or $ext -eq '.bat') {
-        $psi.FileName = (Join-Path (Get-LokiSystemDirectory) 'cmd.exe')
-        $psi.Arguments = '/c ' + (ConvertTo-LokiArgString -ArgumentList @($plan.FilePath)) + ' ' + $plan.ArgString
-    }
-    else {
-        $psi.FileName = $plan.FilePath
-        $psi.Arguments = $plan.ArgString
-    }
+    $psi.FileName = $target.FileName
+    $psi.Arguments = $target.Arguments
     # Interactive: DO NOT redirect any stream -> the child inherits this console's stdin/stdout/stderr, so it is a
     # live TUI the user drives. UseShellExecute=$false is still required to install the custom (isolated) child env.
     $psi.UseShellExecute = $false
@@ -696,19 +787,15 @@ function Invoke-LokiClaudeSetupToken {
 
     $childEnv = Get-LokiSetupTokenChildEnv -AppRoot $AppRoot
 
-    $argString = ConvertTo-LokiArgString -ArgumentList @('setup-token')
-
+    # Resolve the launch target via the shared helper (fail closed on a cmd-unsafe .cmd/.bat shim argument, issue
+    # #58). No settings temp file on this path, so nothing to clean up on refusal.
+    $target = Get-LokiChildProcessTarget -FilePath $filePath -ArgumentList @('setup-token')
+    if (-not $target.Ok) {
+        return @{ Ok = $false; Reason = $target.Reason }
+    }
     $psi = New-Object System.Diagnostics.ProcessStartInfo
-    # Same `.cmd`/`.bat` routing as the other spawns (CreateProcess cannot launch a batch file directly).
-    $ext = ([System.IO.Path]::GetExtension([string]$filePath)).ToLowerInvariant()
-    if ($ext -eq '.cmd' -or $ext -eq '.bat') {
-        $psi.FileName = (Join-Path (Get-LokiSystemDirectory) 'cmd.exe')
-        $psi.Arguments = '/c ' + (ConvertTo-LokiArgString -ArgumentList @($filePath)) + ' ' + $argString
-    }
-    else {
-        $psi.FileName = $filePath
-        $psi.Arguments = $argString
-    }
+    $psi.FileName = $target.FileName
+    $psi.Arguments = $target.Arguments
     # Attached to the console (no stream redirection) so the browser-login prompts + the printed token reach the
     # operator directly. UseShellExecute=$false is still required to install the isolated child env block.
     $psi.UseShellExecute = $false

@@ -137,6 +137,13 @@ Describe 'Command ask' {
             $r.AllText | Should -BeLike '*claude*'
         }
 
+        It 'cmd-shim-unsafe -> GeneralError exit with the actionable native-exe message (issue #58)' {
+            Mock Invoke-LokiClaude { @{ Ok = $false; Reason = 'cmd-shim-unsafe' } }
+            $r = Invoke-AskCommand -Context (New-TestAskContext)
+            $r.Code | Should -Be (Get-LokiExitCode 'GeneralError')
+            $r.AllText | Should -BeLike '*claude.exe*'
+        }
+
         It 'timeout -> GeneralError exit' {
             Mock Invoke-LokiClaude { @{ Ok = $false; Reason = 'timeout' } }
             $r = Invoke-AskCommand -Context (New-TestAskContext)

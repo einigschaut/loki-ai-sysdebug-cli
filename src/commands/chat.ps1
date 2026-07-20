@@ -41,6 +41,10 @@ function Invoke-LokiCmd_chat {
             Write-LokiErr (Get-LokiText 'chat.engineMissing')
             return (Get-LokiExitCode 'GeneralError')
         }
+        if ($res.Reason -eq 'cmd-shim-unsafe') {
+            Write-LokiErr (Get-LokiText 'chat.engineShimUnsafe')
+            return (Get-LokiExitCode 'GeneralError')
+        }
         Write-LokiErr (Get-LokiText 'chat.failed')
         return (Get-LokiExitCode 'GeneralError')
     }

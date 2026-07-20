@@ -3,8 +3,10 @@
 # WIRES the shared gate into Claude Code -- Resolve-LokiCommandDecision itself now lives in lib/allowlist.ps1 and is
 # tested in allowlist.Tests.ps1, issue #50), Windows argv quoting, the hook settings object, and -- the key
 # security property -- that Get-LokiClaudeInvocation puts the secret ONLY in the child env block, NEVER in argv.
-# The raw subprocess spawn (Invoke-LokiClaude actually running `claude`) is NOT exercised here: it needs a working
-# `claude` CLI + a real API key and is the pending live end-to-end gate (see docs/adr/0007).
+# The raw `claude` subprocess spawn (Invoke-LokiClaude actually running `claude`) is NOT exercised here: it needs a
+# working `claude` CLI + a real API key and is the pending live end-to-end gate (see docs/adr/0007). The .cmd-shim
+# cmd.exe re-parse gate (issue #58) IS exercised against a REAL cmd.exe + a synthetic echo shim -- cmd.exe is always
+# present, so that stays deterministic and hermetic (no claude, no network, no credential).
 Set-StrictMode -Version Latest
 
 BeforeAll {
@@ -165,6 +167,204 @@ Describe 'ConvertTo-LokiArgString (Windows CommandLineToArgvW quoting)' {
 
     It 'emits "" for an empty argument' {
         ConvertTo-LokiArgString -ArgumentList @('') | Should -Be '""'
+    }
+}
+
+Describe 'Test-LokiCmdShimArgUnsafe (.cmd/.bat shim cmd.exe re-parse gate, issue #58)' {
+
+    It 'flags % anywhere -- the env-expansion vector that could pull the secret onto argv' {
+        Test-LokiCmdShimArgUnsafe -Argument 'why is %ANTHROPIC_API_KEY% set' | Should -BeTrue
+        Test-LokiCmdShimArgUnsafe -Argument '%TEMP%' | Should -BeTrue
+    }
+
+    It 'flags ! -- the delayed-expansion twin a compromised target can enable globally' {
+        Test-LokiCmdShimArgUnsafe -Argument 'why is the disk full !PATH!' | Should -BeTrue
+    }
+
+    It 'flags a command metacharacter in a BARE (would-be-unquoted) argument' {
+        # No whitespace/quote -> ConvertTo-LokiArgString emits it bare -> & would separate commands to cmd.exe.
+        Test-LokiCmdShimArgUnsafe -Argument 'a&b' | Should -BeTrue
+        Test-LokiCmdShimArgUnsafe -Argument 'C:\R&D\claude.cmd' | Should -BeTrue
+    }
+
+    It 'flags a literal double-quote -- ConvertTo escapes it \" but cmd un-quotes there, re-exposing metacharacters' {
+        # a"&calc : ConvertTo emits "a\"&calc"; cmd honors no \" so it closes the quote and runs & calc. The " is the tell.
+        Test-LokiCmdShimArgUnsafe -Argument 'a"&calc' | Should -BeTrue
+        Test-LokiCmdShimArgUnsafe -Argument 'why does "svchost" spike' | Should -BeTrue
+    }
+
+    It 'flags CR or LF -- a newline ends the /c line and would start a fresh command' {
+        Test-LokiCmdShimArgUnsafe -Argument "line one`r`nline two" | Should -BeTrue
+        Test-LokiCmdShimArgUnsafe -Argument "tail`nhead" | Should -BeTrue
+    }
+
+    It 'ALLOWS that same metacharacter inside a would-be-QUOTED argument (cmd treats it as literal there)' {
+        # Has a space -> ConvertTo-LokiArgString quotes it -> & is literal inside cmd double quotes -> safe.
+        # This is the pair that proves the bare/quoted distinction is load-bearing, not a blanket metachar scan.
+        Test-LokiCmdShimArgUnsafe -Argument 'CPU & RAM usage' | Should -BeFalse
+    }
+
+    It 'allows ordinary flags, values and quoted no-metachar paths' {
+        Test-LokiCmdShimArgUnsafe -Argument '--model' | Should -BeFalse
+        Test-LokiCmdShimArgUnsafe -Argument 'sonnet' | Should -BeFalse
+        Test-LokiCmdShimArgUnsafe -Argument 'C:\Program Files\claude\claude.cmd' | Should -BeFalse
+        Test-LokiCmdShimArgUnsafe -Argument '' | Should -BeFalse
+    }
+}
+
+Describe 'Get-LokiChildProcessTarget (launch descriptor + .cmd/.bat fail-closed, issue #58)' {
+
+    It 'spawns a native .exe DIRECTLY (no cmd.exe, no re-parse) and never gates it -- even a %-arg' {
+        $t = Get-LokiChildProcessTarget -FilePath 'C:\WinGet\claude.exe' -ArgumentList @('-p', '%TEMP% and a b')
+        $t.Ok | Should -BeTrue
+        $t.FileName | Should -Be 'C:\WinGet\claude.exe'
+        $t.Arguments | Should -Be '-p "%TEMP% and a b"'
+    }
+
+    It 'routes a .cmd shim through the System32 cmd.exe for safe arguments' {
+        $t = Get-LokiChildProcessTarget -FilePath 'C:\npm\claude.cmd' -ArgumentList @('-p', 'hello world')
+        $t.Ok | Should -BeTrue
+        $t.FileName | Should -Be (Join-Path (Get-LokiSystemDirectory) 'cmd.exe')
+        $t.Arguments | Should -Be '/c C:\npm\claude.cmd -p "hello world"'
+    }
+
+    It 'FAILS CLOSED for a .cmd shim when an argument carries % (the secret-expansion vector)' {
+        $t = Get-LokiChildProcessTarget -FilePath 'C:\npm\claude.cmd' -ArgumentList @('-p', 'echo %ANTHROPIC_API_KEY%')
+        $t.Ok | Should -BeFalse
+        $t.Reason | Should -Be 'cmd-shim-unsafe'
+        $t.FileName | Should -BeNullOrEmpty
+    }
+
+    It 'FAILS CLOSED for a .cmd shim when an argument carries a literal double-quote (cmd quote-toggle injection)' {
+        $t = Get-LokiChildProcessTarget -FilePath 'C:\npm\claude.cmd' -ArgumentList @('-p', 'a"&calc')
+        $t.Ok | Should -BeFalse
+        $t.Reason | Should -Be 'cmd-shim-unsafe'
+    }
+
+    It 'FAILS CLOSED for a .cmd shim when the SHIM PATH itself is cmd-unsafe (cmd parses it too)' {
+        $t = Get-LokiChildProcessTarget -FilePath 'C:\R&D\claude.cmd' -ArgumentList @('-p', 'ok')
+        $t.Ok | Should -BeFalse
+        $t.Reason | Should -Be 'cmd-shim-unsafe'
+    }
+
+    It 'FAILS CLOSED for a .cmd shim whose PATH contains whitespace (cmd /c quote-strip re-exposes quoted metachars)' {
+        # A quoted first token triggers cmd's /c quote-strip, which would un-quote a following quoted & -> injection.
+        # Args are individually safe; the refusal is about the shim path forcing the /c line to open with a quote.
+        $t = Get-LokiChildProcessTarget -FilePath 'C:\Program Files\claude\claude.cmd' -ArgumentList @('-p', 'CPU and RAM')
+        $t.Ok | Should -BeFalse
+        $t.Reason | Should -Be 'cmd-shim-unsafe'
+    }
+
+    It 'FAILS CLOSED (uniform reason, no exception) for a path with a filesystem-invalid char' {
+        # A " (or < > | / control) in the path makes [IO.Path]::GetExtension throw; the guard turns that into the same
+        # cmd-shim-unsafe refusal instead of an escaping exception. Only reachable via a bogus -ClaudePath override.
+        $t = Get-LokiChildProcessTarget -FilePath 'C:\a"b\claude.cmd' -ArgumentList @('-p', 'ok')
+        $t.Ok | Should -BeFalse
+        $t.Reason | Should -Be 'cmd-shim-unsafe'
+    }
+}
+
+Describe 'cmd.exe .cmd-shim re-parse: the hazard is real AND the gate stops it (issue #58, real process)' {
+
+    BeforeAll {
+        # A real .cmd shim standing in for claude.cmd's `%*` forwarding: it writes the payload argument (%~2) to the
+        # output file (%~1), so we observe EXACTLY what cmd.exe handed the shim after re-parsing the /c line. ASCII,
+        # no BOM (a BOM would make cmd.exe choke on the first line) -- written via .NET so no Set-Content encoding.
+        $script:ShimDir = Join-Path $script:RootTmp ('shim-' + [System.Guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Force -Path $script:ShimDir | Out-Null
+        $script:ShimCmd = Join-Path $script:ShimDir 'echoarg.cmd'
+        [System.IO.File]::WriteAllText($script:ShimCmd, "@echo off`r`n>`"%~1`" echo %~2`r`n", (New-Object System.Text.ASCIIEncoding))
+
+        # Forwarding shims (@echo off + %*, like an npm claude.cmd) for the /c quote-strip tests -- one under a BARE
+        # directory, one under a SPACED directory (the trigger for cmd's whole-line quote-strip).
+        $script:BareFwdShim = Join-Path $script:ShimDir 'fwd.cmd'
+        [System.IO.File]::WriteAllText($script:BareFwdShim, "@echo off`r`n%*`r`n", (New-Object System.Text.ASCIIEncoding))
+        $spacedDir = Join-Path $script:ShimDir 'a b'
+        New-Item -ItemType Directory -Force -Path $spacedDir | Out-Null
+        $script:SpacedFwdShim = Join-Path $spacedDir 'fwd.cmd'
+        [System.IO.File]::WriteAllText($script:SpacedFwdShim, "@echo off`r`n%*`r`n", (New-Object System.Text.ASCIIEncoding))
+
+        function global:Invoke-LokiTestShimSpawn {
+            # Spawn exactly as production does (UseShellExecute=$false + a custom child env), with a SECRET-SHAPED
+            # variable in that env -- the very thing cmd.exe must not be allowed to expand onto argv.
+            param([Parameter(Mandatory = $true)][string]$FileName, [Parameter(Mandatory = $true)][string]$Arguments)
+            $psi = New-Object System.Diagnostics.ProcessStartInfo
+            $psi.FileName = $FileName
+            $psi.Arguments = $Arguments
+            $psi.UseShellExecute = $false
+            $psi.RedirectStandardOutput = $true
+            $psi.RedirectStandardError = $true
+            $psi.CreateNoWindow = $true
+            $psi.EnvironmentVariables['LOKI_TEST_SECRET'] = 'sk-DEADBEEF-must-not-leak'
+            $proc = New-Object System.Diagnostics.Process
+            $proc.StartInfo = $psi
+            [void]$proc.Start()
+            [void]$proc.StandardOutput.ReadToEndAsync()
+            [void]$proc.StandardError.ReadToEndAsync()
+            [void]$proc.WaitForExit(15000)
+            $proc.Dispose()
+        }
+    }
+
+    AfterAll { Remove-Item Function:\Invoke-LokiTestShimSpawn -ErrorAction SilentlyContinue }
+
+    It 'delivers a SAFE (quoted) argument through the real cmd.exe /c route to the shim INTACT' {
+        $out = Join-Path $script:ShimDir ('safe-' + [System.Guid]::NewGuid().ToString('N') + '.txt')
+        $t = Get-LokiChildProcessTarget -FilePath $script:ShimCmd -ArgumentList @($out, 'CPU and RAM usage')
+        $t.Ok | Should -BeTrue
+        Invoke-LokiTestShimSpawn -FileName $t.FileName -Arguments $t.Arguments
+        (Get-Content -LiteralPath $out -Raw -Encoding ascii).Trim() | Should -Be 'CPU and RAM usage'
+    }
+
+    It 'POSITIVE CONTROL: the %VAR% hazard is real -- ungated, cmd.exe expands a child-env secret onto argv' {
+        # Build the /c line WITHOUT the gate (what the old code did) and prove the leak actually happens, so the
+        # fail-closed test below is guarding a real vector and not a hypothetical one.
+        $out = Join-Path $script:ShimDir ('leak-' + [System.Guid]::NewGuid().ToString('N') + '.txt')
+        $ungated = '/c ' + (ConvertTo-LokiArgString -ArgumentList @($script:ShimCmd)) + ' ' + (ConvertTo-LokiArgString -ArgumentList @($out, '%LOKI_TEST_SECRET%'))
+        Invoke-LokiTestShimSpawn -FileName (Join-Path (Get-LokiSystemDirectory) 'cmd.exe') -Arguments $ungated
+        (Get-Content -LiteralPath $out -Raw -Encoding ascii).Trim() | Should -Be 'sk-DEADBEEF-must-not-leak'
+    }
+
+    It 'POSITIVE CONTROL: %VAR% expands even INSIDE cmd double quotes (why % is always-unsafe, not bare-only)' {
+        # The secret ref sits in a SPACE-bearing argument, so ConvertTo-LokiArgString QUOTES it -- yet cmd still expands
+        # it inside the quotes. This is the committed proof behind classifying % as always-unsafe rather than bare-only.
+        $out = Join-Path $script:ShimDir ('qleak-' + [System.Guid]::NewGuid().ToString('N') + '.txt')
+        $ungated = '/c ' + (ConvertTo-LokiArgString -ArgumentList @($script:ShimCmd)) + ' ' + (ConvertTo-LokiArgString -ArgumentList @($out, 'key is %LOKI_TEST_SECRET% here'))
+        Invoke-LokiTestShimSpawn -FileName (Join-Path (Get-LokiSystemDirectory) 'cmd.exe') -Arguments $ungated
+        (Get-Content -LiteralPath $out -Raw -Encoding ascii).Trim() | Should -Be 'key is sk-DEADBEEF-must-not-leak here'
+    }
+
+    It 'the gate REFUSES that same %VAR% argument, so it never reaches cmd.exe (no output file created)' {
+        $out = Join-Path $script:ShimDir ('gated-' + [System.Guid]::NewGuid().ToString('N') + '.txt')
+        $t = Get-LokiChildProcessTarget -FilePath $script:ShimCmd -ArgumentList @($out, '%LOKI_TEST_SECRET%')
+        $t.Ok | Should -BeFalse
+        $t.Reason | Should -Be 'cmd-shim-unsafe'
+        Test-Path -LiteralPath $out | Should -BeFalse
+    }
+
+    It 'POSITIVE CONTROL: a SPACED shim path lets cmd /c quote-strip re-expose a quoted & (injection), ungated' {
+        # The adversarial-review vector. Build the pre-fix /c line by hand: a whitespace shim path is quoted, so the
+        # line begins with a quote and cmd strips the outer pair, un-quoting the & in a later (gate-allowed) quoted arg.
+        $marker = Join-Path $script:ShimDir ('inj-' + [System.Guid]::NewGuid().ToString('N') + '.txt')
+        $payload = "CPU and RAM & echo pwned>$marker"   # spaces -> quoted; & is bare-only -> allowed when quoted; no "
+        $ungated = '/c ' + (ConvertTo-LokiArgString -ArgumentList @($script:SpacedFwdShim)) + ' ' + (ConvertTo-LokiArgString -ArgumentList @('-p', $payload))
+        Invoke-LokiTestShimSpawn -FileName (Join-Path (Get-LokiSystemDirectory) 'cmd.exe') -Arguments $ungated
+        Test-Path -LiteralPath $marker | Should -BeTrue   # the & after a quoted arg executed -> the vector is real
+    }
+
+    It 'the gate REFUSES a spaced shim path, so the quote-strip injection never launches' {
+        $t = Get-LokiChildProcessTarget -FilePath $script:SpacedFwdShim -ArgumentList @('-p', 'CPU and RAM & whoami')
+        $t.Ok | Should -BeFalse
+        $t.Reason | Should -Be 'cmd-shim-unsafe'
+    }
+
+    It 'a BARE shim path keeps a quoted & LITERAL (no injection) -- the bare/quoted tier is sound end-to-end' {
+        $marker = Join-Path $script:ShimDir ('noinj-' + [System.Guid]::NewGuid().ToString('N') + '.txt')
+        $payload = "CPU and RAM & echo pwned>$marker"
+        $t = Get-LokiChildProcessTarget -FilePath $script:BareFwdShim -ArgumentList @('-p', $payload)
+        $t.Ok | Should -BeTrue                            # bare path -> routed (no quote-strip trigger)
+        Invoke-LokiTestShimSpawn -FileName $t.FileName -Arguments $t.Arguments
+        Test-Path -LiteralPath $marker | Should -BeFalse  # the & stayed inside cmd's quotes -> nothing injected
     }
 }
 
