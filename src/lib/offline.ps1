@@ -93,9 +93,16 @@ function Get-LokiOfflineContextSize {
     $ctx = [math]::Max($script:LokiOfflineCtxFloor, $needed)
     if ($ctx -gt $cap) { $ctx = $cap }
 
-    # Round UP to a multiple of 256 for a clean, reproducible window, then re-clamp (rounding may cross the cap).
+    # Round UP to a multiple of 256 for a clean, reproducible window. If that crosses the cap, step DOWN to the largest
+    # multiple of 256 that still fits -- so the result is ALWAYS a multiple of 256, even when the cap itself is not
+    # (a model whose declared max context is not 256-aligned, or an odd RAM-derived ceiling). Every shipped model max
+    # is aligned, so this only bites a future/odd cap (#58). The one exception is a cap below 256, where no positive
+    # multiple exists: there the cap wins, because the contract forbids returning 0 (Get-LokiLlamaServerArgs throws on 0).
     $ctx = [int]([math]::Ceiling($ctx / 256.0) * 256)
-    if ($ctx -gt $cap) { $ctx = $cap }
+    if ($ctx -gt $cap) {
+        $aligned = [int]([math]::Floor($cap / 256.0) * 256)
+        if ($aligned -ge 256) { $ctx = $aligned } else { $ctx = $cap }
+    }
     return $ctx
 }
 
