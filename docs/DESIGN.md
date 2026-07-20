@@ -144,8 +144,8 @@ shared variable name would collide and only the last file would survive (see
 The registry enumerates every `Get-LokiCmdMeta_*` function, validates the required
 fields, and confirms a matching handler exists — a command with metadata but no
 handler (or vice versa) fails this consistency gate. `loki help`, `loki <cmd> --help`,
-the README's command table, and shell completion are all **generated** from this one
-source, not hand-maintained, so a new command appears everywhere automatically. New
+and the README's command table are all **generated** from this one
+source, not hand-maintained (`loki completion` is a planned Stage-3 item, §7), so a new command appears everywhere automatically. New
 commands are created only through a scaffolding generator that emits the metadata,
 handler, and test stub in the standard shape — no hand-rolled deviation between
 sessions or contributors.
@@ -160,7 +160,9 @@ its way" out of them. This is enforced mechanically in CI, not through conventio
 alone:
 
 - **Anti-drift:** a documentation gate checks that every command has help text and a
-  README/registry entry, and that the tool manifest matches the security allow-list.
+  README/registry entry.
+- **Single-gate security:** both engines route every command through the one allow-list
+  (`Resolve-LokiCommandDecision`) — verified for the online and offline paths in the test suite.
 - **Anti-dead-code:** static analysis plus a scan for exported-but-never-called
   functions and unregistered command files.
 - **Anti-hallucination:** external facts about Claude Code or llama.cpp flags are
@@ -415,7 +417,7 @@ AI-agent-built codebase benefits far more from having its guardrails in place *b
 the first feature lands than from retrofitting them later.
 
 - **Stage 0 — Foundation.** Repository layout, CI with every gate active from day one
-  (tests, lint, documentation, anti-drift, dead-code, coverage), the command
+  (tests, lint, documentation, anti-drift, dead-code), the command
   scaffolding generator, and the contract conventions in `lib/`. Every feature after
   this point goes through the scaffold — none are added by hand.
 - **Stage 1 — MVP.** The dispatcher and help system, the online engine (`chat`, `ask`,
