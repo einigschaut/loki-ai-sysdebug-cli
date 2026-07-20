@@ -65,6 +65,12 @@ function Test-LokiStructure {
 
 # Directly runnable: build\Test-LokiStructure.ps1 -Run  (uses repo default paths relative to this file)
 if ($MyInvocation.InvocationName -ne '.' -and $args -contains '-Run') {
+    # Standalone entry point => fail closed (CLAUDE.md section 1). Set HERE, not at file top level: at top level it
+    # would leak into any scope that dot-sources this file (Invoke-Checks, the tests) where the caller owns the
+    # preference. This branch runs only on a direct invocation ($MyInvocation.InvocationName is '.' when dot-sourced),
+    # so a non-terminating error mid-scan (e.g. an unreadable path) terminates the gate instead of being swallowed
+    # into a false STRUCTURE GATE: OK.
+    $ErrorActionPreference = 'Stop'
     $repo = Split-Path $PSScriptRoot -Parent
     $r = Test-LokiStructure -SrcPath (Join-Path $repo 'src') -TestPath (Join-Path $repo 'tests')
     if ($r.Ok) { Write-Host 'STRUCTURE GATE: OK'; exit 0 }
