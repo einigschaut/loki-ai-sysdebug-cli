@@ -18,6 +18,7 @@
     'help.unknownCommand'       = 'Unknown command: {0}'
 
     'auth.notSet'               = '(not set)'
+    'auth.status.heading'       = 'loki auth status'
     'auth.status.method'        = 'Method:'
     'auth.status.variable'      = 'Variable:'
     'auth.status.secretSet'     = 'Secret set ({0})'
@@ -47,6 +48,10 @@
     'auth.unknownSub'           = "Unknown sub-command: '{0}'."
     'auth.usage'                = 'Usage: loki auth <login|status|use|set|clear>'
 
+    'status.heading'            = 'loki status  (v{0})'
+    'status.label.appRoot'      = 'App-Root:'
+    'status.label.powershell'   = 'PowerShell:'
+    'status.label.auth'         = 'Auth:'
     'status.net.online'         = 'Network: reachable (online engine available)'
     'status.net.offline'        = 'Network: unreachable - the online engine is out. "loki collect" still writes a raw diagnostic dump.'
     'status.postureRollup'      = '{0} ok, {1} warning(s), {2} issue(s)'
@@ -82,6 +87,7 @@
     'doctor.volume.encrypted'       = 'removable, BitLocker on'
     'doctor.volume.plain'           = 'not on an encrypted removable volume'
 
+    'doctor.heading'            = 'loki doctor'
     'doctor.footer'             = '{0} OK, {1} warning(s), {2} failure(s)'
 
     # loki doctor --engine (ADR-0014): the load-time integrity chain as a read-only report.

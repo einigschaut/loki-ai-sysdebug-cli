@@ -19,9 +19,9 @@ function Get-LokiCmdMeta_status {
 
 function Invoke-LokiCmd_status {
     param($Context)
-    Write-LokiHeading "loki status  (v$($Context.Version))"
-    Write-LokiLine ("{0,-14} {1}" -f 'App-Root:', $Context.AppRoot)
-    Write-LokiLine ("{0,-14} {1}" -f 'PowerShell:', $PSVersionTable.PSVersion.ToString())
+    Write-LokiHeading (Get-LokiText 'status.heading' -ArgumentList @($Context.Version))
+    Write-LokiLine ("{0,-14} {1}" -f (Get-LokiText 'status.label.appRoot'), $Context.AppRoot)
+    Write-LokiLine ("{0,-14} {1}" -f (Get-LokiText 'status.label.powershell'), $PSVersionTable.PSVersion.ToString())
 
     $online = Test-LokiConnectivity
     if ($online) {
@@ -47,7 +47,7 @@ function Invoke-LokiCmd_status {
     if ($null -ne $authCheck.DetailKey) {
         $authDetail = Get-LokiText $authCheck.DetailKey -ArgumentList $authCheck.DetailArgs
     }
-    $authLine = "{0,-14} [{1}] {2}" -f 'Auth:', $authStatusWord, $authDetail
+    $authLine = "{0,-14} [{1}] {2}" -f (Get-LokiText 'status.label.auth'), $authStatusWord, $authDetail
     if ($authCheck.Severity -eq 'ok') {
         Write-LokiOk $authLine
     }
