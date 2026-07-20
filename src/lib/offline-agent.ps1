@@ -597,9 +597,13 @@ function Invoke-LokiOfflineAgent {
     $obsChars = $script:LokiOfflineAgentMaxObsChars
     # Size for the PEAK conversation: system + tools + MaxIterations turns of (tool call + a bounded observation). The
     # per-turn +256 chars covers the tool-call/role overhead the observation bound does not. Clamped by the model max
-    # and the analyze ceiling inside Get-LokiOfflineContextSize.
+    # and the RAM-aware ceiling inside Get-LokiOfflineContextSize (ADR-0025) -- the machine probe below feeds it, and
+    # degrades to the fixed proxy when RAM/geometry is unknown. Sizing only; no security boundary here.
+    $hwProfile = Get-LokiHardwareProfile
+    $ctxIn = Resolve-LokiOfflineCtxInputs -Model $Model -HardwareProfile $hwProfile
     $ctx = Get-LokiOfflineContextSize -ModelMaxContext ([int]$Model.ContextTokens) `
-        -DumpChars ($MaxIterations * ($obsChars + 256)) -AnswerTokens 768
+        -DumpChars ($MaxIterations * ($obsChars + 256)) -AnswerTokens 768 `
+        -KvBudgetBytes $ctxIn.KvBudgetBytes -KvBytesPerToken $ctxIn.KvBytesPerToken
 
     $messages = @(
         @{ role = 'system'; content = $script:LokiOfflineAgentSystemPrompt },

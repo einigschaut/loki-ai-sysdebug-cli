@@ -268,6 +268,21 @@ the first response is timed and a persistently slow tier triggers a suggestion t
 downgrade. If no catalog tier can run at all, that is a stated answer pointing at
 `loki collect` (raw dump) — checked against the catalog, never assumed.
 
+**The context window is sized to the workload and the machine, not to the model
+(ADR-0025).** A tier that advertises a 262K-token window does not reserve one to read
+a 3 KB dump — llama.cpp allocates the KV cache for the whole window up front, so
+`offline --analyze`/`--agent` request only what the dump plus the answer need. The
+*ceiling* on that request is **adaptive**: the largest window whose F16 KV cache fits
+the RAM left after the model's own footprint, **calculated** from the model's attention
+geometry (pinned per tier in the manifest, `2·layers·kv-heads·head-dim·2` bytes/token)
+and the *same available-RAM reading the guards above use* — never measured by trial
+inference, because a figure tuned on one machine would not transfer to another. So a
+roomy box may read a large dump at tens of thousands of tokens where a blanket cap would
+have truncated it, while a just-fits box is held *below* that cap so a big dump cannot
+push the KV cache into the swap the guards just protected. When either the geometry or
+the RAM is unknown, a fixed proxy is the fallback — the previous, machine-blind
+behaviour.
+
 **Two maturity levels in the same harness**, reflecting what small CPU models can
 actually do reliably:
 

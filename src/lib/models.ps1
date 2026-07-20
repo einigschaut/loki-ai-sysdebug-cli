@@ -18,7 +18,7 @@
 # ASCII-only file -> no BOM (CLAUDE.md section 1).
 Set-StrictMode -Version Latest
 
-$script:LokiModelRequiredKeys = @('Id', 'Model', 'Tier', 'License', 'Url', 'FileName', 'Sha256', 'SizeBytes', 'ResidentGB', 'ContextTokens')
+$script:LokiModelRequiredKeys = @('Id', 'Model', 'Tier', 'License', 'Url', 'FileName', 'Sha256', 'SizeBytes', 'ResidentGB', 'ContextTokens', 'KVCache')
 
 function Get-LokiModelLayout {
     # Path math only -- it reads no manifest and touches no file. (Join-Path is provider-aware, so it is not strictly
@@ -64,6 +64,17 @@ function Get-LokiModelManifest {
         $residentGB = [double]$m.ResidentGB
         if ($residentGB -le 0) { throw "Model '$id': ResidentGB must be a positive number." }
         if ($residentGB -lt ([double]$m.SizeBytes / 1GB)) { throw "Model '$id': ResidentGB is smaller than the weights on disk." }
+        # KVCache is the attention geometry the offline context window sizes against (ADR-0025): the F16 KV-cache cost
+        # of one token is 2 * Layers * KVHeads * HeadDim * 2. A wrong-LOW field is the dangerous direction -- it makes
+        # the window look cheaper than it is and lets a big dump over-fill KV-cache RAM -- so each must be a positive
+        # int, validated fail-closed here rather than trusted. (Presence is already enforced by the required-keys loop.)
+        $kv = $m.KVCache
+        if ($kv -isnot [System.Collections.IDictionary]) { throw "Model '$id': KVCache must be a hashtable { Layers; KVHeads; HeadDim }." }
+        foreach ($gk in @('Layers', 'KVHeads', 'HeadDim')) {
+            if (-not $kv.Contains($gk)) { throw "Model '$id': KVCache is missing '$gk'." }
+            $gv = $kv[$gk]
+            if (($gv -isnot [int]) -or ([int]$gv -le 0)) { throw "Model '$id': KVCache.$gk must be a positive integer." }
+        }
         if ($seen.ContainsKey($id)) { throw "Model manifest: duplicate id '$id'." }
         $seen[$id] = $true
     }

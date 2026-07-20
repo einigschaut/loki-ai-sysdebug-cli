@@ -11,6 +11,7 @@ BeforeAll {
     . "$PSScriptRoot\..\src\lib\collect.ps1"    # ConvertTo-LokiCollectText (Read-LokiOfflineDump's .json path, via offline.ps1)
     . "$PSScriptRoot\..\src\lib\engine.ps1"     # Get-LokiEngineManifest (mocked in the command tests)
     . "$PSScriptRoot\..\src\lib\models.ps1"     # Get-LokiModelManifest / Get-LokiModelLayout
+    . "$PSScriptRoot\..\src\lib\hwscan.ps1"     # Get-LokiHardwareProfile / Get-LokiModelRamLimit -- the agent loop's window now sizes to RAM (ADR-0025)
     . "$PSScriptRoot\..\src\lib\allowlist.ps1"  # Get-LokiCommandClass + Resolve-LokiCommandDecision (the shared runtime-safe gate, #21/#50)
     . "$PSScriptRoot\..\src\lib\claude.ps1"     # Get-LokiJsonProp (still lives here; the gate moved to allowlist.ps1, #50)
     . "$PSScriptRoot\..\src\lib\env-isolate.ps1" # Get-LokiSystemDirectory (used by Get-LokiOfflineChildReadEnv, #55)

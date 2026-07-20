@@ -24,6 +24,7 @@ BeforeAll {
             Id = 'x'; Model = 'M'; Tier = 'T'; License = 'Apache-2.0'
             Url = 'https://example.com/m.gguf'; FileName = 'm.gguf'
             Sha256 = ('a' * 64); SizeBytes = 123; ResidentGB = 2.0; ContextTokens = 4096
+            KVCache = @{ Layers = 28; KVHeads = 8; HeadDim = 128 }
         }
         foreach ($k in $Override.Keys) { $e[$k] = $Override[$k] }
         $path = Join-Path (New-ModelsCaseDir) 'manifest.psd1'
@@ -33,6 +34,12 @@ BeforeAll {
         foreach ($k in $e.Keys) {
             $v = $e[$k]
             if ($v -is [string]) { [void]$sb.AppendLine(("    {0} = '{1}'" -f $k, $v)) }
+            elseif ($v -is [System.Collections.IDictionary]) {
+                # A nested hashtable (KVCache) -> an inline psd1 literal. Values here are ints; an override can pass a
+                # bad one (0/negative/missing field) to drive the KVCache validation, or a non-hashtable via `else`.
+                $parts = @(); foreach ($ik in $v.Keys) { $parts += ("{0} = {1}" -f $ik, $v[$ik]) }
+                [void]$sb.AppendLine(("    {0} = @{{ {1} }}" -f $k, ($parts -join '; ')))
+            }
             else { [void]$sb.AppendLine(("    {0} = {1}" -f $k, $v)) }
         }
         [void]$sb.AppendLine('  }')
@@ -59,6 +66,9 @@ Describe 'Get-LokiModelManifest (real manifest + fail-closed validation)' {
             ([string]$m.Sha256) | Should -Match '^[0-9a-fA-F]{64}$'
             ([string]$m.FileName) | Should -Match '^[A-Za-z0-9._-]+$'
             ([long]$m.SizeBytes) | Should -BeGreaterThan 0
+            # ADR-0025: every tier carries a positive KV geometry so the offline window can size to free RAM.
+            $m.KVCache | Should -BeOfType [System.Collections.IDictionary]
+            foreach ($gk in 'Layers', 'KVHeads', 'HeadDim') { ([int]$m.KVCache[$gk]) | Should -BeGreaterThan 0 }
             $ids += [string]$m.Id
         }
         ($ids | Select-Object -Unique).Count | Should -Be $ids.Count
@@ -88,6 +98,18 @@ Describe 'Get-LokiModelManifest (real manifest + fail-closed validation)' {
 
     It 'rejects a non-positive SizeBytes' {
         { Get-LokiModelManifest -Path (New-TempManifest @{ SizeBytes = 0 }) } | Should -Throw
+    }
+
+    It 'rejects a KVCache that is not a hashtable (ADR-0025)' {
+        { Get-LokiModelManifest -Path (New-TempManifest @{ KVCache = 5 }) } | Should -Throw
+    }
+
+    It 'rejects a KVCache with a non-positive geometry field -- wrong-low is the dangerous direction (ADR-0025)' {
+        { Get-LokiModelManifest -Path (New-TempManifest @{ KVCache = @{ Layers = 0; KVHeads = 8; HeadDim = 128 } }) } | Should -Throw
+    }
+
+    It 'rejects a KVCache missing a geometry field (ADR-0025)' {
+        { Get-LokiModelManifest -Path (New-TempManifest @{ KVCache = @{ Layers = 36; KVHeads = 8 } }) } | Should -Throw
     }
 }
 
