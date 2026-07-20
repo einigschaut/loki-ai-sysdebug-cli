@@ -401,7 +401,12 @@ function Get-LokiChildProcessTarget {
         [Parameter(Mandatory = $true)][string]$FilePath,
         [Parameter(Mandatory = $true)][AllowEmptyCollection()][string[]]$ArgumentList
     )
-    $ext = ([System.IO.Path]::GetExtension([string]$FilePath)).ToLowerInvariant()
+    # A filesystem-INVALID char in the path (a literal " < > | or a control char -- none legal in a Windows filename,
+    # so only reachable via a bogus -ClaudePath override) makes GetExtension throw. Fail closed with the uniform reason
+    # rather than let an exception escape, so the caller still cleans up and surfaces 'cmd-shim-unsafe' (issue #58).
+    $ext = ''
+    try { $ext = ([System.IO.Path]::GetExtension([string]$FilePath)).ToLowerInvariant() }
+    catch { return @{ Ok = $false; Reason = 'cmd-shim-unsafe'; FileName = $null; Arguments = $null } }
     if (($ext -ne '.cmd') -and ($ext -ne '.bat')) {
         return @{ Ok = $true; Reason = 'ready'; FileName = $FilePath; Arguments = (ConvertTo-LokiArgString -ArgumentList $ArgumentList) }
     }
@@ -410,8 +415,9 @@ function Get-LokiChildProcessTarget {
     # a following QUOTED metacharacter OUTSIDE quotes, so a gate-allowed quoted `&` in a later argument injects a command
     # into THIS credential-bearing child (adversarial review 2026-07-20, real-process repro). Refuse a would-be-quoted
     # shim path so the /c line never opens with a quote; a bare (whitespace-free) shim path keeps every argument's quotes
-    # intact and the bare/quoted tier sound. A native .exe is spawned directly and never reaches here; a literal `"` in
-    # the path is additionally caught by the per-argument scan below.
+    # intact and the bare/quoted tier sound. A native .exe is spawned directly and never reaches here. (A path with a
+    # literal " -- or any other filesystem-invalid quote-forcing char -- already fails closed at the GetExtension guard
+    # above, and no valid resolved path contains one.)
     if ($FilePath -match '\s') {
         return @{ Ok = $false; Reason = 'cmd-shim-unsafe'; FileName = $null; Arguments = $null }
     }

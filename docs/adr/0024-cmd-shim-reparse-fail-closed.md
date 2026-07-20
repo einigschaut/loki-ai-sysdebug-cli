@@ -54,7 +54,9 @@ all three claude spawns (`Invoke-LokiClaude`, `Invoke-LokiClaudeInteractive`, `I
   **mirrors `ConvertTo-LokiArgString` exactly**, so the gate never trips on the structural quotes that function adds.
 * **Plus one whole-line rule:** the shim **path** must not contain whitespace, so the `/c` line never opens with a quote
   and cmd performs no whole-line quote-strip. The bare/quoted argument tier is sound only while the first token is bare;
-  a would-be-quoted shim path is refused (this also fixes the pre-existing "spaces-in-shim-path doesn't launch" bug).
+  a would-be-quoted shim path is refused (this also fixes the pre-existing "spaces-in-shim-path doesn't launch" bug). A
+  filesystem-invalid path char (`"` `<` `>` `|` or a control char — none legal in a real filename, only reachable via a
+  bogus `-ClaudePath` override) fails closed at the extension check, so `Get-LokiChildProcessTarget` never throws.
 * Any unsafe argument **or** a whitespace shim path → `Ok=$false, Reason 'cmd-shim-unsafe'`. The spawn wrappers surface
   that as a refusal, and `ask`/`scan`/`chat` print an actionable message (`*.engineShimUnsafe`: point Loki at a native
   `claude.exe`).

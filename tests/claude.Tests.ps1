@@ -254,6 +254,14 @@ Describe 'Get-LokiChildProcessTarget (launch descriptor + .cmd/.bat fail-closed,
         $t.Ok | Should -BeFalse
         $t.Reason | Should -Be 'cmd-shim-unsafe'
     }
+
+    It 'FAILS CLOSED (uniform reason, no exception) for a path with a filesystem-invalid char' {
+        # A " (or < > | / control) in the path makes [IO.Path]::GetExtension throw; the guard turns that into the same
+        # cmd-shim-unsafe refusal instead of an escaping exception. Only reachable via a bogus -ClaudePath override.
+        $t = Get-LokiChildProcessTarget -FilePath 'C:\a"b\claude.cmd' -ArgumentList @('-p', 'ok')
+        $t.Ok | Should -BeFalse
+        $t.Reason | Should -Be 'cmd-shim-unsafe'
+    }
 }
 
 Describe 'cmd.exe .cmd-shim re-parse: the hazard is real AND the gate stops it (issue #58, real process)' {
