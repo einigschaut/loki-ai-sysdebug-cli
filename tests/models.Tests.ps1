@@ -63,6 +63,9 @@ Describe 'Get-LokiModelManifest (real manifest + fail-closed validation)' {
         $ids = @()
         foreach ($m in $models) {
             ([string]$m.Url) | Should -Match '^https://'
+            # ADR-0026: the supply-chain surface must not point at a moving target -- every shipped url pins an
+            # immutable 40-hex commit, never /resolve/main/.
+            ([string]$m.Url) | Should -Match '/resolve/[0-9a-f]{40}/'
             ([string]$m.Sha256) | Should -Match '^[0-9a-fA-F]{64}$'
             ([string]$m.FileName) | Should -Match '^[A-Za-z0-9._-]+$'
             ([long]$m.SizeBytes) | Should -BeGreaterThan 0
@@ -83,6 +86,16 @@ Describe 'Get-LokiModelManifest (real manifest + fail-closed validation)' {
 
     It 'rejects a non-https Url (no plaintext / downgrade)' {
         { Get-LokiModelManifest -Path (New-TempManifest @{ Url = 'http://example.com/m.gguf' }) } | Should -Throw
+    }
+
+    It 'rejects a huggingface Url that points at a MOVING ref instead of an immutable revision (ADR-0026)' {
+        { Get-LokiModelManifest -Path (New-TempManifest @{ Url = 'https://huggingface.co/o/r/resolve/main/m.gguf' }) } | Should -Throw
+    }
+
+    It 'ACCEPTS a huggingface Url that pins a 40-hex revision (the rule must not just reject everything)' {
+        # The positive half. Without it the guard above would still pass if the rule rejected every huggingface url.
+        $u = 'https://huggingface.co/o/r/resolve/' + ('a' * 40) + '/m.gguf'
+        { Get-LokiModelManifest -Path (New-TempManifest @{ Url = $u }) } | Should -Not -Throw
     }
 
     It 'rejects a malformed sha256' {

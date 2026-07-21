@@ -61,6 +61,14 @@ trust. The two decisions therefore live in pure functions: `Test-LokiDownloadRes
 with MemoryStreams and no network). The transport is thin wiring over them. Same split as `lib/hwscan.ps1`: the probe
 is impure, the judgement is pure.
 
+**6. Every model URL pins an IMMUTABLE revision.** `/resolve/main/` is a moving ref: the repo can replace the file
+under it at any time. The SHA256 pin turns that into a *failed* download rather than a poisoned one -- but a failed
+download is still a broken stick, and a supply-chain surface should not point at a moving target in the first place.
+All seven tiers now pin a 40-hex commit, resolved from the HF API and **verified**: on 2026-07-21 every pinned
+revision served exactly the pinned `SizeBytes`. `Get-LokiModelManifest` rejects a `huggingface.co` url that does not
+pin a 40-hex revision, so this cannot rot back. The engine url needed no change -- a GitHub release asset at a fixed
+tag is already immutable.
+
 ## Consequences
 
 * **Contract break, all callers updated** (CLAUDE.md §2): `Invoke-LokiVerifiedDownload` gains a mandatory
@@ -73,8 +81,8 @@ is impure, the judgement is pure.
   purpose instead of by accident.
 * **The SHA256 pin is untouched and still the authority.** Nothing here weakens it. The size checks are a cheaper and
   earlier refusal, plus a bound on the damage a server can do before the hash is able to speak at all.
-* **Still open, deliberately: the model URLs use the mutable `/resolve/main/`.** A repo that replaces the file breaks
-  the download (hash mismatch, fail-closed) rather than poisoning it, so this is a resilience/reproducibility item,
-  not an integrity hole. Pinning each URL to an immutable revision is its own change with its own provenance work.
+* **Taking a model update is now an explicit, reviewable act.** A pinned revision does not follow the vendor, so a
+  tier upgrade becomes a deliberate manifest change with url + sha256 + size moved together -- rather than something
+  a vendor can do to us between two runs. The manifest header documents the two-command re-resolve.
 * **Not covered: a redirect chain that stays https but leaves the expected host.** The SHA pin makes that a failed
   download rather than a compromise, and pinning hosts would break the CDN indirection both vendors rely on.
