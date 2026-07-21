@@ -142,6 +142,28 @@ Describe 'Get-LokiFootprintSnapshot / fingerprint (against real temp dirs)' {
     }
 }
 
+Describe 'Get-LokiFootprintProbeChildEnv (the probe child carries no credential)' {
+
+    # This function exists so this test can exist. The strip used to sit inside Invoke-LokiFootprintSelfProbe, which
+    # spawns a process and writes files -- so a mutation run could DELETE the strip and the whole suite stayed green.
+    # A guard nothing can fail is not a guard (CLAUDE.md section 6).
+    It 'strips every credential the operator shell carried, and keeps what the child needs' {
+        $base = @{ PATH = 'C:\Windows\System32'; SystemRoot = 'C:\Windows' }
+        foreach ($n in (Get-LokiCredentialVarNames)) { $base[$n] = "leaked-$n" }
+        $e = Get-LokiFootprintProbeChildEnv -AppRoot 'C:\stick' -BaseEnv $base
+        foreach ($n in (Get-LokiCredentialVarNames)) {
+            $e.ContainsKey($n) | Should -BeFalse -Because "the probe only writes marker files; $n has no business in it"
+        }
+        $e.ContainsKey('SystemRoot') | Should -BeTrue
+    }
+
+    It 'still applies the ADR-0003 redirect (the strip did not replace the isolation)' {
+        $e = Get-LokiFootprintProbeChildEnv -AppRoot 'C:\stick' -BaseEnv @{ PATH = 'C:\Windows' }
+        $e['USERPROFILE'] | Should -BeLike 'C:\stick*'
+        $e['TEMP'] | Should -BeLike 'C:\stick*'
+    }
+}
+
 Describe 'Invoke-LokiFootprintProbe -- real isolation self-probe (CLAUDE.md section 6)' {
 
     It 'the isolated write-probe lands on the stick and the host profile stays CLEAN (redirect holds)' {

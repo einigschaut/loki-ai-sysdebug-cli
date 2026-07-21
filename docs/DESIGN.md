@@ -335,6 +335,15 @@ DISABLE_UPDATES=1, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1,
 CLAUDE_CODE_DISABLE_AUTO_MEMORY=1, CLAUDE_CODE_CERT_STORE=system
 ```
 
+The copy goes one way only for *credentials*: because the block starts as a copy of the
+operator's shell, every child has whatever credential that shell carried. So each child
+env block runs through **one** scrub — `Remove-LokiCredentialEnv` in `lib/auth.ps1`, the
+single list of every env var name that carries a credential (**ADR-0027**). llama-server,
+the footprint probe, a gated read child and `claude setup-token` end up with **zero**;
+the online engine keeps **exactly the one** Loki set, which is what makes CLAUDE.md §5's
+"exactly ONE auth variable" true rather than intended. The same list backs the allow-list
+gate's secret-target deny, so "is this a credential?" has one answer for both questions.
+
 This is documented as **ADR-0003 — isolation model: child env block, restore only for
 process-surviving mutations** (`docs/adr/0003-isolation-model-child-env-block.md`).
 The reasoning, informed by prior art in portable-app launchers: environment variables

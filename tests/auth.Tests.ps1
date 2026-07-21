@@ -413,18 +413,11 @@ Describe 'Test-LokiCredentialTarget (culture-proof credential-name match)' {
         Test-LokiCredentialTarget -Text '' | Should -BeFalse
     }
 
-    It 'still matches under tr-TR, where a case-insensitive REGEX would not (measured, ADR-0027)' {
-        # In tr-TR ToLower('I') is the dotless U+0131, so a regex built from 'ANTHROPIC_API_KEY' with IgnoreCase does
-        # NOT match 'anthropic_api_key' -- proven in a fresh 5.1 process before this was written. Both names below
-        # carry that 'I'. An ordinal comparison never folds anything, which is why this must stay ordinal.
-        $prev = [System.Threading.Thread]::CurrentThread.CurrentCulture
-        try {
-            [System.Threading.Thread]::CurrentThread.CurrentCulture = [System.Globalization.CultureInfo]::GetCultureInfo('tr-TR')
-            Test-LokiCredentialTarget -Text 'Select-String -Path C:\dump.txt -Pattern anthropic_api_key' | Should -BeTrue
-            Test-LokiCredentialTarget -Text 'Select-String -Path C:\dump.txt -Pattern loki_secret' | Should -BeTrue
-        }
-        finally { [System.Threading.Thread]::CurrentThread.CurrentCulture = $prev }
-    }
+    # The tr-TR proof deliberately does NOT live here -- it lives in tests/culture.Tests.ps1, which runs each case in a
+    # FRESH PowerShell 5.1 process. .NET caches a compiled Regex by (pattern, options) with the culture NOT in the key,
+    # so an in-process culture switch is matched against a regex already compiled under the invariant culture: the test
+    # passes whatever the implementation does. That is not a hypothesis -- an in-process version of this test sat here
+    # first, and a mutation run swapping the ordinal comparison for -match left it green.
 }
 
 Describe 'ANTI-DRIFT: the credential names live in exactly one file' {

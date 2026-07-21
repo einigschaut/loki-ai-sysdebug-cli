@@ -99,6 +99,36 @@ Write-Output ((Resolve-LokiCommandDecision -CommandLine 'Get-ChildItem C:\').Rea
         $out | Should -Be 'read-downgraded-noncmdlet'
     }
 
+    It 'the credential-name deny still fires under <culture> (ADR-0027)' -ForEach @(
+        # en-US is the control. tr-TR is the regression: ToLower of a capital I is the dotless U+0131 there, so the
+        # old case-insensitive REGEX built from these names did not match their own lowercase form -- measured.
+        # Both names below carry that letter; the third (no I) is the control that always worked.
+        @{ culture = 'en-US'; pattern = 'anthropic_api_key' }
+        @{ culture = 'en-US'; pattern = 'loki_secret' }
+        @{ culture = 'tr-TR'; pattern = 'anthropic_api_key' }
+        @{ culture = 'tr-TR'; pattern = 'loki_secret' }
+        @{ culture = 'tr-TR'; pattern = 'ANTHROPIC_API_KEY' }
+        @{ culture = 'tr-TR'; pattern = 'claude_code_oauth_token' }
+        @{ culture = 'tr-TR'; pattern = 'aws_bearer_token_bedrock' }
+    ) {
+        # MUST run in a fresh process, which is the whole point of this file: .NET caches a compiled Regex by
+        # (pattern, options) WITHOUT the culture in the key, so an in-process test that matched the same pattern under
+        # the invariant culture first would pass under tr-TR no matter what -- a guard that cannot fail. A mutation run
+        # proved exactly that: swapping the ordinal comparison for -match left the in-process tr-TR tests green.
+        $out = & $script:InCulture $culture "Write-Output ((Resolve-LokiCommandDecision -CommandLine 'Select-String -Path C:\dump.txt -Pattern $pattern').Reason)"
+        $out | Should -Be 'secret-target-blocked'
+    }
+
+    It 'Test-LokiCredentialTarget itself is ordinal under tr-TR (the primitive, not just the gate)' {
+        $out = & $script:InCulture 'tr-TR' "Write-Output (Test-LokiCredentialTarget -Text 'grep anthropic_api_key dump.txt')"
+        $out | Should -Be 'True'
+    }
+
+    It 'an unrelated dump grep stays read under tr-TR (the deny is targeted, not a blanket)' {
+        $out = & $script:InCulture 'tr-TR' "Write-Output ((Resolve-LokiCommandDecision -CommandLine 'Select-String -Path C:\dump.txt -Pattern hata').Reason)"
+        $out | Should -Be 'read-allowlisted'
+    }
+
     It 'the deny list still fires under tr-TR' {
         $out = & $script:InCulture 'tr-TR' "Write-Output (Get-LokiCommandClass -CommandLine 'Get-Content x | iex')"
         $out | Should -Be 'denied'

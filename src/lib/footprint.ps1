@@ -149,6 +149,30 @@ function Compare-LokiFootprintSnapshot {
     }
 }
 
+function Get-LokiFootprintProbeChildEnv {
+    <#
+        The environment block the self-probe hands its child. Split out of Invoke-LokiFootprintSelfProbe so it can be
+        ASSERTED ON: the probe itself spawns a process and writes files, so anything decided inside it is only testable
+        through side effects -- and a mutation run proved that concretely, by deleting the credential strip from the
+        probe without turning a single test red. Same split as hwscan and lib/download.ps1: the impure part stays
+        impure, the part with a rule in it becomes a pure function with its own test.
+
+        Isolation per ADR-0003 (redirect the child onto the stick), then every credential removed: the probe writes
+        marker files and needs none. Pure apart from Get-LokiIsolatedEnv's own defaults.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$AppRoot,
+        [System.Collections.IDictionary]$BaseEnv
+    )
+    $isolated = Get-LokiIsolatedEnv -StickRoot $AppRoot
+    if ($null -eq $BaseEnv) { $childEnv = New-LokiChildEnvBlock -Isolated $isolated }
+    else { $childEnv = New-LokiChildEnvBlock -Isolated $isolated -BaseEnv $BaseEnv }
+    # One list, in lib/auth.ps1 (ADR-0027) -- this site used to carry its own three-name copy and so kept five
+    # credentials. Defense in depth: these are never in argv/logs regardless.
+    [void](Remove-LokiCredentialEnv -ChildEnv $childEnv)
+    return $childEnv
+}
+
 function Invoke-LokiFootprintSelfProbe {
     # Internal: the deterministic probe. Spawns an isolated child (New-LokiChildEnvBlock, ADR-0003) that writes a
     # marker into each redirect root's `loki-footprint-probe` dir. If the isolation holds the markers land on the
@@ -156,12 +180,7 @@ function Invoke-LokiFootprintSelfProbe {
     # clean the stick markers up. No network, no `claude` -- just powershell.exe writing files, so it is deterministic.
     param([Parameter(Mandatory = $true)][string]$AppRoot)
 
-    $isolated = Get-LokiIsolatedEnv -StickRoot $AppRoot
-    $childEnv = New-LokiChildEnvBlock -Isolated $isolated
-    # The probe child only writes marker files -- it needs no credential. Strip every one the parent env carried so the
-    # probe runs with the minimal env it needs (defense in depth; these are never in argv/logs regardless). One list,
-    # in lib/auth.ps1 (ADR-0027) -- this site used to carry its own three-name copy and so kept five credentials.
-    [void](Remove-LokiCredentialEnv -ChildEnv $childEnv)
+    $childEnv = Get-LokiFootprintProbeChildEnv -AppRoot $AppRoot
     $probe = $script:LokiFootprintProbeDirName
     $id = [System.Guid]::NewGuid().ToString('N')
 
@@ -221,7 +240,10 @@ foreach ($v in @('USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'TEMP')) {
     # the probe did not actually write -> the result is inconclusive, NOT a clean pass.
     $verified = $true
     foreach ($v in $script:LokiFootprintProbeRoots) {
-        $base = [string]$isolated[$v]
+        # Read the root out of the block the child ACTUALLY received, not out of a second copy of the intended one:
+        # the isolated values are overlaid into it, so they are the same values, and this way the positive control
+        # cannot silently check a block the child never got.
+        $base = [string]$childEnv[$v]
         if ([string]::IsNullOrEmpty($base)) { $verified = $false; continue }
         $marker = Join-Path (Join-Path $base $probe) ($id + '.txt')
         if (-not (Test-Path -LiteralPath $marker)) { $verified = $false }
@@ -232,7 +254,10 @@ foreach ($v in @('USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'TEMP')) {
     # its positive control would spuriously fail (its marker deleted -> ProbeVerified=$false -> a false "inconclusive").
     if (Test-Path -LiteralPath $scriptPath) { Remove-Item -LiteralPath $scriptPath -Force -ErrorAction SilentlyContinue }
     foreach ($v in $script:LokiFootprintProbeRoots) {
-        $base = [string]$isolated[$v]
+        # Read the root out of the block the child ACTUALLY received, not out of a second copy of the intended one:
+        # the isolated values are overlaid into it, so they are the same values, and this way the positive control
+        # cannot silently check a block the child never got.
+        $base = [string]$childEnv[$v]
         if ([string]::IsNullOrEmpty($base)) { continue }
         $d = Join-Path $base $probe
         $marker = Join-Path $d ($id + '.txt')

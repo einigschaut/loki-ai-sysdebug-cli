@@ -396,15 +396,9 @@ Describe 'Resolve-LokiCommandDecision - secret-target deny (adversarial review, 
         (Resolve-LokiCommandDecision -CommandLine 'Select-String -Path C:\collected\dump.txt -Pattern anthropic').Class | Should -Be 'read'
     }
 
-    It 'still denies under tr-TR, where the old case-insensitive REGEX did not (measured, ADR-0027)' {
-        $prev = [System.Threading.Thread]::CurrentThread.CurrentCulture
-        try {
-            [System.Threading.Thread]::CurrentThread.CurrentCulture = [System.Globalization.CultureInfo]::GetCultureInfo('tr-TR')
-            (Resolve-LokiCommandDecision -CommandLine 'Select-String -Path C:\dump.txt -Pattern anthropic_api_key').Class | Should -Be 'denied'
-            (Resolve-LokiCommandDecision -CommandLine 'Select-String -Path C:\dump.txt -Pattern loki_secret').Class | Should -Be 'denied'
-        }
-        finally { [System.Threading.Thread]::CurrentThread.CurrentCulture = $prev }
-    }
+    # The tr-TR proof lives in tests/culture.Tests.ps1 (fresh 5.1 process per case), not here: .NET's Regex cache is
+    # keyed on (pattern, options) and NOT on the culture, so an in-process culture switch reuses a regex compiled under
+    # the invariant culture and the test cannot fail. Proven by mutation -- see the note in tests/auth.Tests.ps1.
 }
 
 Describe 'Resolve-LokiCommandDecision - side-effect/exfil deny (adversarial review, ADR-0007)' {
