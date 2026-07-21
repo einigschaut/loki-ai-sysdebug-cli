@@ -8,6 +8,7 @@ Set-StrictMode -Version Latest
 
 BeforeAll {
     . "$PSScriptRoot\..\src\lib\exitcodes.ps1"
+    . "$PSScriptRoot\..\src\lib\auth.ps1"        # Remove-LokiCredentialEnv -- the one credential list (ADR-0027)
     . "$PSScriptRoot\..\src\lib\env-isolate.ps1"
     . "$PSScriptRoot\..\src\lib\download.ps1"
     . "$PSScriptRoot\..\src\lib\engine.ps1"
@@ -140,6 +141,21 @@ Describe 'Get-LokiEngineChildEnv (the environment the target does not get to con
                 'AIP_HTTP_PORT', 'AIP_MODE', 'AIP_HEALTH_ROUTE')) {
             $e.ContainsKey($k) | Should -BeFalse -Because "$k reaches llama-server from the target machine otherwise"
         }
+    }
+
+    It 'hands llama-server NO credential -- not one of the eight, not LOKI_SECRET (ADR-0027)' {
+        # The gap this test was written for. Until 2026-07-21 this function stripped LLAMA_* and nothing else, so the
+        # block it handed llama-server.exe carried every credential the operator's shell had -- measured: all eight.
+        # llama-server reads none of them, so nothing was exploitable through the engine itself; but Loki had already
+        # accepted the opposite rule for the offline read child (S6), and this is the largest third-party binary Loki
+        # executes. The credential names come from lib/auth.ps1, so adding one there extends this test automatically.
+        $shell = @{ 'PATH' = 'C:\Windows' }
+        foreach ($n in (Get-LokiCredentialVarNames)) { $shell[$n] = "leaked-$n" }
+        $e = Get-LokiEngineChildEnv -AppRoot 'C:\stick' -BaseEnv $shell
+        foreach ($n in (Get-LokiCredentialVarNames)) {
+            $e.ContainsKey($n) | Should -BeFalse -Because "$n would reach llama-server from the operator's shell"
+        }
+        $e.ContainsKey('PATH') | Should -BeTrue
     }
 
     It 'keeps what the child actually needs -- this is a strip, not an allow-list' {

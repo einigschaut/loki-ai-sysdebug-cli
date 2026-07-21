@@ -93,7 +93,7 @@ function Get-LokiLlamaServerArgs {
 
 function Get-LokiEngineChildEnv {
     <#
-        The isolated environment block for llama-server, with the engine's own namespace removed.
+        The isolated environment block for llama-server, with the engine's own namespace AND every credential removed.
 
         lib/env-isolate.ps1 deliberately hands a child a COPY of the FULL parent environment with Loki's redirects
         overlaid ("redirect instead of clean up", ADR-0003). That is right for PATH and SystemRoot and wrong for
@@ -103,6 +103,15 @@ function Get-LokiEngineChildEnv {
         This is layer 2 of the defence. It is not redundant with the explicit flags: `--metrics` and `--props` have no
         negated form, so LLAMA_ARG_ENDPOINT_METRICS / LLAMA_ARG_ENDPOINT_PROPS can switch endpoints ON and no flag can
         answer back. Stripping is the only thing that speaks for those.
+
+        The credential strip (ADR-0027) was MISSING until 2026-07-21, and the sentence above says why that was wrong in
+        this function's own words: it claimed "the same shape as lib/claude.ps1 stripping inherited auth vars" while
+        stripping only LLAMA_*. Measured on the real code, this block handed llama-server.exe all eight credentials an
+        operator's shell might carry -- including Loki's own secret-at-rest key. llama-server reads none of them, so
+        nothing was exploitable through the engine itself; but it is the largest third-party binary Loki executes, its
+        block is what any process IT spawns inherits, and Loki had already accepted the opposite rule for the offline
+        read child (S6: "a read child must never carry a credential, even one an operator's shell left in the ambient
+        environment"). The same argument applies here verbatim; it had simply never been applied.
     #>
     param(
         [Parameter(Mandatory = $true)][string]$AppRoot,
@@ -129,6 +138,8 @@ function Get-LokiEngineChildEnv {
         }
         if ($drop) { [void]$childEnv.Remove($k) }
     }
+    # llama-server needs no credential at all -- it is a local process talking to a model file on the stick.
+    [void](Remove-LokiCredentialEnv -ChildEnv $childEnv)
     return $childEnv
 }
 

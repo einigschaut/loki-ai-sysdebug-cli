@@ -305,3 +305,143 @@ Describe 'Set-LokiSecret / Clear-LokiSecret — round-trip via SecureString' {
         { Clear-LokiSecret -EnvFilePath $p } | Should -Not -Throw
     }
 }
+
+# ===================================================================================================================
+# The ONE credential list (ADR-0027). This list is the reason four child-process env blocks used to disagree about
+# what a credential is; these tests pin its contents, its scrub, and -- structurally -- that no second copy comes back.
+# ===================================================================================================================
+
+Describe 'Get-LokiCredentialVarNames (the single source of truth)' {
+
+    # Pinned here ON PURPOSE. Tests are specification (CLAUDE.md section 6): if someone drops a name from the list in
+    # lib/auth.ps1, that is a silently narrowed security boundary, and this is what says so out loud.
+    It 'contains exactly the eight credential variables Loki knows about' {
+        $names = Get-LokiCredentialVarNames
+        $expected = @(
+            'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN',
+            'AWS_BEARER_TOKEN_BEDROCK', 'ANTHROPIC_AWS_API_KEY',
+            'ANTHROPIC_FOUNDRY_API_KEY', 'ANTHROPIC_FOUNDRY_AUTH_TOKEN',
+            'LOKI_SECRET'
+        )
+        ($names | Sort-Object) -join ',' | Should -Be (($expected | Sort-Object) -join ',')
+    }
+
+    It 'returns a COPY -- a caller cannot edit the single source of truth' {
+        $first = Get-LokiCredentialVarNames
+        $first[0] = 'MUTATED_BY_CALLER'
+        (Get-LokiCredentialVarNames)[0] | Should -Not -Be 'MUTATED_BY_CALLER'
+    }
+}
+
+Describe 'Remove-LokiCredentialEnv (the child-env scrub)' {
+
+    BeforeAll {
+        # A parent environment exactly like an operator's shell that has used Claude Code, a cloud provider, and Loki.
+        function global:New-TestCredEnv {
+            $h = @{}
+            foreach ($n in (Get-LokiCredentialVarNames)) { $h[$n] = "value-of-$n" }
+            $h['PATH'] = 'C:\Windows\System32'
+            $h['USERNAME'] = 'loki'
+            return $h
+        }
+    }
+
+    AfterAll { Remove-Item Function:\New-TestCredEnv -ErrorAction SilentlyContinue }
+
+    It 'removes every credential and leaves everything else alone' {
+        $env2 = New-TestCredEnv
+        $removed = Remove-LokiCredentialEnv -ChildEnv $env2
+        $removed.Count | Should -Be 8
+        foreach ($n in (Get-LokiCredentialVarNames)) { $env2.ContainsKey($n) | Should -BeFalse }
+        $env2['PATH'] | Should -Be 'C:\Windows\System32'
+        $env2['USERNAME'] | Should -Be 'loki'
+    }
+
+    It 'keeps exactly the one credential named in -Keep (the online engine holds one)' {
+        $env2 = New-TestCredEnv
+        [void](Remove-LokiCredentialEnv -ChildEnv $env2 -Keep @('ANTHROPIC_API_KEY'))
+        $env2['ANTHROPIC_API_KEY'] | Should -Be 'value-of-ANTHROPIC_API_KEY'
+        $env2.ContainsKey('CLAUDE_CODE_OAUTH_TOKEN') | Should -BeFalse
+        $env2.ContainsKey('AWS_BEARER_TOKEN_BEDROCK') | Should -BeFalse
+        $env2.ContainsKey('LOKI_SECRET') | Should -BeFalse
+    }
+
+    It 'is case-insensitive in BOTH directions -- Windows env names are' {
+        # A CASE-SENSITIVE dictionary, deliberately: a PowerShell hashtable folds case for us, so it cannot show
+        # whether the scrub does. Dictionary[string,string] uses an ordinal comparer -- if the scrub compared keys
+        # naively, the lowercase name would survive here and the test would go red.
+        $d = New-Object 'System.Collections.Generic.Dictionary[string,string]'
+        $d.Add('anthropic_api_key', 'lowercase-key')
+        $d.Add('Aws_Bearer_Token_Bedrock', 'mixed-case-key')
+        $d.Add('PATH', 'C:\Windows\System32')
+        $removed = Remove-LokiCredentialEnv -ChildEnv $d
+        $removed.Count | Should -Be 2
+        $d.Count | Should -Be 1
+        $d['PATH'] | Should -Be 'C:\Windows\System32'
+    }
+
+    It '-Keep matches case-insensitively too (the kept name may be spelled either way)' {
+        $d = New-Object 'System.Collections.Generic.Dictionary[string,string]'
+        $d.Add('anthropic_api_key', 'lowercase-key')
+        $d.Add('LOKI_SECRET', 'stick-secret')
+        [void](Remove-LokiCredentialEnv -ChildEnv $d -Keep @('ANTHROPIC_API_KEY'))
+        $d.ContainsKey('anthropic_api_key') | Should -BeTrue
+        $d.ContainsKey('LOKI_SECRET') | Should -BeFalse
+    }
+
+    It 'on a block with no credential: removes nothing, throws nothing' {
+        $env2 = @{ PATH = 'C:\Windows\System32' }
+        (Remove-LokiCredentialEnv -ChildEnv $env2).Count | Should -Be 0
+        $env2.Count | Should -Be 1
+    }
+}
+
+Describe 'Test-LokiCredentialTarget (culture-proof credential-name match)' {
+
+    It 'finds the credential name anywhere in a command line: <name>' -ForEach @(
+        @{ name = 'ANTHROPIC_API_KEY' }, @{ name = 'ANTHROPIC_AUTH_TOKEN' }, @{ name = 'CLAUDE_CODE_OAUTH_TOKEN' }
+        @{ name = 'AWS_BEARER_TOKEN_BEDROCK' }, @{ name = 'ANTHROPIC_AWS_API_KEY' }
+        @{ name = 'ANTHROPIC_FOUNDRY_API_KEY' }, @{ name = 'ANTHROPIC_FOUNDRY_AUTH_TOKEN' }, @{ name = 'LOKI_SECRET' }
+    ) {
+        Test-LokiCredentialTarget -Text ('Select-String -Path C:\dump.txt -Pattern ' + $name) | Should -BeTrue
+        Test-LokiCredentialTarget -Text ('Select-String -Path C:\dump.txt -Pattern ' + $name.ToLowerInvariant()) | Should -BeTrue
+    }
+
+    It 'says no to an unrelated command and to an empty string (targeted, not a blanket deny)' {
+        Test-LokiCredentialTarget -Text 'Get-ChildItem C:\Windows' | Should -BeFalse
+        Test-LokiCredentialTarget -Text 'Select-String -Path C:\dump.txt -Pattern error' | Should -BeFalse
+        Test-LokiCredentialTarget -Text '' | Should -BeFalse
+    }
+
+    # The tr-TR proof deliberately does NOT live here -- it lives in tests/culture.Tests.ps1, which runs each case in a
+    # FRESH PowerShell 5.1 process. .NET caches a compiled Regex by (pattern, options) with the culture NOT in the key,
+    # so an in-process culture switch is matched against a regex already compiled under the invariant culture: the test
+    # passes whatever the implementation does. That is not a hypothesis -- an in-process version of this test sat here
+    # first, and a mutation run swapping the ordinal comparison for -match left it green.
+}
+
+Describe 'ANTI-DRIFT: the credential names live in exactly one file' {
+
+    # The structural gate this whole change exists for. The list had FOUR homes, they disagreed, and the 2026-07-16
+    # cloud-provider fix reached one of them. A second copy is not a style problem -- it is the mechanism by which the
+    # next fix goes missing. So: a credential name may appear as a QUOTED STRING LITERAL only in lib/auth.ps1.
+    # Prose mentions in comments are fine and deliberately still allowed (they explain the rule at the call site).
+    It 'no src file other than lib/auth.ps1 contains a credential name as a string literal' {
+        $srcDir = (Resolve-Path "$PSScriptRoot\..\src").Path
+        $owner = (Resolve-Path "$PSScriptRoot\..\src\lib\auth.ps1").Path
+        $offenders = New-Object System.Collections.Generic.List[string]
+        foreach ($file in (Get-ChildItem -LiteralPath $srcDir -Filter '*.ps1' -File -Recurse)) {
+            if ($file.FullName -eq $owner) { continue }
+            $text = Get-Content -Raw -LiteralPath $file.FullName
+            foreach ($name in (Get-LokiCredentialVarNames)) {
+                # Quoted literal only: 'NAME' or "NAME". Ordinal, so this guard cannot be culture-folded away either.
+                foreach ($q in @("'$name'", """$name""")) {
+                    if ($text.IndexOf($q, [System.StringComparison]::Ordinal) -ge 0) {
+                        [void]$offenders.Add(('{0} -> {1}' -f $file.Name, $q))
+                    }
+                }
+            }
+        }
+        ($offenders -join '; ') | Should -BeNullOrEmpty
+    }
+}

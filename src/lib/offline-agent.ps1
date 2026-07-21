@@ -207,12 +207,10 @@ function ConvertFrom-LokiAgentToolCall {
     return @{ Kind = 'none'; Reason = 'no-tool-call-no-content' }
 }
 
-# Vars scrubbed from a read child's environment (S6, review 2026-07-18): the Loki secrets + Claude Code's auth tokens.
-# Offline mode never loads any of these, so this is pure defense in depth -- but a model-proposed read must never carry
-# a credential, even one an operator's shell left in the ambient environment.
-$script:LokiOfflineChildScrubVars = @(
-    'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN', 'LOKI_SECRET'
-)
+# The scrub list this module used to own moved to lib/auth.ps1 on 2026-07-21 (ADR-0027). Its four names were missing
+# the four cloud-provider credentials, so a gated read child kept those -- measured, not supposed. The rule it encodes
+# is unchanged (S6, review 2026-07-18): offline mode never loads a credential, so this is pure defense in depth -- but
+# a model-proposed read must never carry one, not even a credential an operator's shell left in the ambient env.
 
 function Get-LokiOfflineChildReadEnv {
     <#
@@ -229,11 +227,7 @@ function Get-LokiOfflineChildReadEnv {
     $sys = Get-LokiSystemDirectory
     $winDir = Split-Path -Path $sys -Parent
     $result['PATH'] = '{0};{1};{2}' -f $sys, $winDir, (Join-Path $sys 'WindowsPowerShell\v1.0')
-    foreach ($secret in $script:LokiOfflineChildScrubVars) {
-        foreach ($existing in @($result.Keys)) {
-            if ($existing -ieq $secret) { [void]$result.Remove($existing) }
-        }
-    }
+    [void](Remove-LokiCredentialEnv -ChildEnv $result)
     return $result
 }
 

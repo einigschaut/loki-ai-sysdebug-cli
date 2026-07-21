@@ -435,6 +435,31 @@ Describe 'Get-LokiClaudeInvocation (SECURITY: secret only in env, never in argv)
         $plan.ArgString | Should -Not -BeLike "*$secret*"
     }
 
+    It 'lets EXACTLY ONE credential through -- an ambient one from the operator shell does not ride along (ADR-0027)' {
+        # End-to-end on the real process environment, because that is the actual threat: Get-LokiClaudeInvocation
+        # copies the FULL parent env (ADR-0003), and the parent is whatever shell the operator launched Loki from.
+        # Claude Code's precedence puts CLOUD PROVIDER auth FIRST, so an inherited AWS_BEARER_TOKEN_BEDROCK does not
+        # merely sit in the block -- it WINS over the key Loki injected, and the session silently runs on someone
+        # else's account. LOKI_SECRET is stripped too: no child of Loki's has any use for the stick's own key.
+        $root = New-TestClaudeAppRoot
+        $planted = @{}
+        try {
+            foreach ($n in (Get-LokiCredentialVarNames)) {
+                if ($n -eq 'ANTHROPIC_API_KEY') { continue }   # the one Loki itself sets below
+                $planted[$n] = "ambient-$n"
+                Set-Item -LiteralPath "Env:\$n" -Value $planted[$n]
+            }
+            $plan = Get-LokiClaudeInvocation -Prompt 'q' -AppRoot $root -Config @{} -ClaudePath $script:FakeClaude -Secret 'sk-loki-own-key'
+            $plan.ChildEnv['ANTHROPIC_API_KEY'] | Should -Be 'sk-loki-own-key'
+            foreach ($n in $planted.Keys) {
+                $plan.ChildEnv.ContainsKey($n) | Should -BeFalse -Because "$n from the operator's shell must not reach the engine"
+            }
+        }
+        finally {
+            foreach ($n in $planted.Keys) { Remove-Item -LiteralPath "Env:\$n" -ErrorAction SilentlyContinue }
+        }
+    }
+
     It 'BREAK-THE-GUARD: even an awkward secret (spaces/symbols) stays out of argv but is in env' {
         $root = New-TestClaudeAppRoot
         $secret = 'tok en "with" $weird chars'
@@ -756,6 +781,19 @@ Describe 'setup-token bootstrap env hygiene (subscription login, ADR-0009)' {
         $block.ContainsKey('ANTHROPIC_API_KEY') | Should -BeFalse
         $block.ContainsKey('CLAUDE_CODE_OAUTH_TOKEN') | Should -BeFalse
         $block.ContainsKey('ANTHROPIC_AUTH_TOKEN') | Should -BeFalse
+    }
+
+    It 'BREAK-THE-LEAK: strips EVERY credential on the one list, including LOKI_SECRET (ADR-0027)' {
+        # The two hand-listed tests around this one name seven of the eight between them -- and that is exactly how
+        # LOKI_SECRET stayed in this block until 2026-07-21 (measured). Driving from lib/auth.ps1 means a name added
+        # there is covered here the same day, with no one having to remember this file.
+        $base = @{ PATH = 'C:\orig' }
+        foreach ($n in (Get-LokiCredentialVarNames)) { $base[$n] = "parent-$n" }
+        $block = Get-LokiSetupTokenChildEnv -AppRoot (New-TestClaudeAppRoot) -BaseEnv $base
+        foreach ($n in (Get-LokiCredentialVarNames)) {
+            $block.ContainsKey($n) | Should -BeFalse -Because "$n must not reach a session that is MINTING a credential"
+        }
+        $block.ContainsKey('PATH') | Should -BeTrue
     }
 
     It 'BREAK-THE-LEAK: strips the cloud-provider credentials too (they outrank the sign-in we are about to do)' {
