@@ -12,6 +12,7 @@ BeforeAll {
     . "$PSScriptRoot\..\src\lib\engine.ps1"     # Get-LokiEngineManifest (mocked in the command tests)
     . "$PSScriptRoot\..\src\lib\models.ps1"     # Get-LokiModelManifest / Get-LokiModelLayout
     . "$PSScriptRoot\..\src\lib\hwscan.ps1"     # Get-LokiHardwareProfile / Get-LokiModelRamLimit -- the agent loop's window now sizes to RAM (ADR-0025)
+    . "$PSScriptRoot\..\src\lib\auth.ps1"       # Remove-LokiCredentialEnv / Test-LokiCredentialTarget -- the one credential list (ADR-0027)
     . "$PSScriptRoot\..\src\lib\allowlist.ps1"  # Get-LokiCommandClass + Resolve-LokiCommandDecision (the shared runtime-safe gate, #21/#50)
     . "$PSScriptRoot\..\src\lib\claude.ps1"     # Get-LokiJsonProp (still lives here; the gate moved to allowlist.ps1, #50)
     . "$PSScriptRoot\..\src\lib\env-isolate.ps1" # Get-LokiSystemDirectory (used by Get-LokiOfflineChildReadEnv, #55)
@@ -345,9 +346,17 @@ Describe 'Get-LokiOfflineChildReadEnv (child env hardening: PATH pinned, secrets
             $env:WINDIR = $saved
         }
     }
-    It 'strips every known auth/secret var, case-insensitively (S6)' {
-        $e = Get-LokiOfflineChildReadEnv -BaseEnv @{ ANTHROPIC_API_KEY = 'sk'; anthropic_auth_token = 't'; CLAUDE_CODE_OAUTH_TOKEN = 'o'; LOKI_SECRET = 's'; SAFE = 'ok' }
-        @($e.Keys | Where-Object { $_ -match '(?i)ANTHROPIC|OAUTH|LOKI_SECRET' }).Count | Should -Be 0
+    It 'strips EVERY credential Loki knows about, case-insensitively (S6, ADR-0027)' {
+        # Driven from lib/auth.ps1's list, not from a copy of it: this test used to name four vars by hand and so
+        # stayed green while the four cloud-provider credentials rode into the read child untouched (measured).
+        # Sourcing the names means adding one to the single list extends this assertion automatically.
+        $base = @{ SAFE = 'ok'; anthropic_auth_token = 'lowercase-spelling-is-the-same-variable' }
+        foreach ($n in (Get-LokiCredentialVarNames)) { $base[$n] = "leaked-$n" }
+        $e = Get-LokiOfflineChildReadEnv -BaseEnv $base
+        foreach ($n in (Get-LokiCredentialVarNames)) {
+            $e.ContainsKey($n) | Should -BeFalse -Because "$n must never reach a model-proposed read command"
+        }
+        $e.ContainsKey('anthropic_auth_token') | Should -BeFalse
         $e['SAFE'] | Should -Be 'ok'
     }
     It 'does not mutate the caller''s BaseEnv' {

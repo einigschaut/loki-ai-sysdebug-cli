@@ -9,6 +9,7 @@ BeforeAll {
     . "$PSScriptRoot\..\src\lib\engine.ps1"    # Get-LokiEngineManifest (mocked in the command tests)
     . "$PSScriptRoot\..\src\lib\models.ps1"    # Get-LokiModelManifest / Get-LokiModelLayout
     . "$PSScriptRoot\..\src\lib\hwscan.ps1"    # Get-LokiModelRamLimit -- the RAM budget Resolve-LokiOfflineCtxInputs reuses
+    . "$PSScriptRoot\..\src\lib\auth.ps1"      # Remove-LokiCredentialEnv -- the one credential list (ADR-0027)
     . "$PSScriptRoot\..\src\lib\agent.ps1"     # Invoke-LokiWithEngine (mocked -- the preflight guard lives here)
     . "$PSScriptRoot\..\src\lib\offline.ps1"
     . "$PSScriptRoot\..\src\commands\offline.ps1"

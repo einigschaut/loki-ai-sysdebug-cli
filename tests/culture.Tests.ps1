@@ -35,6 +35,7 @@ param([string]`$Culture)
 [System.Threading.Thread]::CurrentThread.CurrentCulture = [Globalization.CultureInfo]::GetCultureInfo(`$Culture)
 [Globalization.CultureInfo]::DefaultThreadCurrentCulture = [Globalization.CultureInfo]::GetCultureInfo(`$Culture)
 Set-StrictMode -Version Latest
+. '$libDir\auth.ps1'
 . '$libDir\allowlist.ps1'
 $Body
 "@

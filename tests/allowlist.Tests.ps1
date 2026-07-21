@@ -6,6 +6,7 @@
 Set-StrictMode -Version Latest
 
 BeforeAll {
+    . "$PSScriptRoot\..\src\lib\auth.ps1"       # Test-LokiCredentialTarget -- the gate's credential-name deny (ADR-0027)
     . "$PSScriptRoot\..\src\lib\allowlist.ps1"
 }
 
@@ -356,6 +357,53 @@ Describe 'Resolve-LokiCommandDecision - secret-target deny (adversarial review, 
 
     It 'still allows an unrelated read (the guard is targeted, not a blanket deny)' {
         (Resolve-LokiCommandDecision -CommandLine 'Get-ChildItem C:\Windows').Class | Should -Be 'read'
+    }
+
+    It 'blocks the .NET process-environment read' {
+        (Resolve-LokiCommandDecision -CommandLine 'Get-Item ([Environment]::GetEnvironmentVariable("x"))').Class | Should -Be 'denied'
+    }
+
+    # ---------------------------------------------------------------------------------------------------------------
+    # Credential NAMES (ADR-0027). These tests exist because the old ones did not: every case above reaches the secret
+    # through a MECHANISM (Env: drive, .env file), which the structural patterns block on their own -- so the three
+    # credential-name patterns that used to sit in the array were never what made any test pass. Proven by mutation:
+    # deleting all three left the suite at 137 passed / 0 failed. That is why the list could sit at three of the eight
+    # names Loki knows, for months, in a security core. The cases below name a credential with NO mechanism in the
+    # command line, so they can only pass because of the name check -- and they go red if a name is dropped again.
+    # ---------------------------------------------------------------------------------------------------------------
+    It 'blocks grepping a DUMP FILE for a credential name -- no Env:, no .env in the command: <name>' -ForEach @(
+        @{ name = 'ANTHROPIC_API_KEY' }, @{ name = 'ANTHROPIC_AUTH_TOKEN' }, @{ name = 'CLAUDE_CODE_OAUTH_TOKEN' }
+        @{ name = 'AWS_BEARER_TOKEN_BEDROCK' }, @{ name = 'ANTHROPIC_AWS_API_KEY' }
+        @{ name = 'ANTHROPIC_FOUNDRY_API_KEY' }, @{ name = 'ANTHROPIC_FOUNDRY_AUTH_TOKEN' }, @{ name = 'LOKI_SECRET' }
+    ) {
+        $d = Resolve-LokiCommandDecision -CommandLine ('Select-String -Path C:\collected\dump.txt -Pattern ' + $name)
+        $d.Class | Should -Be 'denied'
+        $d.Reason | Should -Be 'secret-target-blocked'
+    }
+
+    It 'blocks the lowercase spelling too (env var names are case-insensitive): <name>' -ForEach @(
+        @{ name = 'anthropic_api_key' }, @{ name = 'aws_bearer_token_bedrock' }, @{ name = 'loki_secret' }
+    ) {
+        (Resolve-LokiCommandDecision -CommandLine ('Select-String -Path C:\collected\dump.txt -Pattern ' + $name)).Class | Should -Be 'denied'
+    }
+
+    It 'blocks a credential name reached as a FILE name rather than a pattern' {
+        (Resolve-LokiCommandDecision -CommandLine 'Get-Content C:\temp\AWS_BEARER_TOKEN_BEDROCK.txt').Class | Should -Be 'denied'
+    }
+
+    It 'BREAK-THE-GUARD: a near-miss dump grep stays allowed -- the deny is the name, not the word "token"' {
+        (Resolve-LokiCommandDecision -CommandLine 'Select-String -Path C:\collected\dump.txt -Pattern token').Class | Should -Be 'read'
+        (Resolve-LokiCommandDecision -CommandLine 'Select-String -Path C:\collected\dump.txt -Pattern anthropic').Class | Should -Be 'read'
+    }
+
+    It 'still denies under tr-TR, where the old case-insensitive REGEX did not (measured, ADR-0027)' {
+        $prev = [System.Threading.Thread]::CurrentThread.CurrentCulture
+        try {
+            [System.Threading.Thread]::CurrentThread.CurrentCulture = [System.Globalization.CultureInfo]::GetCultureInfo('tr-TR')
+            (Resolve-LokiCommandDecision -CommandLine 'Select-String -Path C:\dump.txt -Pattern anthropic_api_key').Class | Should -Be 'denied'
+            (Resolve-LokiCommandDecision -CommandLine 'Select-String -Path C:\dump.txt -Pattern loki_secret').Class | Should -Be 'denied'
+        }
+        finally { [System.Threading.Thread]::CurrentThread.CurrentCulture = $prev }
     }
 }
 

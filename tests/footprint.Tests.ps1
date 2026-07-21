@@ -5,6 +5,7 @@
 Set-StrictMode -Version Latest
 
 BeforeAll {
+    . "$PSScriptRoot\..\src\lib\auth.ps1"        # Remove-LokiCredentialEnv -- the one credential list (ADR-0027)
     . "$PSScriptRoot\..\src\lib\env-isolate.ps1"
     . "$PSScriptRoot\..\src\lib\footprint.ps1"
 

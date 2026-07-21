@@ -158,9 +158,10 @@ function Invoke-LokiFootprintSelfProbe {
 
     $isolated = Get-LokiIsolatedEnv -StickRoot $AppRoot
     $childEnv = New-LokiChildEnvBlock -Isolated $isolated
-    # The probe child only writes marker files -- it needs no credential. Strip any auth var the parent env carried so
-    # the probe runs with the minimal env it needs (defense in depth; these are never in argv/logs regardless).
-    foreach ($authVar in @('ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_AUTH_TOKEN')) { [void]$childEnv.Remove($authVar) }
+    # The probe child only writes marker files -- it needs no credential. Strip every one the parent env carried so the
+    # probe runs with the minimal env it needs (defense in depth; these are never in argv/logs regardless). One list,
+    # in lib/auth.ps1 (ADR-0027) -- this site used to carry its own three-name copy and so kept five credentials.
+    [void](Remove-LokiCredentialEnv -ChildEnv $childEnv)
     $probe = $script:LokiFootprintProbeDirName
     $id = [System.Guid]::NewGuid().ToString('N')
 

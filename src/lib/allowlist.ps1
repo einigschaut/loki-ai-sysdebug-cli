@@ -229,8 +229,9 @@ function Get-LokiAllowDecision {
 # Secret-target deny (defense in depth -- adversarial review, ADR-0007). The pure classifier above is engine-agnostic
 # and trusts any Get-* by verb, so on its own it would auto-allow a genuine read cmdlet pointed at the process
 # environment or the secret-at-rest file -- letting a model read the very API key the online engine runs under and
-# surface it. These patterns block any otherwise-read command that targets the Env: PSDrive, a .env file, an
-# auth-variable name, or a DRIVE-QUALIFIED root-level home\ directory (issue #56). Case-insensitive (-match default).
+# surface it. These patterns block any otherwise-read command that targets the Env: PSDrive, a .env file, or a
+# DRIVE-QUALIFIED root-level home\ directory (issue #56). Case-insensitive (-match default). Naming a credential
+# VARIABLE is blocked too, but ordinally and from the one list in lib/auth.ps1 -- see the note at the end of the array.
 # Deliberately broad (fail-closed): blocking an unrelated *.env read, or a root-level home\ read on some data drive,
 # is an acceptable cost for a read-only diagnosis.
 $script:LokiSecretTargetPatterns = @(
@@ -246,10 +247,15 @@ $script:LokiSecretTargetPatterns = @(
     # C:\Users\x\home\log is NOT over-blocked, and plain relative 'home\...' (no drive) is left to the cwd pin (ADR-0023,
     # it does not resolve to the stick from a System32 cwd; denying it would over-block and is unnecessary).
     '[A-Za-z]:(?:[\\/]|\.{1,2}[\\/])*home(?:[\\/]|$|[\s=,;''"()])',
-    'GetEnvironmentVariable',    # .NET [*.Environment]::GetEnvironmentVariable(s)(...) -- reads the process env directly
-    'ANTHROPIC_API_KEY',
-    'CLAUDE_CODE_OAUTH_TOKEN',
-    'LOKI_SECRET'
+    'GetEnvironmentVariable'     # .NET [*.Environment]::GetEnvironmentVariable(s)(...) -- reads the process env directly
+    # The credential NAMES used to sit here as three more regexes. They moved to lib/auth.ps1 and are now matched by
+    # Test-LokiCredentialTarget in Resolve-LokiCommandDecision below (ADR-0027), for two measured reasons. (1) Content:
+    # three of the eight names Loki knows were listed, so a dump grep for the Bedrock bearer token classified as a
+    # plain read. (2) Comparison: -match folds case by the CURRENT CULTURE, and under tr-TR ToLower of a capital I is
+    # the dotless U+0131 -- so the two patterns whose names carry that letter did not match their own lowercase form
+    # (measured in a fresh 5.1 process; the same trap this file already documents for its Get-* pattern). An ordinal
+    # comparison never folds anything, and there is nothing regex-shaped about a variable name.
+    # (No name is spelled here on purpose -- tests/auth.Tests.ps1 fails any file but lib/auth.ps1 that quotes one.)
 )
 
 # Side-effecting/exfiltrating "read" patterns (defense in depth -- adversarial review, ADR-0007, extended 2026-07-18
@@ -383,6 +389,14 @@ function Resolve-LokiCommandDecision {
                 $class = 'denied'; $reason = 'secret-target-blocked'
                 break
             }
+        }
+        # ...and the credential NAMES, from the one list in lib/auth.ps1 (ADR-0027). Separate from the patterns above
+        # because these are literal names compared ORDINALLY, not regexes: see the note on the array above. The
+        # patterns above already block the MECHANISMS (Env: drive, .env file, GetEnvironmentVariable); this blocks
+        # naming a credential in any other target -- a grep of a collected dump, a config, a shell history.
+        # Called, not read at file scope: lib/*.ps1 is dot-sourced alphabetically and auth.ps1 loads after this file.
+        if (($class -ne 'denied') -and (Test-LokiCredentialTarget -Text $CommandLine)) {
+            $class = 'denied'; $reason = 'secret-target-blocked'
         }
     }
     if ($class -ne 'denied') {
