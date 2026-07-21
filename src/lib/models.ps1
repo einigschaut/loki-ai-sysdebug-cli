@@ -47,6 +47,13 @@ function Get-LokiModelManifest {
         }
         $id = [string]$m.Id
         if ([string]$m.Url -notmatch '^https://') { throw "Model '$id': Url must be https." }
+        # A Hugging Face Url must pin an IMMUTABLE revision (ADR-0026). /resolve/main/ is a moving ref: the repo can
+        # replace the file under it, and while the SHA256 pin makes that a FAILED download rather than a poisoned one,
+        # a supply-chain surface should not point at a moving target in the first place. Scoped to huggingface.co so
+        # the rule stays precise about the host shape it actually understands, instead of constraining every future host.
+        if (([string]$m.Url -match '^https://huggingface\.co/') -and ([string]$m.Url -notmatch '/resolve/[0-9a-f]{40}/')) {
+            throw "Model '$id': a huggingface.co Url must pin an immutable 40-hex revision, not a moving ref like /resolve/main/."
+        }
         if ([string]$m.Sha256 -notmatch '^[0-9a-fA-F]{64}$') { throw "Model '$id': Sha256 must be 64 hex chars." }
         # Filename comes from the (trusted) manifest but is validated anyway (defense in depth): safe charset, no
         # path separators, and NOT an all-dots name ('.'/'..') or a reserved device name -> no traversal / odd target.
