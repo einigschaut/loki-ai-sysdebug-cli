@@ -46,13 +46,45 @@ is carried to, so it is the version Loki targets. PowerShell 7 is not required.
 
 ## Quickstart
 
+Loki runs from a **stick** — a self-contained directory (normally the root of an encrypted USB
+volume) that carries the code, the offline engine and the model tiers. A git checkout is the
+*source*, not the thing you carry. So there are three steps, and the first one is a build:
+
 ```powershell
 git clone https://github.com/einigschaut/loki-ai-sysdebug-cli.git
 cd loki-ai-sysdebug-cli
 
-powershell -ExecutionPolicy Bypass -File src\loki.ps1 help     # command overview
-powershell -ExecutionPolicy Bypass -File src\loki.ps1 status   # write-free environment check
-powershell -ExecutionPolicy Bypass -File src\loki.ps1 auth login  # one-time setup: pick subscription or API key
+# 1. Build the stick from the repository (repeat this to update an existing stick --
+#    it never touches the engine, the models or your credential).
+powershell -ExecutionPolicy Bypass -File build\New-LokiStick.ps1 -Destination E:\
+```
+
+From here on you work **on the stick**, and `loki.cmd` at its root is the entry point:
+
+```powershell
+E:\loki.cmd status        # write-free environment check -- start here
+E:\loki.cmd setup         # download the offline engine + model tier(s). Needs internet; run it
+                          # on the machine where you prepare the stick, never on the target.
+E:\loki.cmd auth login    # ONLY if you want the online engine (see below)
+E:\loki.cmd help          # command overview
+```
+
+Add the stick root to `PATH` (or `cd E:\`) and every command in this README works verbatim as
+`loki <command>`.
+
+`loki setup` is the guided part: it lists the model tiers with their RAM needs, marks the
+recommended default, and downloads what you pick — verifying every file against a pinned SHA256
+and byte size before it is kept. `loki hwscan` tells you beforehand which tiers this machine can
+actually run. **The offline engine needs no account and no credential**; if you only want offline
+diagnosis you are done after `setup`.
+
+### Working in the repository
+
+For development the same entry point sits next to the dispatcher, so nothing needs building:
+
+```powershell
+.\src\loki.cmd help
+powershell -ExecutionPolicy Bypass -File build\Invoke-Checks.ps1   # analyzer + structure gate + Pester
 ```
 
 `loki auth login` is the one-command setup, in the shape of `gh auth login`. It asks how Loki should reach
