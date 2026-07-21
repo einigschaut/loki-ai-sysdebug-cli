@@ -16,6 +16,9 @@ BeforeAll {
     $seed = Join-Path $script:RootTmp 'seed.bin'
     [System.IO.File]::WriteAllText($seed, $script:GoodBytes, [System.Text.Encoding]::ASCII)
     $script:GoodHash = (Get-FileHash -LiteralPath $seed -Algorithm SHA256).Hash
+    # Measured, not hardcoded -- the pinned SIZE is now enforced alongside the hash (ADR-0026), so every call below
+    # must state it exactly like a real manifest entry does.
+    $script:GoodSize = [long](Get-Item -LiteralPath $seed).Length
 
     function global:New-DownloadCaseDir {
         $d = Join-Path $script:RootTmp ([System.Guid]::NewGuid().ToString('N'))
@@ -103,7 +106,8 @@ Describe 'Invoke-LokiVerifiedDownload (integrity gate; network Mocked)' {
     It 'refuses a non-https url without downloading' {
         Mock Get-LokiHttpFile { throw 'must not download for non-https' }
         $d = New-DownloadCaseDir
-        $r = Invoke-LokiVerifiedDownload -Url 'http://example.com/m.bin' -ExpectedSha256 $script:GoodHash -DestPath (Join-Path $d 'm.bin')
+        $r = Invoke-LokiVerifiedDownload -Url 'http://example.com/m.bin' -ExpectedSha256 $script:GoodHash `
+            -ExpectedBytes $script:GoodSize -DestPath (Join-Path $d 'm.bin')
         $r.Ok | Should -BeFalse
         $r.Reason | Should -Be 'not-https'
     }
@@ -112,7 +116,7 @@ Describe 'Invoke-LokiVerifiedDownload (integrity gate; network Mocked)' {
         Mock Get-LokiHttpFile { [System.IO.File]::WriteAllText($OutFile, $script:GoodBytes, [System.Text.Encoding]::ASCII) }
         $d = New-DownloadCaseDir
         $dest = Join-Path $d 'm.bin'
-        $r = Invoke-LokiVerifiedDownload -Url 'https://example.com/m.bin' -ExpectedSha256 $script:GoodHash -DestPath $dest
+        $r = Invoke-LokiVerifiedDownload -Url 'https://example.com/m.bin' -ExpectedSha256 $script:GoodHash -ExpectedBytes $script:GoodSize -DestPath $dest
         $r.Ok | Should -BeTrue
         Test-Path -LiteralPath $dest | Should -BeTrue
         Test-Path -LiteralPath ($dest + '.part') | Should -BeFalse
@@ -130,7 +134,7 @@ Describe 'Invoke-LokiVerifiedDownload (integrity gate; network Mocked)' {
             $script:SeenPart = $OutFile
             [System.IO.File]::WriteAllText($OutFile, $script:GoodBytes, [System.Text.Encoding]::ASCII)
         }
-        $r = Invoke-LokiVerifiedDownload -Url 'https://example.com/m.bin' -ExpectedSha256 $script:GoodHash -DestPath $dest -StagingDir $stage
+        $r = Invoke-LokiVerifiedDownload -Url 'https://example.com/m.bin' -ExpectedSha256 $script:GoodHash -ExpectedBytes $script:GoodSize -DestPath $dest -StagingDir $stage
         $r.Ok | Should -BeTrue
         $script:SeenPart | Should -Be (Join-Path $stage 'm.bin.part')
         Test-Path -LiteralPath $dest | Should -BeTrue
@@ -148,17 +152,20 @@ Describe 'Invoke-LokiVerifiedDownload (integrity gate; network Mocked)' {
         New-Item -ItemType Directory -Force -Path $stage | Out-Null
         [System.IO.File]::WriteAllText((Join-Path $stage 'm.bin.part'), 'JUNK-FROM-A-KILLED-RUN', [System.Text.Encoding]::ASCII)
         Mock Get-LokiHttpFile { [System.IO.File]::WriteAllText($OutFile, $script:GoodBytes, [System.Text.Encoding]::ASCII) }
-        $r = Invoke-LokiVerifiedDownload -Url 'https://example.com/m.bin' -ExpectedSha256 $script:GoodHash -DestPath $dest -StagingDir $stage
+        $r = Invoke-LokiVerifiedDownload -Url 'https://example.com/m.bin' -ExpectedSha256 $script:GoodHash -ExpectedBytes $script:GoodSize -DestPath $dest -StagingDir $stage
         $r.Ok | Should -BeTrue
         $r.Reason | Should -Be 'verified'
         @(Get-ChildItem -LiteralPath $stage -Force).Count | Should -Be 0
     }
 
     It 'BREAK-THE-GUARD: a tampered download (hash mismatch) is DELETED and never kept' {
-        Mock Get-LokiHttpFile { [System.IO.File]::WriteAllText($OutFile, 'TAMPERED-BYTES', [System.Text.Encoding]::ASCII) }
+        # The payload is deliberately the SAME LENGTH as the pin (ADR-0026 added a size check that now runs first).
+        # That keeps this test on the HASH guard where it belongs -- and it is the realistic attack anyway: a swap
+        # that changes the length is caught by arithmetic, a length-preserving one only by the hash.
+        Mock Get-LokiHttpFile { [System.IO.File]::WriteAllText($OutFile, 'TAMPERED-BYTES-SAMELEN', [System.Text.Encoding]::ASCII) }
         $d = New-DownloadCaseDir
         $dest = Join-Path $d 'm.bin'
-        $r = Invoke-LokiVerifiedDownload -Url 'https://example.com/m.bin' -ExpectedSha256 $script:GoodHash -DestPath $dest
+        $r = Invoke-LokiVerifiedDownload -Url 'https://example.com/m.bin' -ExpectedSha256 $script:GoodHash -ExpectedBytes $script:GoodSize -DestPath $dest
         $r.Ok | Should -BeFalse
         $r.Reason | Should -Be 'hash-mismatch'
         Test-Path -LiteralPath $dest | Should -BeFalse            # nothing unverified at the destination
@@ -170,7 +177,7 @@ Describe 'Invoke-LokiVerifiedDownload (integrity gate; network Mocked)' {
         $d = New-DownloadCaseDir
         $dest = Join-Path $d 'm.bin'
         [System.IO.File]::WriteAllText($dest, $script:GoodBytes, [System.Text.Encoding]::ASCII)
-        $r = Invoke-LokiVerifiedDownload -Url 'https://example.com/m.bin' -ExpectedSha256 $script:GoodHash -DestPath $dest
+        $r = Invoke-LokiVerifiedDownload -Url 'https://example.com/m.bin' -ExpectedSha256 $script:GoodHash -ExpectedBytes $script:GoodSize -DestPath $dest
         $r.Ok | Should -BeTrue
         $r.Skipped | Should -BeTrue
         Should -Invoke Get-LokiHttpFile -Times 0 -Exactly
@@ -184,7 +191,7 @@ Describe 'Invoke-LokiVerifiedDownload (integrity gate; network Mocked)' {
         $d = New-DownloadCaseDir
         $dest = Join-Path $d 'm.bin'
         [System.IO.File]::WriteAllText($dest, 'STALE-ATTACKER-CONTROLLED-BYTES', [System.Text.Encoding]::ASCII)
-        $r = Invoke-LokiVerifiedDownload -Url 'https://example.com/m.bin' -ExpectedSha256 $script:GoodHash -DestPath $dest
+        $r = Invoke-LokiVerifiedDownload -Url 'https://example.com/m.bin' -ExpectedSha256 $script:GoodHash -ExpectedBytes $script:GoodSize -DestPath $dest
         $r.Ok | Should -BeFalse
         Test-Path -LiteralPath $dest | Should -BeFalse
     }
@@ -201,7 +208,7 @@ Describe 'Invoke-LokiVerifiedDownload (integrity gate; network Mocked)' {
         [System.IO.File]::WriteAllText($dest, 'STALE-UNVERIFIED-BYTES', [System.Text.Encoding]::ASCII)
         $hold = [System.IO.File]::Open($dest, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
         try {
-            $r = Invoke-LokiVerifiedDownload -Url 'https://example.com/m.bin' -ExpectedSha256 $script:GoodHash -DestPath $dest
+            $r = Invoke-LokiVerifiedDownload -Url 'https://example.com/m.bin' -ExpectedSha256 $script:GoodHash -ExpectedBytes $script:GoodSize -DestPath $dest
             $r.Ok | Should -BeFalse
             $r.Reason | Should -Be 'dest-locked'
         }
@@ -217,10 +224,132 @@ Describe 'Invoke-LokiVerifiedDownload (integrity gate; network Mocked)' {
         Mock Get-LokiHttpFile { [System.IO.File]::WriteAllText($OutFile, 'partial-bytes', [System.Text.Encoding]::ASCII); throw 'network down' }
         $d = New-DownloadCaseDir
         $dest = Join-Path $d 'm.bin'
-        $r = Invoke-LokiVerifiedDownload -Url 'https://example.com/m.bin' -ExpectedSha256 $script:GoodHash -DestPath $dest
+        $r = Invoke-LokiVerifiedDownload -Url 'https://example.com/m.bin' -ExpectedSha256 $script:GoodHash -ExpectedBytes $script:GoodSize -DestPath $dest
         $r.Ok | Should -BeFalse
         $r.Reason | Should -Be 'download-failed'
         Test-Path -LiteralPath ($dest + '.part') | Should -BeFalse
         Test-Path -LiteralPath $dest | Should -BeFalse
+    }
+
+    It 'BREAK-THE-GUARD: a SHORT download is rejected on SIZE, before the hash is computed (ADR-0026)' {
+        # A truncated transfer is the half the stream cap cannot see -- the cap only bounds the upper end. The pinned
+        # size catches it, and nothing unverified may reach the destination.
+        Mock Get-LokiHttpFile { [System.IO.File]::WriteAllText($OutFile, 'short', [System.Text.Encoding]::ASCII) }
+        $d = New-DownloadCaseDir
+        $dest = Join-Path $d 'm.bin'
+        $r = Invoke-LokiVerifiedDownload -Url 'https://example.com/m.bin' -ExpectedSha256 $script:GoodHash `
+            -ExpectedBytes $script:GoodSize -DestPath $dest
+        $r.Ok | Should -BeFalse
+        $r.Reason | Should -Be 'size-mismatch'
+        Test-Path -LiteralPath $dest | Should -BeFalse
+        Test-Path -LiteralPath ($dest + '.part') | Should -BeFalse
+    }
+
+    It 'passes the size pin to the transport as its hard cap (proves the disk-fill guard is actually wired)' {
+        # Without this the -MaxBytes argument could be dropped and every other test would stay green: a mock never
+        # streams more than it was told to. Assert the transport RECEIVES the pin.
+        $script:SeenMax = $null
+        Mock Get-LokiHttpFile {
+            $script:SeenMax = $MaxBytes
+            [System.IO.File]::WriteAllText($OutFile, $script:GoodBytes, [System.Text.Encoding]::ASCII)
+        }
+        $d = New-DownloadCaseDir
+        $dest = Join-Path $d 'm.bin'
+        $r = Invoke-LokiVerifiedDownload -Url 'https://example.com/m.bin' -ExpectedSha256 $script:GoodHash `
+            -ExpectedBytes $script:GoodSize -DestPath $dest
+        $r.Ok | Should -BeTrue
+        $script:SeenMax | Should -Be $script:GoodSize
+    }
+
+    It 'a non-positive size pin is a broken manifest -> refused without touching the network' {
+        Mock Get-LokiHttpFile { throw 'must not download with a broken size pin' }
+        $d = New-DownloadCaseDir
+        $r = Invoke-LokiVerifiedDownload -Url 'https://example.com/m.bin' -ExpectedSha256 $script:GoodHash `
+            -ExpectedBytes 0 -DestPath (Join-Path $d 'm.bin')
+        $r.Ok | Should -BeFalse
+        $r.Reason | Should -Be 'bad-size-pin'
+        Should -Invoke Get-LokiHttpFile -Times 0 -Exactly
+    }
+}
+
+Describe 'Test-LokiDownloadResponse (pure: may we read this response body at all? ADR-0026)' {
+
+    It 'accepts an https response whose declared length matches the pin' {
+        $v = Test-LokiDownloadResponse -ResponseScheme 'https' -DeclaredLength 100 -ExpectedBytes 100
+        $v.Ok | Should -BeTrue
+        $v.Reason | Should -Be 'ok'
+    }
+
+    It 'accepts an https response that declares NO length (-1) -- the stream cap still bounds it' {
+        (Test-LokiDownloadResponse -ResponseScheme 'https' -DeclaredLength -1 -ExpectedBytes 100).Ok | Should -BeTrue
+    }
+
+    It 'accepts HTTPS in any casing' {
+        (Test-LokiDownloadResponse -ResponseScheme 'HTTPS' -DeclaredLength 100 -ExpectedBytes 100).Ok | Should -BeTrue
+    }
+
+    It 'BREAK-THE-GUARD: refuses a FINAL scheme that left https: <scheme>' -ForEach @(
+        @{ scheme = 'http' }, @{ scheme = 'ftp' }, @{ scheme = '' }
+    ) {
+        # Measured: both shipped hosts 302 to a CDN, so this is the scheme that actually carries the bytes. Checking
+        # only the caller's url was a claim about hop 0.
+        $v = Test-LokiDownloadResponse -ResponseScheme $scheme -DeclaredLength 100 -ExpectedBytes 100
+        $v.Ok | Should -BeFalse
+        $v.Reason | Should -Be 'not-https-final'
+    }
+
+    It 'BREAK-THE-GUARD: refuses a declared length that disagrees with the pin, either way: <declared>' -ForEach @(
+        @{ declared = 99 }, @{ declared = 101 }, @{ declared = 10000000 }
+    ) {
+        $v = Test-LokiDownloadResponse -ResponseScheme 'https' -DeclaredLength $declared -ExpectedBytes 100
+        $v.Ok | Should -BeFalse
+        $v.Reason | Should -Be 'length-mismatch'
+    }
+
+    It 'checks the SCHEME before the length -- a downgraded response is reported as a downgrade, not as a size' {
+        # The order is the message: "length-mismatch" for an http response sends the operator after the wrong problem.
+        (Test-LokiDownloadResponse -ResponseScheme 'http' -DeclaredLength 999 -ExpectedBytes 100).Reason |
+            Should -Be 'not-https-final'
+    }
+}
+
+Describe 'Copy-LokiCappedStream (pure: the disk-fill guard; ADR-0026)' {
+
+    It 'copies a stream that fits and reports the byte count' {
+        $src = New-Object System.IO.MemoryStream -ArgumentList (, [byte[]](1..50))
+        $dst = New-Object System.IO.MemoryStream
+        try {
+            Copy-LokiCappedStream -Source $src -Destination $dst -MaxBytes 50 | Should -Be 50
+            $dst.Length | Should -Be 50
+        }
+        finally { $src.Close(); $dst.Close() }
+    }
+
+    It 'BREAK-THE-GUARD: THROWS as soon as the source exceeds the cap -- the SHA256 cannot do this job' {
+        # A hash is only computable once the whole file is already on disk, so without a cap a hostile or broken
+        # server writes until the stick is full and only then gets told its bytes were wrong.
+        $src = New-Object System.IO.MemoryStream -ArgumentList (, [byte[]](1..200))
+        $dst = New-Object System.IO.MemoryStream
+        try { { Copy-LokiCappedStream -Source $src -Destination $dst -MaxBytes 50 } | Should -Throw }
+        finally { $src.Close(); $dst.Close() }
+    }
+
+    It 'never writes a byte past the cap -- the over-limit bytes never reach the destination' {
+        $src = New-Object System.IO.MemoryStream -ArgumentList (, [byte[]](1..200))
+        $dst = New-Object System.IO.MemoryStream
+        try {
+            $threw = $false
+            try { [void](Copy-LokiCappedStream -Source $src -Destination $dst -MaxBytes 50) } catch { $threw = $true }
+            $threw | Should -BeTrue -Because 'the cap must ABORT, not silently truncate to the limit'
+            $dst.Length | Should -BeLessOrEqual 50
+        }
+        finally { $src.Close(); $dst.Close() }
+    }
+
+    It 'rejects a non-positive cap rather than copying unbounded' {
+        $src = New-Object System.IO.MemoryStream -ArgumentList (, [byte[]](1..10))
+        $dst = New-Object System.IO.MemoryStream
+        try { { Copy-LokiCappedStream -Source $src -Destination $dst -MaxBytes 0 } | Should -Throw }
+        finally { $src.Close(); $dst.Close() }
     }
 }

@@ -107,7 +107,7 @@ function Invoke-LokiCmd_setup {
     # pinned archive. A Ctrl-C on this download (200 MB over a slow link is where operators actually reach for it)
     # would otherwise leave a partial that makes `loki doctor --engine` report the stick as tampered with.
     $dl = Invoke-LokiVerifiedDownload -Url ([string]$engine.Url) -ExpectedSha256 ([string]$engine.Sha256) `
-        -DestPath $layout.ArchivePath -StagingDir $layout.StagingDir
+        -ExpectedBytes ([long]$engine.SizeBytes) -DestPath $layout.ArchivePath -StagingDir $layout.StagingDir
     if (-not $dl.Ok) {
         Write-LokiErr (Get-LokiText 'setup.engineFailed' -ArgumentList @([string]$dl.Reason))
         return (Get-LokiExitCode 'GeneralError')
@@ -185,7 +185,8 @@ function Invoke-LokiCmd_setup {
     $failed = 0
     foreach ($p in $plan) {
         Write-LokiInfo (Get-LokiText 'setup.downloading' -ArgumentList @($p.Model, [math]::Round(([double]$p.SizeBytes / 1GB), 2)))
-        $res = Invoke-LokiVerifiedDownload -Url $p.Url -ExpectedSha256 $p.Sha256 -DestPath $p.DestPath
+        $res = Invoke-LokiVerifiedDownload -Url $p.Url -ExpectedSha256 $p.Sha256 `
+            -ExpectedBytes ([long]$p.SizeBytes) -DestPath $p.DestPath
         if ($res.Ok) {
             if ($res.ContainsKey('Skipped') -and $res.Skipped) { Write-LokiOk (Get-LokiText 'setup.skipped' -ArgumentList @($p.Model)) }
             else { Write-LokiOk (Get-LokiText 'setup.verified' -ArgumentList @($p.Model)) }
