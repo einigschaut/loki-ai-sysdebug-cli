@@ -503,6 +503,33 @@ Describe 'Invoke-LokiOfflineAgentTurnLoop (the capped multi-turn diagnose loop; 
         $r.Iterations | Should -Be 2
     }
 
+    It 'an EMPTY TURN in the shape the real transport actually returns is stuck, not an engine failure (#81)' {
+        # The mock above is the shape lib/offline.ps1 CANNOT produce. Invoke-LokiEngineChat turns "a successful reply
+        # whose message carried neither tool_calls nor content" into Ok=$false / 'engine-empty-answer' -- so the
+        # graceful nudge path above was only ever reachable through a mock the transport never emits. The FIRST real
+        # 8B agent run hit the real shape and the loop aborted with Ok=$false, telling the operator the ENGINE had
+        # failed when in fact the model had produced an empty turn. Two different facts; only one of them was true.
+        Mock Invoke-LokiEngineChat { @{ Ok = $false; Reason = 'engine-empty-answer' } }
+        $r = Invoke-LokiOfflineAgentTurnLoop -BaseUri 'x' -Messages $script:seed -Tools @() -MaxIterations 8
+        $r.Ok         | Should -BeTrue -Because 'an empty turn is a MODEL non-answer; Ok=$false is reserved for the engine failing'
+        $r.StopReason | Should -Be 'stuck'
+        $r.Iterations | Should -Be 2
+        $r.Answer     | Should -Match 'insufficient-data'
+    }
+
+    It 'BREAK-THE-GUARD: an empty turn followed by a real answer still finishes normally (#81)' {
+        # The nudge must actually give the model another chance, not merely avoid the false failure.
+        $script:emptyOnce = $true
+        Mock Invoke-LokiEngineChat {
+            if ($script:emptyOnce) { $script:emptyOnce = $false; return @{ Ok = $false; Reason = 'engine-empty-answer' } }
+            @{ Ok = $true; Reason = 'ok'; ToolCalls = (New-ToolCall 'final_answer' '{"answer":"disk C: is full"}') }
+        }
+        $r = Invoke-LokiOfflineAgentTurnLoop -BaseUri 'x' -Messages $script:seed -Tools @() -MaxIterations 8
+        $r.Ok         | Should -BeTrue
+        $r.StopReason | Should -Be 'final'
+        $r.Answer     | Should -Be 'disk C: is full'
+    }
+
     It 'an ENGINE failure mid-loop is propagated (Ok=$false), not hidden as an answer' {
         Mock Invoke-LokiEngineChat { @{ Ok = $false; Reason = 'engine-request-failed' } }
         $r = Invoke-LokiOfflineAgentTurnLoop -BaseUri 'x' -Messages $script:seed -Tools @()
