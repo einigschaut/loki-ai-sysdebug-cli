@@ -51,7 +51,9 @@
 #       The CALLER must have gated the command first.
 #   Invoke-LokiOfflineAgentTurnLoop -BaseUri -Messages -Tools [-MaxIterations -TimeBudgetSec -MaxObservationChars] -> [hashtable]{ Ok; Answer?; StopReason; Iterations; Reason? }   (#22)
 #       The multi-turn read-only diagnose loop, engine-free (calls Invoke-LokiEngineChat + Invoke-LokiOfflineAgentCommand
-#       -- both mockable). Bounded by iteration AND time caps; always returns an answer. Ok=$false only on engine failure.
+#       -- both mockable). Bounded by iteration AND time caps; always returns an answer. Ok=$false only on engine failure
+#       -- an EMPTY TURN (the model returning neither a tool call nor prose) is a MODEL non-answer, so it takes the
+#       nudge/strike path and ends as StopReason='stuck' with Ok=$true, never as an engine failure (#81).
 #   Invoke-LokiOfflineAgent -AppRoot -Engine -Runtime -Model [-MaxIterations -TimeBudgetSec] -> [hashtable]{ Ok; Reason; Answer?; StopReason?; Iterations? }   (#22)
 #       The loop entry the command calls for a CAPABLE model: sizes context, starts the engine through
 #       Invoke-LokiWithEngine (integrity preflight + clean kill), and runs the turn loop inside it.
@@ -499,6 +501,7 @@ function Invoke-LokiOfflineAgentTurnLoop {
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $iteration = 0
     $strikes = 0
+    $slowestTurnSec = 0.0   # measured, and the only thing that decides whether another turn still fits (see below)
     while ($true) {
         # Caps checked at the TOP: never start a turn we cannot afford. Both return a real answer, not silence.
         if ($iteration -ge $MaxIterations) {
@@ -507,17 +510,49 @@ function Invoke-LokiOfflineAgentTurnLoop {
         if ($sw.Elapsed.TotalSeconds -ge $TimeBudgetSec) {
             return @{ Ok = $true; StopReason = 'time-cap'; Iterations = $iteration; Answer = 'insufficient-data: reached the time limit before a firm conclusion.' }
         }
+        # ...and do not start a turn the remaining budget cannot CARRY. The bound is MEASURED, not guessed: the slowest
+        # turn this run has already taken. A guessed constant would be one laptop's number (the ADR-0025 steer), while
+        # the slowest turn so far is this machine, this model, this moment. Turn 1 always runs -- there is no history
+        # yet, and the whole budget is available to it.
+        if (($slowestTurnSec -gt 0) -and (($sw.Elapsed.TotalSeconds + $slowestTurnSec) -gt $TimeBudgetSec)) {
+            return @{ Ok = $true; StopReason = 'time-cap'; Iterations = $iteration; Answer = 'insufficient-data: reached the time limit before a firm conclusion.' }
+        }
         $iteration++
+        $turnStarted = $sw.Elapsed.TotalSeconds
 
         # Cap THIS turn's generation at the remaining budget so the wall-clock cap is real, not just a between-turns
         # check -- one hung generation cannot overshoot the budget by its own 300s default (S7).
+        # The Max(1, ...) floor is deliberate but is NOT permission to start a doomed turn: one second is less than any
+        # real generation takes, so a turn started with that budget fails by construction and used to surface as
+        # 'engine-request-failed' -- the engine blamed for the clock running out. Measured on the second real 8B run
+        # (#81): 321s against a 300s budget, ending in exactly that false report.
         $remainingSec = [math]::Max(1, [int][math]::Ceiling($TimeBudgetSec - $sw.Elapsed.TotalSeconds))
         # .ToArray(), not @($history): a generic List[object] does not satisfy an [array] (System.Array) parameter
         # under 5.1 ("Argument types do not match"); ToArray() returns a real object[] that binds cleanly.
         $chat = Invoke-LokiEngineChat -BaseUri $BaseUri -Messages $history.ToArray() -Tools $Tools -MaxTokens 512 -TimeoutSec $remainingSec
-        if (($null -eq $chat) -or (-not $chat.Ok)) {
+        # An EMPTY TURN is the MODEL producing no move -- it is NOT the engine failing, and the two must not be
+        # reported as the same thing. lib/offline.ps1 only says 'engine-empty-answer' after a SUCCESSFUL request whose
+        # message carried neither tool_calls nor content; a transport failure says 'engine-request-failed'. A small
+        # model does produce an empty turn (measured on the first real 8B agent run, #81), and this loop already has
+        # the right answer for it a few branches down: the strike/nudge path, which nudges once and then stops with an
+        # honest 'insufficient-data'. Falling through to it keeps Ok=$false meaning exactly what the contract says --
+        # the ENGINE failed -- instead of blaming the engine for a quiet model. Every other reason still aborts.
+        # ($chat carries no ToolCalls/Content keys here, so the move below reads as 'none', which IS this case.)
+        $turnSec = $sw.Elapsed.TotalSeconds - $turnStarted
+        if ($turnSec -gt $slowestTurnSec) { $slowestTurnSec = $turnSec }
+        $emptyTurn = ($null -ne $chat) -and ($chat -is [hashtable]) -and (-not $chat.Ok) -and
+            $chat.ContainsKey('Reason') -and ([string]$chat.Reason -eq 'engine-empty-answer')
+        if ((($null -eq $chat) -or (-not $chat.Ok)) -and (-not $emptyTurn)) {
             $reason = 'engine-empty-answer'
             if (($null -ne $chat) -and ($chat -is [hashtable]) -and $chat.ContainsKey('Reason')) { $reason = [string]$chat.Reason }
+            # The clock, not the engine. If the budget is spent by the time the call came back, then "we ran out of
+            # time" is TRUE and is the fact the operator needs; blaming the engine would not be. The guard above makes
+            # this rare (a turn only starts when a turn's worth of budget remains), so this is the belt for a turn that
+            # overran its own measured worst case -- and it is deliberately narrow: with budget still left, every
+            # failure reason aborts exactly as before.
+            if ($sw.Elapsed.TotalSeconds -ge $TimeBudgetSec) {
+                return @{ Ok = $true; StopReason = 'time-cap'; Iterations = $iteration; Answer = 'insufficient-data: reached the time limit before a firm conclusion.' }
+            }
             return @{ Ok = $false; Reason = $reason; Iterations = $iteration }
         }
 

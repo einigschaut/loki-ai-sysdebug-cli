@@ -503,9 +503,73 @@ Describe 'Invoke-LokiOfflineAgentTurnLoop (the capped multi-turn diagnose loop; 
         $r.Iterations | Should -Be 2
     }
 
+    It 'an EMPTY TURN in the shape the real transport actually returns is stuck, not an engine failure (#81)' {
+        # The mock above is the shape lib/offline.ps1 CANNOT produce. Invoke-LokiEngineChat turns "a successful reply
+        # whose message carried neither tool_calls nor content" into Ok=$false / 'engine-empty-answer' -- so the
+        # graceful nudge path above was only ever reachable through a mock the transport never emits. The FIRST real
+        # 8B agent run hit the real shape and the loop aborted with Ok=$false, telling the operator the ENGINE had
+        # failed when in fact the model had produced an empty turn. Two different facts; only one of them was true.
+        Mock Invoke-LokiEngineChat { @{ Ok = $false; Reason = 'engine-empty-answer' } }
+        $r = Invoke-LokiOfflineAgentTurnLoop -BaseUri 'x' -Messages $script:seed -Tools @() -MaxIterations 8
+        $r.Ok         | Should -BeTrue -Because 'an empty turn is a MODEL non-answer; Ok=$false is reserved for the engine failing'
+        $r.StopReason | Should -Be 'stuck'
+        $r.Iterations | Should -Be 2
+        $r.Answer     | Should -Match 'insufficient-data'
+    }
+
+    It 'BREAK-THE-GUARD: an empty turn followed by a real answer still finishes normally (#81)' {
+        # The nudge must actually give the model another chance, not merely avoid the false failure.
+        $script:emptyOnce = $true
+        Mock Invoke-LokiEngineChat {
+            if ($script:emptyOnce) { $script:emptyOnce = $false; return @{ Ok = $false; Reason = 'engine-empty-answer' } }
+            @{ Ok = $true; Reason = 'ok'; ToolCalls = (New-ToolCall 'final_answer' '{"answer":"disk C: is full"}') }
+        }
+        $r = Invoke-LokiOfflineAgentTurnLoop -BaseUri 'x' -Messages $script:seed -Tools @() -MaxIterations 8
+        $r.Ok         | Should -BeTrue
+        $r.StopReason | Should -Be 'final'
+        $r.Answer     | Should -Be 'disk C: is full'
+    }
+
     It 'an ENGINE failure mid-loop is propagated (Ok=$false), not hidden as an answer' {
         Mock Invoke-LokiEngineChat { @{ Ok = $false; Reason = 'engine-request-failed' } }
         $r = Invoke-LokiOfflineAgentTurnLoop -BaseUri 'x' -Messages $script:seed -Tools @()
+        $r.Ok     | Should -BeFalse
+        $r.Reason | Should -Be 'engine-request-failed'
+    }
+
+    It 'does not START a turn the remaining budget cannot carry -- it stops at time-cap instead (#81)' {
+        # The bound is the SLOWEST TURN SO FAR, measured. Turn 1 always runs; it takes ~1.5s of a 2s budget, so a
+        # second turn (another ~1.5s) provably cannot fit and must not be started. Without this the loop would start
+        # it with a 1-second generation timeout -- a call no real model can satisfy, which then fails and gets
+        # reported as an engine problem. Measured on the second real 8B run: 321s against a 300s budget.
+        Mock Invoke-LokiEngineChat {
+            Start-Sleep -Milliseconds 1500
+            @{ Ok = $true; Reason = 'ok'; ToolCalls = (New-ToolCall 'run_command' '{"command":"Get-Process"}') }
+        }
+        Mock Invoke-LokiOfflineAgentCommand { @{ Executed = $true; Class = 'read'; Reason = 'read-allowlisted'; Output = 'x'; Truncated = $false } }
+        $r = Invoke-LokiOfflineAgentTurnLoop -BaseUri 'x' -Messages $script:seed -Tools @() -MaxIterations 8 -TimeBudgetSec 2
+        $r.Ok         | Should -BeTrue
+        $r.StopReason | Should -Be 'time-cap'
+        $r.Answer     | Should -Match 'insufficient-data'
+        Should -Invoke Invoke-LokiEngineChat -Times 1 -Exactly
+    }
+
+    It 'a turn that OVERRUNS the budget and then fails reports the clock, not the engine (#81)' {
+        # The belt behind the guard above: the turn was affordable when it started and still ran past the deadline.
+        # "We ran out of time" is then true and is what the operator needs; naming the engine would not be.
+        Mock Invoke-LokiEngineChat {
+            Start-Sleep -Milliseconds 1300
+            @{ Ok = $false; Reason = 'engine-request-failed' }
+        }
+        $r = Invoke-LokiOfflineAgentTurnLoop -BaseUri 'x' -Messages $script:seed -Tools @() -TimeBudgetSec 1
+        $r.Ok         | Should -BeTrue
+        $r.StopReason | Should -Be 'time-cap'
+        $r.Answer     | Should -Match 'insufficient-data'
+    }
+
+    It 'BREAK-THE-GUARD: with budget LEFT, an engine failure still aborts (the clock excuse is not a blanket)' {
+        Mock Invoke-LokiEngineChat { @{ Ok = $false; Reason = 'engine-request-failed' } }
+        $r = Invoke-LokiOfflineAgentTurnLoop -BaseUri 'x' -Messages $script:seed -Tools @() -TimeBudgetSec 300
         $r.Ok     | Should -BeFalse
         $r.Reason | Should -Be 'engine-request-failed'
     }
