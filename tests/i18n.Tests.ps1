@@ -145,6 +145,31 @@ Describe 'Get-LokiText - lookup, fallback, formatting' {
     }
 }
 
+Describe 'Catalog encoding (BOM survival for non-ASCII values; #58)' {
+    It 'the de catalog loads its umlauts as real codepoints, not mojibake -- the UTF-8 BOM survived' {
+        # de.psd1 carries a UTF-8 BOM (CLAUDE.md 1). Strip it and Windows PowerShell 5.1 reads the file as the ANSI
+        # codepage: every German umlaut (UTF-8 0xC3 0x??) then decodes to a leading U+00C3 mojibake char. Assert
+        # (a) the loaded catalog really carries non-ASCII values -- so the guard is not vacuous on an all-ASCII
+        # catalog -- and (b) none carries U+00C3, the tell-tale of a UTF-8 file read as Latin-1. Char-code checks,
+        # not a regex, to keep this test file itself pure ASCII. Runtime complement to the static
+        # PSUseBOMForUnicodeEncodedFile analyzer gate: the analyzer checks the BOM is present, this checks the
+        # VALUES survive the read.
+        $de = $script:Catalogs['de']
+        $de | Should -Not -BeNullOrEmpty
+        $hasNonAscii = $false
+        $hasMojibake = $false
+        foreach ($v in @($de.Values)) {
+            foreach ($ch in ([string]$v).ToCharArray()) {
+                $code = [int][char]$ch
+                if ($code -gt 127) { $hasNonAscii = $true }
+                if ($code -eq 195) { $hasMojibake = $true }   # 195 = 0xC3, the UTF-8-read-as-Latin1 umlaut signature
+            }
+        }
+        $hasNonAscii | Should -Be $true  -Because 'the de catalog must carry umlauts, else this BOM guard is vacuous'
+        $hasMojibake | Should -Be $false -Because 'a U+00C3 (0xC3) means the BOM was lost and the UTF-8 was read as ANSI'
+    }
+}
+
 Describe 'Resolve-LokiLocale - precedence Flag > Env > Config > OS > en' {
 
     BeforeEach {
