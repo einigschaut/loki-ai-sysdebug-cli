@@ -60,6 +60,13 @@ Describe 'Get-LokiOfflineContextSize (the context policy ADR-0015 left to the co
             ((Get-LokiOfflineContextSize -ModelMaxContext 131072 -DumpChars $chars) % 256) | Should -Be 0
         }
     }
+    It 'stays a multiple of 256 even when the cap itself is NOT 256-aligned -- steps down (#58)' {
+        # A non-256-aligned model max must not leak through as an unaligned window: the function used to re-clamp to
+        # the raw cap. 2200 -> the largest multiple of 256 that still fits = 2048.
+        $ctx = Get-LokiOfflineContextSize -ModelMaxContext 2200 -DumpChars 200000
+        ($ctx % 256) | Should -Be 0
+        $ctx | Should -Be 2048
+    }
     It 'grows with the dump until it hits the ceiling (monotonic)' {
         $a = Get-LokiOfflineContextSize -ModelMaxContext 131072 -DumpChars 2000
         $b = Get-LokiOfflineContextSize -ModelMaxContext 131072 -DumpChars 20000
