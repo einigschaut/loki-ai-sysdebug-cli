@@ -11,6 +11,7 @@ BeforeAll {
     . "$PSScriptRoot\..\src\lib\hwscan.ps1"    # Get-LokiModelRamLimit -- the RAM budget Resolve-LokiOfflineCtxInputs reuses
     . "$PSScriptRoot\..\src\lib\auth.ps1"      # Remove-LokiCredentialEnv -- the one credential list (ADR-0027)
     . "$PSScriptRoot\..\src\lib\agent.ps1"     # Invoke-LokiWithEngine (mocked -- the preflight guard lives here)
+    . "$PSScriptRoot\..\src\lib\claude.ps1"    # Get-LokiJsonProp -- the StrictMode-safe JSON probe Get-LokiEngineTurnStat reuses
     . "$PSScriptRoot\..\src\lib\offline.ps1"
     . "$PSScriptRoot\..\src\commands\offline.ps1"
     Initialize-LokiUi -NoColor
@@ -307,6 +308,110 @@ Describe 'Invoke-LokiEngineChat (loopback transport)' {
     }
 }
 
+Describe 'Get-LokiEngineTurnStat (#89 -- the diagnostics the transport used to read past)' {
+    BeforeAll {
+        # Fixtures go through ConvertFrom-Json, not hashtable literals, and that is load-bearing rather than stylistic.
+        # Get-LokiJsonProp reads PSObject.Properties; a Hashtable does NOT surface its keys there under 5.1, so a
+        # hashtable fixture would hand the function nothing, every field would come back at its zero default, and the
+        # assertions below would pass while testing exactly nothing. Invoke-RestMethod yields PSCustomObjects -- this
+        # is the only shape the real transport can produce.
+        function global:New-EngineReply { param([Parameter(Mandatory = $true)][string]$Json) return ($Json | ConvertFrom-Json) }
+    }
+    AfterAll { Remove-Item Function:\New-EngineReply -ErrorAction SilentlyContinue }
+
+    It 'finish_reason=length is TRUNCATED -- the cap ran out, the model was not done' {
+        $s = Get-LokiEngineTurnStat -Response (New-EngineReply '{"choices":[{"finish_reason":"length","message":{"content":null}}]}')
+        $s.FinishReason | Should -Be 'length'
+        $s.Truncated    | Should -BeTrue
+    }
+    It 'a normal stop is NOT truncated' {
+        (Get-LokiEngineTurnStat -Response (New-EngineReply '{"choices":[{"finish_reason":"stop","message":{"content":"done"}}]}')).Truncated | Should -BeFalse
+    }
+    It 'a tool-call stop is NOT truncated' {
+        (Get-LokiEngineTurnStat -Response (New-EngineReply '{"choices":[{"finish_reason":"tool_calls","message":{"content":null}}]}')).Truncated | Should -BeFalse
+    }
+    It 'counts the reasoning block the transport discards' {
+        $s = Get-LokiEngineTurnStat -Response (New-EngineReply '{"choices":[{"finish_reason":"stop","message":{"content":"","reasoning_content":"0123456789"}}]}')
+        $s.ReasoningChars | Should -Be 10
+    }
+    It 'reads usage and llama.cpp timings (prompt vs generation are opposite fixes)' {
+        $s = Get-LokiEngineTurnStat -Response (New-EngineReply '{"choices":[{"finish_reason":"stop","message":{"content":"x"}}],"usage":{"prompt_tokens":834,"completion_tokens":384},"timings":{"prompt_ms":32278.0,"predicted_ms":67224.0}}')
+        $s.PromptTokens     | Should -Be 834
+        $s.CompletionTokens | Should -Be 384
+        $s.PromptMs         | Should -Be 32278.0
+        $s.PredictedMs      | Should -Be 67224.0
+    }
+    It 'degrades to zeroes instead of throwing on a reply from a machine we do not trust' {
+        # A diagnostic that can crash the diagnosis is worse than no diagnostic. Null, empty, and a reply missing every
+        # field we look for must all come back inert.
+        foreach ($r in @($null, (New-EngineReply '{}'), (New-EngineReply '{"choices":[]}'), (New-EngineReply '{"choices":[{}]}'))) {
+            $s = Get-LokiEngineTurnStat -Response $r
+            $s.Truncated        | Should -BeFalse
+            $s.FinishReason     | Should -Be ''
+            $s.ReasoningChars   | Should -Be 0
+            $s.PromptTokens     | Should -Be 0
+            $s.CompletionTokens | Should -Be 0
+        }
+    }
+}
+
+Describe 'Format-LokiEngineTurnStat (the --verbose line)' {
+    It 'shouts when the turn was cut off at the cap' {
+        $line = Format-LokiEngineTurnStat -TurnStat (@{ FinishReason = 'length'; Truncated = $true; ReasoningChars = 1671
+                PromptTokens = 834; CompletionTokens = 512; PromptMs = 32278.0; PredictedMs = 67224.0 }) -ElapsedSec 99.6
+        $line | Should -BeLike '*TRUNCATED-AT-MAX-TOKENS*'
+        $line | Should -BeLike '*finish=length*'
+        $line | Should -BeLike '*reasoning=1671ch*'
+    }
+    It 'stays quiet on a healthy turn' {
+        $line = Format-LokiEngineTurnStat -TurnStat (@{ FinishReason = 'tool_calls'; Truncated = $false; ReasoningChars = 0
+                PromptTokens = 100; CompletionTokens = 21; PromptMs = 250.0; PredictedMs = 2928.0 })
+        $line | Should -Not -BeLike '*TRUNCATED*'
+    }
+    It 'reports the reasoning LENGTH but never prints the reasoning text' {
+        # The reasoning is model prose derived from a possibly-compromised machine. Rendering it to the console would
+        # put untrusted text in front of the operator in Loki's own voice -- the measurement is what belongs here.
+        $line = Format-LokiEngineTurnStat -TurnStat (@{ FinishReason = 'stop'; Truncated = $false
+                ReasoningChars = 42; PromptTokens = 1; CompletionTokens = 1; PromptMs = 1.0; PredictedMs = 1.0 })
+        $line | Should -BeLike '*reasoning=42ch*'
+        $line | Should -Not -BeLike '*IGNORE ALL PREVIOUS*'
+    }
+    It 'an unknown finish_reason is named, not silently blank' {
+        (Format-LokiEngineTurnStat -TurnStat (@{ FinishReason = ''; Truncated = $false; ReasoningChars = 0
+                PromptTokens = 0; CompletionTokens = 0; PromptMs = 0.0; PredictedMs = 0.0 })) | Should -BeLike '*finish=unknown*'
+    }
+}
+
+Describe 'Invoke-LokiEngineChat carries the diagnostics on the returns that need them most (#89)' {
+    It 'a silent model and a truncated one are now TELLABLE APART -- same Reason, different TurnStat' {
+        # Both replies carry no tool call and no content, so both are 'engine-empty-answer' and always were. What #84
+        # could not see -- and spent an investigation guessing at -- is WHY. This is that difference, pinned.
+        Mock Invoke-RestMethod { '{"choices":[{"finish_reason":"length","message":{"content":null,"reasoning_content":"thinking and thinking and never finishing"}}]}' | ConvertFrom-Json }
+        $cut = Invoke-LokiEngineChat -BaseUri 'http://127.0.0.1:9' -Messages @(@{ role = 'user'; content = 'x' })
+        $cut.Reason              | Should -Be 'engine-empty-answer'
+        $cut.TurnStat.Truncated  | Should -BeTrue
+        $cut.TurnStat.ReasoningChars | Should -BeGreaterThan 0
+
+        Mock Invoke-RestMethod { '{"choices":[{"finish_reason":"stop","message":{"content":""}}]}' | ConvertFrom-Json }
+        $quiet = Invoke-LokiEngineChat -BaseUri 'http://127.0.0.1:9' -Messages @(@{ role = 'user'; content = 'x' })
+        $quiet.Reason             | Should -Be 'engine-empty-answer'
+        $quiet.TurnStat.Truncated | Should -BeFalse
+    }
+    It 'keeps the reasoning on a successful turn (the only record of WHY the agent moved)' {
+        Mock Invoke-RestMethod { '{"choices":[{"finish_reason":"stop","message":{"content":"VERDICT: disk full","reasoning_content":"checked free space first"}}]}' | ConvertFrom-Json }
+        $r = Invoke-LokiEngineChat -BaseUri 'http://127.0.0.1:9' -Messages @(@{ role = 'user'; content = 'x' })
+        $r.Ok        | Should -BeTrue
+        $r.Reasoning | Should -Be 'checked free space first'
+    }
+    It 'a transport failure still reports the seconds it burned' {
+        Mock Invoke-RestMethod { throw 'connection refused' }
+        $r = Invoke-LokiEngineChat -BaseUri 'http://127.0.0.1:9' -Messages @(@{ role = 'user'; content = 'x' })
+        $r.Reason | Should -Be 'engine-request-failed'
+        $r.ContainsKey('TurnSec')  | Should -BeTrue
+        $r.ContainsKey('TurnStat') | Should -BeTrue
+    }
+}
+
 Describe 'Invoke-LokiOfflineAnalyze (the guard is the harness; we must honour its refusal)' {
     BeforeAll {
         function global:New-FakeModel { @{ Id = 'small'; Model = 'Qwen3-4B'; ContextTokens = 262144; ResidentGB = 4.5 } }
@@ -332,6 +437,25 @@ Describe 'Invoke-LokiOfflineAnalyze (the guard is the harness; we must honour it
         $r = Invoke-LokiOfflineAnalyze -AppRoot 'x' -Engine @{} -Runtime @{} -Model (New-FakeModel) -DumpText 'dump'
         $r.Ok | Should -BeTrue
         $r.Analysis | Should -Be 'VERDICT: clean'
+    }
+
+    It 'the turn diagnostics reach --verbose via EngineLog -- INCLUDING on the run that produced nothing (#89)' {
+        # The failing run is the one whose numbers are worth reading, so the assertion that matters is the second one.
+        # commands/offline.ps1 already prints EngineLog under --verbose; folding the line in there is what makes this
+        # visible with no new flag and no new plumbing.
+        Mock Invoke-LokiWithEngine { $res = & $Body @{ Port = 1; BaseUri = 'http://127.0.0.1:1'; Process = $null }; @{ Ok = $true; Reason = 'ok'; Result = $res } }
+        Mock Invoke-LokiEngineChat { @{ Ok = $true; Content = 'VERDICT: clean'; Reason = 'ok'; TurnSec = 12.5
+                TurnStat = @{ FinishReason = 'stop'; Truncated = $false; ReasoningChars = 0
+                    PromptTokens = 900; CompletionTokens = 120; PromptMs = 3000.0; PredictedMs = 9500.0 } } }
+        $ok = Invoke-LokiOfflineAnalyze -AppRoot 'x' -Engine @{} -Runtime @{} -Model (New-FakeModel) -DumpText 'dump'
+        $ok.EngineLog | Should -BeLike '*engine turn:*finish=stop*'
+
+        Mock Invoke-LokiEngineChat { @{ Ok = $false; Reason = 'engine-empty-answer'; TurnSec = 99.6
+                TurnStat = @{ FinishReason = 'length'; Truncated = $true; ReasoningChars = 1671
+                    PromptTokens = 834; CompletionTokens = 512; PromptMs = 32278.0; PredictedMs = 67224.0 } } }
+        $dead = Invoke-LokiOfflineAnalyze -AppRoot 'x' -Engine @{} -Runtime @{} -Model (New-FakeModel) -DumpText 'dump'
+        $dead.Ok        | Should -BeFalse
+        $dead.EngineLog | Should -BeLike '*TRUNCATED-AT-MAX-TOKENS*'
     }
 
     It 'INJECTION DEFENSE (e2e): an injection-shaped dump is fenced, neutralized, and framed as data in the messages' {
