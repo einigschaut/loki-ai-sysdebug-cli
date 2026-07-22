@@ -27,7 +27,11 @@
 #       never to Ok, on an unforeseen Reason.
 #   Read-LokiOfflineDump -Path <string> -> [hashtable]{ Ok; Text?; Reason }   (READ-ONLY; renders a collect .json)
 #   Protect-LokiOfflineDumpText -DumpText <string> -> [string]   (PURE; neutralizes the <dump> fence in untrusted text)
-#   Invoke-LokiEngineChat -BaseUri <string> -Messages <array> [-Tools <array>] [...] -> [hashtable]{ Ok; Content?; ToolCalls?; Reason }
+#   Get-LokiEngineTurnStat -Response <object> -> [hashtable]{ FinishReason; Truncated; ReasoningChars; PromptTokens;
+#       CompletionTokens; PromptMs; PredictedMs }   (PURE; reads the diagnostics off one chat reply, #89)
+#   Format-LokiEngineTurnStat -TurnStat <hashtable> [-ElapsedSec <double>] -> [string]   (PURE; the --verbose line)
+#   Invoke-LokiEngineChat -BaseUri <string> -Messages <array> [-Tools <array>] [...]
+#       -> [hashtable]{ Ok; Content?; Reasoning?; ToolCalls?; Reason; TurnStat; TurnSec }
 #   Invoke-LokiOfflineAnalyze -AppRoot -Engine -Runtime -Model -DumpText [...] -> [hashtable]{ Ok; Reason; Analysis? }
 # ASCII-only file -> no BOM (CLAUDE.md section 1).
 Set-StrictMode -Version Latest
@@ -283,12 +287,116 @@ function Read-LokiOfflineDump {
     return @{ Ok = $true; Text = $text; Reason = 'ok' }
 }
 
+function Get-LokiEngineTurnStat {
+    <#
+        PURE (#89). The diagnostic record for ONE chat reply -- everything this transport used to read past and throw
+        away. Pure, and separate from the POST, so it is table-testable without an engine: a judgement that can only be
+        checked by starting a server is a judgement nobody checks (the ADR-0025 steer, and the lesson from the
+        offline-agent mutation run).
+
+        The field that matters is FinishReason. llama-server says 'length' when generation stopped because max_tokens
+        ran out rather than because the model was done -- and a reply truncated mid-thought carries no tool_calls and
+        no content, which is EXACTLY the shape of a model that had nothing to say. Invoke-LokiEngineChat reported both
+        as 'engine-empty-answer', so the two were indistinguishable from the outside. That is not a cosmetic gap: it is
+        why #84 spent a full investigation concluding the agent loop was too slow to be viable, when the real event was
+        a 512-token cap sitting in the middle of Qwen3-8B's reasoning block.
+
+        ReasoningChars is the second blind spot. Measured on the real engine: 384 completion tokens for one agent turn,
+        1671 chars of them reasoning_content, content empty -- roughly 95% of the turn's wall clock, generated, paid
+        for, and dropped. Counting it here is what makes "where did the time go" answerable at all.
+
+        Every field degrades to a harmless zero/empty rather than throwing: this parses a reply from a process on a
+        machine Loki does not trust, and a diagnostic that can crash the diagnosis is worse than no diagnostic.
+
+        -Response is a PSCustomObject -- what Invoke-RestMethod yields for a JSON body, and the ONLY shape the real
+        transport can hand us. Reading it goes through Get-LokiJsonProp, i.e. PSObject.Properties, and a Hashtable does
+        NOT expose its keys there (measured under 5.1: $h.PSObject.Properties['key'] is $null). So a test that mocks
+        the reply as a hashtable literal gets an all-zero stat back and proves nothing while staying green. Build
+        fixtures with ConvertFrom-Json; do not "fix" this by teaching the function a shape the transport cannot emit.
+    #>
+    param([Parameter(Mandatory = $true)][AllowNull()]$Response)
+
+    $stat = @{
+        FinishReason     = ''
+        Truncated        = $false
+        ReasoningChars   = 0
+        PromptTokens     = 0
+        CompletionTokens = 0
+        PromptMs         = 0.0
+        PredictedMs      = 0.0
+    }
+    if ($null -eq $Response) { return $stat }
+
+    $choice = $null
+    $choices = Get-LokiJsonProp -Object $Response -Name 'choices'
+    if ($null -ne $choices) {
+        $arr = @($choices)
+        if ($arr.Count -gt 0) { $choice = $arr[0] }
+    }
+
+    $finish = [string](Get-LokiJsonProp -Object $choice -Name 'finish_reason')
+    $stat.FinishReason = $finish
+    # 'length' is llama-server's word for "I stopped because the cap ran out, not because I was finished".
+    $stat.Truncated = ($finish -eq 'length')
+
+    $msg = Get-LokiJsonProp -Object $choice -Name 'message'
+    $stat.ReasoningChars = ([string](Get-LokiJsonProp -Object $msg -Name 'reasoning_content')).Length
+
+    $usage = Get-LokiJsonProp -Object $Response -Name 'usage'
+    if ($null -ne $usage) {
+        $stat.PromptTokens     = [int](Get-LokiJsonProp -Object $usage -Name 'prompt_tokens')
+        $stat.CompletionTokens = [int](Get-LokiJsonProp -Object $usage -Name 'completion_tokens')
+    }
+    # `timings` is llama.cpp's own measurement and splits the turn into prompt processing vs generation -- the only way
+    # to tell "the context is too big" from "the model thinks too long", which are opposite fixes.
+    $timings = Get-LokiJsonProp -Object $Response -Name 'timings'
+    if ($null -ne $timings) {
+        $stat.PromptMs    = [double](Get-LokiJsonProp -Object $timings -Name 'prompt_ms')
+        $stat.PredictedMs = [double](Get-LokiJsonProp -Object $timings -Name 'predicted_ms')
+    }
+    return $stat
+}
+
+function Format-LokiEngineTurnStat {
+    <#
+        PURE. One line for `--verbose`. NOT localized on purpose (CLAUDE.md section 10: only user-facing runtime output
+        is localized; this is diagnostic output for whoever is debugging the engine, in the same class as EngineLog).
+
+        Deliberately does NOT render the reasoning TEXT, only its length. That text is model output derived from a
+        possibly-compromised machine, and printing it to the console would put untrusted prose in front of the operator
+        as if it were Loki's own voice. The text stays available on the return value for a caller that has a reason to
+        want it; the default view is the measurement.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][hashtable]$TurnStat,
+        [double]$ElapsedSec = 0
+    )
+    $parts = New-Object System.Collections.Generic.List[string]
+    $parts.Add('engine turn:')
+    $finish = [string]$TurnStat.FinishReason
+    if ([string]::IsNullOrWhiteSpace($finish)) { $finish = 'unknown' }
+    $parts.Add("finish=$finish")
+    if ($ElapsedSec -gt 0) { $parts.Add(('elapsed={0:N1}s' -f $ElapsedSec)) }
+    $parts.Add(('prompt={0}tok/{1:N1}s' -f [int]$TurnStat.PromptTokens, ([double]$TurnStat.PromptMs / 1000)))
+    $parts.Add(('gen={0}tok/{1:N1}s' -f [int]$TurnStat.CompletionTokens, ([double]$TurnStat.PredictedMs / 1000)))
+    $parts.Add(('reasoning={0}ch' -f [int]$TurnStat.ReasoningChars))
+    # Loud, and last, because it changes how every other number on the line should be read.
+    if ($TurnStat.Truncated) { $parts.Add('TRUNCATED-AT-MAX-TOKENS') }
+    return ($parts -join ' ')
+}
+
 function Invoke-LokiEngineChat {
     <#
         The transport, shared with Slice 2 (offline --agent). POST one OpenAI-shaped chat to the running llama-server
         on loopback and return { Ok; Content; Reason } -- no JSON parsing left to the caller. Any transport failure is
         a Reason, never a throw: this runs inside Invoke-LokiWithEngine's try, and a throw would still be cleaned up,
         but a Reason is what the exit-code mapping can act on.
+
+        EVERY return carries TurnStat + TurnSec (#89), including the failures -- a turn that produced nothing is the
+        one whose diagnostics are worth having, so omitting them there would blind exactly the case they exist for.
+        The addition is purely ADDITIVE: no Reason value changes, so the agent loop's empty-turn handling and every
+        existing caller behave exactly as before. Acting on Truncated belongs to the loop (a declared security core)
+        and is deliberately NOT done here.
     #>
     param(
         [Parameter(Mandatory = $true)][string]$BaseUri,
@@ -305,18 +413,31 @@ function Invoke-LokiEngineChat {
     $body = @{ messages = $Messages; temperature = $Temperature; max_tokens = $MaxTokens; stream = $false }
     if ($hasTools) { $body['tools'] = $Tools }
     $payload = $body | ConvertTo-Json -Depth 10 -Compress
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
     try {
         $r = Invoke-RestMethod -Uri ($BaseUri.TrimEnd('/') + '/v1/chat/completions') -Method Post `
             -ContentType 'application/json' -Body $payload -TimeoutSec $TimeoutSec -ErrorAction Stop
     }
-    catch { return @{ Ok = $false; Reason = 'engine-request-failed'; Error = $_.Exception.Message } }
+    catch {
+        $sw.Stop()
+        # No reply to read, so the stat is the empty default -- but the SECONDS still happened, and a request that
+        # burned the whole budget before failing looks nothing like one that failed instantly.
+        return @{ Ok = $false; Reason = 'engine-request-failed'; Error = $_.Exception.Message
+            TurnStat = (Get-LokiEngineTurnStat -Response $null); TurnSec = $sw.Elapsed.TotalSeconds }
+    }
+    $sw.Stop()
+    $turnStat = Get-LokiEngineTurnStat -Response $r
+    $turnSec = $sw.Elapsed.TotalSeconds
 
     $msg = $null
     try { $msg = $r.choices[0].message } catch { $msg = $null }
-    if ($null -eq $msg) { return @{ Ok = $false; Reason = 'engine-empty-answer' } }
+    if ($null -eq $msg) { return @{ Ok = $false; Reason = 'engine-empty-answer'; TurnStat = $turnStat; TurnSec = $turnSec } }
 
     $content = $null
     try { $content = [string]$msg.content } catch { $content = $null }
+    # Kept, not printed (see Format-LokiEngineTurnStat): on a security-critical path this is the only record of WHY the
+    # agent chose the command it chose, and -- measured in #84 -- where a prompt injection actually gets caught.
+    $reasoning = [string](Get-LokiJsonProp -Object $msg -Name 'reasoning_content')
 
     # A tool-call reply legitimately carries null content -- the move is in tool_calls, not prose. So an empty answer is
     # a failure only when there is ALSO no tool call to act on.
@@ -325,11 +446,16 @@ function Invoke-LokiEngineChat {
         try { if ($null -ne $msg.tool_calls) { $toolCalls = @($msg.tool_calls) } } catch { $toolCalls = @() }
     }
     if (($toolCalls.Count -eq 0) -and [string]::IsNullOrWhiteSpace($content)) {
-        return @{ Ok = $false; Reason = 'engine-empty-answer' }
+        # THE case #89 exists for. Still 'engine-empty-answer' -- changing the Reason would change how the agent loop
+        # branches, and that loop is a security core -- but TurnStat now says whether the model fell silent or was cut
+        # off mid-reasoning by our own max_tokens. Same Reason, no longer the same mystery.
+        return @{ Ok = $false; Reason = 'engine-empty-answer'; TurnStat = $turnStat; TurnSec = $turnSec
+            Reasoning = $reasoning }
     }
 
-    $result = @{ Ok = $true; Reason = 'ok' }
+    $result = @{ Ok = $true; Reason = 'ok'; TurnStat = $turnStat; TurnSec = $turnSec }
     if (-not [string]::IsNullOrWhiteSpace($content)) { $result['Content'] = $content.Trim() }
+    if (-not [string]::IsNullOrWhiteSpace($reasoning)) { $result['Reasoning'] = $reasoning }
     if ($toolCalls.Count -gt 0) { $result['ToolCalls'] = $toolCalls }
     return $result
 }
@@ -385,10 +511,24 @@ function Invoke-LokiOfflineAnalyze {
     if (-not $run.Ok) { return $run }   # preflight/start/ready failure -- Reason (+ Detail/EngineLog) travels up as-is
 
     $chat = $run.Result
+
+    # Fold the turn's diagnostics onto the EngineLog the handler ALREADY prints under --verbose (#89): one channel,
+    # no new plumbing, no new flag -- and, deliberately, on the failing return as well. A run that produced no answer
+    # is the one whose numbers are worth reading.
+    $engineLog = ''
+    if (($run -is [hashtable]) -and $run.ContainsKey('EngineLog')) { $engineLog = [string]$run.EngineLog }
+    if (($chat -is [hashtable]) -and $chat.ContainsKey('TurnStat')) {
+        $elapsed = 0.0
+        if ($chat.ContainsKey('TurnSec')) { $elapsed = [double]$chat.TurnSec }
+        $statLine = Format-LokiEngineTurnStat -TurnStat ([hashtable]$chat.TurnStat) -ElapsedSec $elapsed
+        if ([string]::IsNullOrWhiteSpace($engineLog)) { $engineLog = $statLine }
+        else { $engineLog = $engineLog.TrimEnd() + "`r`n" + $statLine }
+    }
+
     if (($null -eq $chat) -or (-not $chat.Ok)) {
         $reason = 'engine-empty-answer'
         if (($null -ne $chat) -and ($chat -is [hashtable]) -and $chat.ContainsKey('Reason')) { $reason = [string]$chat.Reason }
-        return @{ Ok = $false; Reason = $reason }
+        return @{ Ok = $false; Reason = $reason; EngineLog = $engineLog }
     }
-    return @{ Ok = $true; Reason = 'ok'; Analysis = [string]$chat.Content }
+    return @{ Ok = $true; Reason = 'ok'; Analysis = [string]$chat.Content; EngineLog = $engineLog }
 }
