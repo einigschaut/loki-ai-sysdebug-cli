@@ -96,7 +96,13 @@ SmartScreen (though it does not clear a WDAC allow-list).
 ```
 
 The layout above is the **deployed artifact**, produced from the repository by a build
-script — it is not assembled by hand.
+script — it is not assembled by hand. That script is
+[`build/New-LokiStick.ps1`](../build/New-LokiStick.ps1): it copies `src\` plus `version.txt`
+onto the stick, **byte-exactly** (a hand-assembled stick lost a UTF-8 BOM off an i18n catalog
+and produced mojibake — §1's failure mode, introduced by the assembly rather than by the code).
+It never deletes `engine-offline\`, `models\*.gguf` or `home\`, and a file the auto-loaded
+directories still carry but `src\` no longer has is **reported**, not silently left behind —
+the dispatcher dot-sources whatever it finds there, so a stale module is loaded, not inert.
 
 **`engine-offline\` belongs to the pinned engine archive and nothing else may live there.**
 `loki setup` does not merely unpack into it, it **reconciles** it: anything the pinned archive
