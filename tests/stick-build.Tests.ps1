@@ -203,3 +203,47 @@ Describe 'build\New-LokiStick.ps1 -- the deployed artifact, produced not assembl
         Test-Path -LiteralPath (Join-Path $fakeRepo 'src\lib') | Should -BeFalse
     }
 }
+
+Describe 'build stamp -- stick-build.json records WHEN the stick was built (#91)' {
+
+    It 'writes a well-formed stamp at the stick root' {
+        $stick = New-TestStick
+        $stick.ExitCode | Should -Be 0
+        $stampPath = Join-Path $stick.Path 'stick-build.json'
+        Test-Path -LiteralPath $stampPath -PathType Leaf | Should -BeTrue
+
+        $obj = (Get-Content -LiteralPath $stampPath -Raw -Encoding utf8) | ConvertFrom-Json
+        # An ISO-8601 UTC instant the age math can parse, and the version this stick was built from.
+        $dto = [System.DateTimeOffset]::MinValue
+        [System.DateTimeOffset]::TryParse($obj.builtUtc, [System.Globalization.CultureInfo]::InvariantCulture,
+            [System.Globalization.DateTimeStyles]::AssumeUniversal, [ref]$dto) | Should -BeTrue
+        $obj.builtUtc | Should -Match 'Z$'
+        $repoVersion = (Get-Content -LiteralPath (Join-Path $script:RepoRoot 'version.txt') -Raw -Encoding utf8).Trim()
+        $obj.sourceVersion | Should -Be $repoVersion
+    }
+
+    It 'writes it BOM-free (a BOM in JSON is grit some parsers choke on)' {
+        $stick = New-TestStick
+        $bytes = [System.IO.File]::ReadAllBytes((Join-Path $stick.Path 'stick-build.json'))
+        # Not EF BB BF at the front.
+        ($bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) | Should -BeFalse
+    }
+
+    It 'is fresh, so status reads it back as age 0 right after a build' {
+        . "$PSScriptRoot\..\src\lib\meta.ps1"
+        $stick = New-TestStick
+        $info = Get-LokiStickBuildInfo -AppRoot $stick.Path
+        $info | Should -Not -BeNullOrEmpty
+        Get-LokiStickAgeDays -BuiltUtc $info.BuiltUtc -Now (Get-Date) | Should -Be 0
+    }
+
+    It 'a rebuild refreshes the stamp rather than leaving the old one' {
+        $into = Join-Path $script:RootTmp ([System.Guid]::NewGuid().ToString('N'))
+        $null = New-TestStick -Into $into
+        $first = (Get-Content -LiteralPath (Join-Path $into 'stick-build.json') -Raw -Encoding utf8)
+        Start-Sleep -Seconds 1   # the stamp has 1-second resolution; ensure the clock advances
+        $null = New-TestStick -Into $into
+        $second = (Get-Content -LiteralPath (Join-Path $into 'stick-build.json') -Raw -Encoding utf8)
+        $second | Should -Not -Be $first
+    }
+}

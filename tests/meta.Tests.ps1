@@ -64,3 +64,58 @@ Describe 'version.txt (repo version state)' {
         Get-LokiVersion -AppRoot (Join-Path $PSScriptRoot '..\src') | Should -Be $expected
     }
 }
+
+Describe 'Get-LokiStickAgeDays (#91 -- PURE, deterministic: Now is passed in, never Get-Date)' {
+    # UTC DateTimes throughout so there is no timezone ambiguity in the arithmetic.
+    It 'counts whole days between the build stamp and now' {
+        $now = [datetime]::new(2026, 1, 11, 0, 0, 0, [System.DateTimeKind]::Utc)
+        Get-LokiStickAgeDays -BuiltUtc '2026-01-01T00:00:00Z' -Now $now | Should -Be 10
+    }
+    It 'is 0 on the day it was built' {
+        $now = [datetime]::new(2026, 1, 1, 18, 0, 0, [System.DateTimeKind]::Utc)
+        Get-LokiStickAgeDays -BuiltUtc '2026-01-01T06:00:00Z' -Now $now | Should -Be 0
+    }
+    It 'clamps a future build stamp (skewed clock) to 0, never negative' {
+        $now = [datetime]::new(2026, 1, 1, 0, 0, 0, [System.DateTimeKind]::Utc)
+        Get-LokiStickAgeDays -BuiltUtc '2026-06-01T00:00:00Z' -Now $now | Should -Be 0
+    }
+    It 'honours an explicit offset (not just Z)' {
+        # 2026-01-01T02:00:00+02:00 == 00:00Z; one day before 2026-01-02T00:00Z.
+        $now = [datetime]::new(2026, 1, 2, 0, 0, 0, [System.DateTimeKind]::Utc)
+        Get-LokiStickAgeDays -BuiltUtc '2026-01-01T02:00:00+02:00' -Now $now | Should -Be 1
+    }
+    It 'BREAK-THE-GUARD: returns $null on an unparseable stamp rather than throwing' {
+        $now = [datetime]::new(2026, 1, 1, 0, 0, 0, [System.DateTimeKind]::Utc)
+        Get-LokiStickAgeDays -BuiltUtc 'not-a-date' -Now $now | Should -BeNullOrEmpty
+        Get-LokiStickAgeDays -BuiltUtc '' -Now $now            | Should -BeNullOrEmpty
+    }
+}
+
+Describe 'Get-LokiStickBuildInfo (#91 -- reads stick-build.json, silent on absence)' {
+    It 'reads a well-formed stamp' {
+        $app = Join-Path $script:Work 'stamp-ok'
+        New-Item -ItemType Directory -Force -Path $app | Out-Null
+        Set-Content -LiteralPath (Join-Path $app 'stick-build.json') -Encoding utf8 `
+            -Value '{"builtUtc":"2026-07-23T14:32:05Z","sourceVersion":"0.14.0"}'
+        $info = Get-LokiStickBuildInfo -AppRoot $app
+        $info.BuiltUtc      | Should -Be '2026-07-23T14:32:05Z'
+        $info.SourceVersion | Should -Be '0.14.0'
+    }
+    It 'returns $null when there is no stamp (the ordinary repo-checkout case)' {
+        $app = Join-Path $script:Work 'stamp-none'
+        New-Item -ItemType Directory -Force -Path $app | Out-Null
+        Get-LokiStickBuildInfo -AppRoot $app | Should -BeNullOrEmpty
+    }
+    It 'returns $null on a corrupt stamp rather than failing a write-free status' {
+        $app = Join-Path $script:Work 'stamp-bad'
+        New-Item -ItemType Directory -Force -Path $app | Out-Null
+        Set-Content -LiteralPath (Join-Path $app 'stick-build.json') -Value '{ this is not json' -Encoding utf8
+        Get-LokiStickBuildInfo -AppRoot $app | Should -BeNullOrEmpty
+    }
+    It 'returns $null when the stamp has no builtUtc (nothing to age)' {
+        $app = Join-Path $script:Work 'stamp-nodate'
+        New-Item -ItemType Directory -Force -Path $app | Out-Null
+        Set-Content -LiteralPath (Join-Path $app 'stick-build.json') -Value '{"sourceVersion":"0.14.0"}' -Encoding utf8
+        Get-LokiStickBuildInfo -AppRoot $app | Should -BeNullOrEmpty
+    }
+}

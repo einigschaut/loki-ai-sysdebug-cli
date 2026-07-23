@@ -23,6 +23,19 @@ function Invoke-LokiCmd_status {
     Write-LokiLine ("{0,-14} {1}" -f (Get-LokiText 'status.label.appRoot'), $Context.AppRoot)
     Write-LokiLine ("{0,-14} {1}" -f (Get-LokiText 'status.label.powershell'), $PSVersionTable.PSVersion.ToString())
 
+    # How old is this stick? (#91) Shown only when the build stamp exists -- i.e. on a BUILT stick, never in a
+    # repo checkout, where Get-LokiStickBuildInfo returns $null and the line is simply absent. Get-Date is passed
+    # IN so the age is a property of one moment, not read inside the pure age function.
+    $stickInfo = Get-LokiStickBuildInfo -AppRoot $Context.AppRoot
+    if ($null -ne $stickInfo) {
+        $days = Get-LokiStickAgeDays -BuiltUtc $stickInfo.BuiltUtc -Now (Get-Date)
+        if ($null -ne $days) {
+            $ageKey = if ($days -eq 0) { 'status.stick.builtToday' } else { 'status.stick.builtDaysAgo' }
+            Write-LokiLine ("{0,-14} {1}" -f (Get-LokiText 'status.label.stick'),
+                (Get-LokiText $ageKey -ArgumentList @($stickInfo.BuiltUtc, $days)))
+        }
+    }
+
     $online = Test-LokiConnectivity
     if ($online) {
         Write-LokiOk (Get-LokiText 'status.net.online')
