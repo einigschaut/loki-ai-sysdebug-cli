@@ -112,9 +112,22 @@ preparation machine, in three independent steps:
 
 | What | How |
 | --- | --- |
-| **The source** on your workstation | `git pull` (or re-download + verify the ZIP, above) |
+| **The source** on your workstation | `git pull` — or, if you took the ZIP path, `build\Update-Loki.ps1` (below) |
 | **A stick** | Re-run `New-LokiStick.ps1 -Destination E:\` — this *is* the update. It rewrites the code and leaves the engine, the models and your credential untouched. |
 | **The engine / models** on a stick | `loki setup` again, only when you want a newer engine build or a different tier |
+
+For the ZIP path, `Update-Loki.ps1` is the verified equivalent of `git pull`: it fetches the newest
+release, checks it (SHA256 **and** the build-provenance attestation, exactly as above), and expands
+it **beside** your current tree — never over it, so the old copy stays as a rollback:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File build\Update-Loki.ps1        # newest release
+powershell -ExecutionPolicy Bypass -File build\Update-Loki.ps1 -Tag v0.14.0
+```
+
+It stops if the checksum or the attestation fails, and warns loudly (rather than proceeding) if the
+GitHub CLI is missing and only the checksum could be checked. Then `cd` into the new `loki-<tag>\`
+directory it prints and rebuild your sticks from there.
 
 Building a fresh stick and refreshing an existing one are the same command — so "how do I update a
 stick" and "how do I make a new stick" have the same answer.
