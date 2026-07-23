@@ -44,6 +44,35 @@ tool — `loki status` reports that plainly rather than failing in a confusing w
 **Runtime: Windows PowerShell 5.1.** That is the version guaranteed to exist on the machines Loki
 is carried to, so it is the version Loki targets. PowerShell 7 is not required.
 
+## Getting Loki onto your machine
+
+Everything below happens on the **preparation machine** — your own workstation, where you build and
+refresh USB sticks. Never on the machine being diagnosed. Two ways to get the source:
+
+**With git (recommended — this is also how you update):**
+
+```powershell
+git clone https://github.com/einigschaut/loki-ai-sysdebug-cli.git
+cd loki-ai-sysdebug-cli
+# later, to update to the newest release:
+git pull
+```
+
+**Without git** — download `loki-<version>.zip` from the
+[latest release](https://github.com/einigschaut/loki-ai-sysdebug-cli/releases/latest) and **verify it
+before you trust it**. The strongest check proves GitHub built it from this repo:
+
+```powershell
+# Requires the GitHub CLI (gh). Cryptographic provenance, not just a checksum:
+gh attestation verify loki-v0.14.0.zip -R einigschaut/loki-ai-sysdebug-cli
+```
+
+No `gh`? The release also ships a `loki-<version>.zip.sha256` sidecar; compare the hash
+(`Get-FileHash loki-v0.14.0.zip -Algorithm SHA256`) against it. That catches a corrupted download but,
+sitting on the same host as the file, not a compromised release — prefer the attestation when you can.
+Then expand the ZIP and `cd` into it. (Releases before v0.14.0 predate this and carry no attached
+artifact — use git for those.)
+
 ## Quickstart
 
 Loki runs from a **stick** — a self-contained directory (normally the root of an encrypted USB
@@ -51,9 +80,6 @@ volume) that carries the code, the offline engine and the model tiers. A git che
 *source*, not the thing you carry. So there are three steps, and the first one is a build:
 
 ```powershell
-git clone https://github.com/einigschaut/loki-ai-sysdebug-cli.git
-cd loki-ai-sysdebug-cli
-
 # 1. Build the stick from the repository (repeat this to update an existing stick --
 #    it never touches the engine, the models or your credential).
 powershell -ExecutionPolicy Bypass -File build\New-LokiStick.ps1 -Destination E:\
@@ -77,6 +103,21 @@ recommended default, and downloads what you pick — verifying every file agains
 and byte size before it is kept. `loki hwscan` tells you beforehand which tiers this machine can
 actually run. **The offline engine needs no account and no credential**; if you only want offline
 diagnosis you are done after `setup`.
+
+## Keeping Loki current
+
+There is no self-update, by design — Loki runs on untrusted machines and must not rewrite itself
+there (see [ADR-0028](docs/adr/0028-verified-release-distribution.md)). Updating happens on your
+preparation machine, in three independent steps:
+
+| What | How |
+| --- | --- |
+| **The source** on your workstation | `git pull` (or re-download + verify the ZIP, above) |
+| **A stick** | Re-run `New-LokiStick.ps1 -Destination E:\` — this *is* the update. It rewrites the code and leaves the engine, the models and your credential untouched. |
+| **The engine / models** on a stick | `loki setup` again, only when you want a newer engine build or a different tier |
+
+Building a fresh stick and refreshing an existing one are the same command — so "how do I update a
+stick" and "how do I make a new stick" have the same answer.
 
 ### Working in the repository
 

@@ -1,30 +1,42 @@
 name: release-please
 
-# Opens a Release PR the maintainer merges deliberately (SemVer).
-# release-please tracks Conventional Commits on `main` and, once commits
-# warranting a release land (feat -> minor, fix -> patch; pre-1.0 keeps
-# breaking changes on minor), opens/updates a standing "Release PR" that
-# bumps version.txt, moves the CHANGELOG section, and tags vX.Y.Z on merge.
-# Nothing ships until a human merges that PR -- this workflow never
-# publishes on its own. See docs/adr/0005-versioning-and-releases.md.
+# Opens a Release PR the maintainer merges deliberately (SemVer), and -- once that
+# merge cuts a release -- attaches a verifiable distribution artifact to it.
+#
+# release-please tracks Conventional Commits on `main` and, once commits warranting a
+# release land (feat -> minor, fix -> patch; pre-1.0 keeps breaking changes on minor),
+# opens/updates a standing "Release PR" that bumps version.txt, moves the CHANGELOG
+# section, and tags vX.Y.Z on merge. Nothing ships until a human merges that PR -- this
+# workflow never publishes on its own. See docs/adr/0005-versioning-and-releases.md.
+#
+# The second job (publish-assets) runs ONLY on the push that actually created a release.
+# It builds a deterministic `git archive` of the tagged tree, attaches it to the GitHub
+# Release with a sha256 sidecar, and signs its provenance with a build attestation
+# (sigstore, verifiable via `gh attestation verify`). See docs/adr/0028. The two jobs are
+# split so the elevated attestation permissions (id-token, attestations) live ONLY on the
+# job that needs them and never on ordinary pushes to main (least privilege).
 #
 # Manifest mode: configuration lives in release-please-config.json and the
-# last-released version in .release-please-manifest.json (both at the repo
-# root). The `simple` strategy is the one that reads/writes version.txt.
+# last-released version in .release-please-manifest.json (both at the repo root). The
+# `simple` strategy is the one that reads/writes version.txt.
 
 on:
   push:
     branches: [main]
 
-permissions:
-  contents: write
-  pull-requests: write
-
 jobs:
   release-please:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    # Surfaced so publish-assets can gate on them without re-running release-please.
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
       - name: Run release-please
+        id: release
         uses: googleapis/release-please-action@v4
         with:
           # Fine-grained PAT, NOT the default GITHUB_TOKEN: a PR opened via GITHUB_TOKEN does not
@@ -35,3 +47,63 @@ jobs:
           token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+  publish-assets:
+    needs: release-please
+    # Only when the Release PR was just merged, i.e. a tag + GitHub Release now exist.
+    # On every other push to main this job is skipped entirely.
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write      # attach the archive + checksum to the Release
+      id-token: write       # OIDC token minted for sigstore -- required by the attestation
+      attestations: write   # store the provenance attestation on the repo
+    env:
+      TAG: ${{ needs.release-please.outputs.tag_name }}
+    steps:
+      - name: Check out the tagged commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
+          # A tag is a single commit, but git archive reads the ref from the local repo, so it
+          # must be present. A shallow checkout of exactly the tag is enough and is the default.
+
+      - name: Build the release archive
+        id: archive
+        run: |
+          zip="loki-${TAG}.zip"
+          # `git archive` from the tag, NOT GitHub's auto-generated source tarball: the auto tarball
+          # is produced on the fly and its bytes -- hence its hash -- are not guaranteed stable, so it
+          # cannot be pinned. `git archive` of a fixed commit is deterministic (proven locally: built
+          # twice, byte-identical). This is the same tree a `git clone` at the tag would give a
+          # technician, so the ZIP is a real substitute for cloning for anyone without git.
+          git archive --format=zip --prefix="loki-${TAG}/" "${TAG}" -o "${zip}"
+          sha="$(sha256sum "${zip}" | cut -d' ' -f1)"
+          size="$(stat -c%s "${zip}")"
+          # The sidecar a human and the update script both read: hash + size, the same shape Loki
+          # pins every downloaded model with (ADR-0026). This guards transport integrity only -- it
+          # sits on the same host as the artifact, so the ATTESTATION below is the real trust anchor.
+          {
+            echo "sha256:  ${sha}"
+            echo "bytes:   ${size}"
+            echo "file:    ${zip}"
+            echo "verify:  gh attestation verify ${zip} -R ${GITHUB_REPOSITORY}"
+          } > "${zip}.sha256"
+          echo "zip=${zip}" >> "$GITHUB_OUTPUT"
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          # Signs "GitHub Actions, this workflow, this commit built exactly this file" into a
+          # sigstore-backed attestation. A consumer runs `gh attestation verify <zip> -R <repo>`;
+          # this is what a self-hosted sha256 next to the file cannot provide (see ADR-0028).
+          subject-path: ${{ steps.archive.outputs.zip }}
+
+      - name: Attach archive + checksum to the Release
+        env:
+          # The default token with the contents:write above is enough to upload to a Release in
+          # this repo, regardless of which identity (the PAT) created the Release object.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ZIP: ${{ steps.archive.outputs.zip }}
+        run: |
+          gh release upload "${TAG}" "${ZIP}" "${ZIP}.sha256" --repo "${GITHUB_REPOSITORY}"
