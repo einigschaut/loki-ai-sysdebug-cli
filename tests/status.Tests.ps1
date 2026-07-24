@@ -22,6 +22,7 @@ BeforeAll {
     . "$PSScriptRoot\..\src\lib\net.ps1"
     . "$PSScriptRoot\..\src\lib\posture.ps1"
     . "$PSScriptRoot\..\src\lib\registry.ps1"
+    . "$PSScriptRoot\..\src\lib\meta.ps1"    # Get-LokiStickBuildInfo / Get-LokiStickAgeDays -- the #91 stick-age line
     . "$PSScriptRoot\..\src\commands\status.ps1"
     Initialize-LokiUi -NoColor
     Initialize-LokiI18n -AppRoot (Resolve-Path "$PSScriptRoot\..\src").Path -Locale 'en' | Out-Null
@@ -154,6 +155,33 @@ Describe 'Command status' {
             $r = Invoke-StatusCommand -Context $ctx
             $r.AllText | Should -BeLike '*sk-...abcd*'
             $r.AllText.Contains($plain) | Should -BeFalse
+        }
+    }
+
+    Context 'stick age line (#91)' {
+
+        It 'shows the build age when a stamp is present (a BUILT stick)' {
+            $approot = New-TestStatusAppRoot
+            # An old stamp so the age is unambiguously "days ago", not "today".
+            Set-Content -LiteralPath (Join-Path $approot 'stick-build.json') -Encoding utf8 `
+                -Value '{"builtUtc":"2020-01-01T00:00:00Z","sourceVersion":"0.1.0"}'
+            $r = Invoke-StatusCommand -Context (New-TestStatusContext -AppRoot $approot)
+            $r.AllText | Should -BeLike '*Stick:*'
+            $r.AllText | Should -BeLike '*days ago*'
+        }
+
+        It 'omits the line entirely when there is no stamp (repo checkout)' {
+            # New-TestStatusAppRoot writes no stick-build.json, so Get-LokiStickBuildInfo returns $null.
+            $r = Invoke-StatusCommand -Context (New-TestStatusContext -AppRoot (New-TestStatusAppRoot))
+            $r.AllText | Should -Not -BeLike '*Stick:*'
+        }
+
+        It 'does not let a corrupt stamp break the write-free status' {
+            $approot = New-TestStatusAppRoot
+            Set-Content -LiteralPath (Join-Path $approot 'stick-build.json') -Value '{ not json' -Encoding utf8
+            $r = Invoke-StatusCommand -Context (New-TestStatusContext -AppRoot $approot)
+            $r.Code | Should -Be 0
+            $r.AllText | Should -Not -BeLike '*Stick:*'
         }
     }
 }

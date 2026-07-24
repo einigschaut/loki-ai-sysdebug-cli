@@ -96,10 +96,27 @@ foreach ($item in (Get-ChildItem -LiteralPath $srcFull -Recurse -File)) {
 # this the deployed CLI reports whatever version the stick was last built with, which is the sort of quiet lie that
 # makes a support call impossible.
 $versionFile = Join-Path $repoRoot 'version.txt'
+$srcVersion = ''
 if (Test-Path -LiteralPath $versionFile) {
+    $srcVersion = (Get-Content -LiteralPath $versionFile -Raw -Encoding utf8).Trim()
     Copy-Item -LiteralPath $versionFile -Destination (Join-Path $destFull 'version.txt') -Force
     $copied++
 }
+
+# The build stamp (#91): nothing on a stick tells an operator how OLD it is -- standing in a server room you
+# cannot tell last week's build from last quarter's. This records WHEN it was built (and from which version),
+# and `loki status` reads it back as "built N days ago". It is written, never copied, so it always reflects
+# THIS build; a rebuild overwrites it. NOT under src\, so New-LokiStick's own orphan scan ignores it.
+# The timestamp is a PRE-FORMATTED invariant ISO-8601 UTC string, and the JSON is written from strings only --
+# no [datetime] ever reaches ConvertTo-Json, so its 5.1 "\/Date(...)\/" quirk cannot appear. BOM-free because
+# it is pure ASCII and a BOM in JSON is just grit some parsers choke on.
+$stamp = [ordered]@{
+    builtUtc      = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ', [System.Globalization.CultureInfo]::InvariantCulture)
+    sourceVersion = $srcVersion
+}
+$stampJson = ($stamp | ConvertTo-Json)
+[System.IO.File]::WriteAllText((Join-Path $destFull 'stick-build.json'), $stampJson, (New-Object System.Text.UTF8Encoding($false)))
+$copied++
 
 # --- orphans ----------------------------------------------------------------------------------------------------
 $orphans = New-Object System.Collections.Generic.List[string]

@@ -51,10 +51,13 @@
     'status.heading'            = 'loki status  (v{0})'
     'status.label.appRoot'      = 'App-Root:'
     'status.label.powershell'   = 'PowerShell:'
+    'status.label.stick'        = 'Stick:'
     'status.label.auth'         = 'Auth:'
     'status.net.online'         = 'Netz: erreichbar (Online-Engine nutzbar)'
     'status.net.offline'        = 'Netz: nicht erreichbar - die Online-Engine fällt aus. "loki collect" schreibt trotzdem einen reinen Diagnose-Dump.'
     'status.postureRollup'      = '{0} ok, {1} Warnung(en), {2} Problem(e)'
+    'status.stick.builtToday'   = 'gebaut {0} (heute)'
+    'status.stick.builtDaysAgo' = 'gebaut {0} (vor {1} Tag(en))'
     'status.doctorHint'         = '`loki doctor` für die volle Prüfung (Auth, Host-Posture, Volume/BitLocker).'
 
     'status.summary'            = 'Schneller Umgebungs-Check (schreibt nichts)'
