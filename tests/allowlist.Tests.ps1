@@ -199,6 +199,54 @@ Describe 'Get-LokiCommandClass - BREAK-THE-GUARD (adversarial security proof)' {
     }
 }
 
+Describe 'Test-LokiCommandHasBlockingShellSyntax (the ONE step-2a shell-syntax predicate, issue #85)' {
+    # The named predicate the classifier's step 2a and the offline agent's pipe-refusal feedback both reference.
+    # It reports the PRESENCE of a shell metacharacter/newline only; the read/mutate/denied decision is the
+    # classifier's. These pin the exact character set so a future edit that narrows it fails here, and the last
+    # It proves it is wired into Get-LokiCommandClass (a flagged line is never auto-read).
+
+    It 'flags a line carrying blocking shell syntax: <label>' -ForEach @(
+        @{ label = 'pipe';              cmd = 'Get-CimInstance Win32_LogicalDisk | Select-Object DeviceID' }
+        @{ label = 'semicolon';         cmd = 'Get-Process; Remove-Item C:\x' }
+        @{ label = 'ampersand';         cmd = 'ipconfig & del C:\x' }
+        @{ label = 'subexpression';     cmd = 'Get-Foo $(Remove-Item x)' }
+        @{ label = 'grouping-paren';    cmd = 'Get-Foo (Get-Bar)' }
+        @{ label = 'scriptblock-brace'; cmd = 'Get-WinEvent -FilterHashtable @{LogName=''System''}' }
+        @{ label = 'redirect-out';      cmd = 'Get-Process > C:\out.txt' }
+        @{ label = 'redirect-in';       cmd = 'Get-Content < C:\in.txt' }
+        @{ label = 'backtick';          cmd = 'Get-Foo `nbar' }
+        @{ label = 'dollar-var';        cmd = 'Get-Item $env:TEMP' }
+    ) {
+        (Test-LokiCommandHasBlockingShellSyntax -CommandLine $cmd) | Should -BeTrue
+    }
+
+    It 'flags an embedded CR/LF newline -- a multi-line command is not a single read' {
+        (Test-LokiCommandHasBlockingShellSyntax -CommandLine "Get-Process`r`nRemove-Item C:\x") | Should -BeTrue
+        (Test-LokiCommandHasBlockingShellSyntax -CommandLine "Get-Process`nStop-Service x")      | Should -BeTrue
+    }
+
+    It 'does NOT flag a clean single command -- even a MUTATE (class comes from the verb, not the syntax): <label>' -ForEach @(
+        @{ label = 'get-read';       cmd = 'Get-Process' }
+        @{ label = 'get-with-args';  cmd = 'Get-CimInstance Win32_LogicalDisk' }
+        @{ label = 'native-read';    cmd = 'ipconfig /all' }
+        @{ label = 'select-string';  cmd = 'Select-String -Path C:\logs\app.log error' }
+        @{ label = 'bare-mutate';    cmd = 'Remove-Item C:\temp\x' }
+        @{ label = 'service-mutate'; cmd = 'Restart-Service Spooler' }
+    ) {
+        (Test-LokiCommandHasBlockingShellSyntax -CommandLine $cmd) | Should -BeFalse
+    }
+
+    It 'is WIRED into Get-LokiCommandClass: a flagged line is never classified read (the extraction is load-bearing)' {
+        # The predicate IS the classifier's read-disqualifier. Anything it flags must be non-read -- if the two used
+        # different sets, a flagged pipe could still come back 'read'. (The full break-the-guard for the extraction
+        # lives in the BREAK-THE-GUARD block above: drop | from the set and 'Get-Content x | iex' flips to read.)
+        foreach ($c in @('Get-Process | Select-Object Name', 'Get-Process; Remove-Item C:\x', 'Get-Foo $(Remove-Item x)')) {
+            (Test-LokiCommandHasBlockingShellSyntax -CommandLine $c) | Should -BeTrue
+            (Get-LokiCommandClass -CommandLine $c) | Should -Not -Be 'read'
+        }
+    }
+}
+
 Describe 'Get-LokiAllowDecision' {
 
     It 'returns the AutoAllowed/RequiresConfirm/Blocked/Reason boolean triplet for a read command' {

@@ -27,6 +27,10 @@
 #     (honor Get-* auto-read only for a real Cmdlet, not a Function/Alias/Application) as defense-in-depth.
 #     Reason values returned by Get-LokiAllowDecision are STABLE MACHINE TOKENS (English) -- this
 #     module does no i18n and produces no user-facing output; the caller renders/localizes.
+#   Test-LokiCommandHasBlockingShellSyntax -CommandLine <string> -> [bool]
+#     PURE. True iff the line carries a shell metacharacter ( ; | & ` $ ( ) { } < > ) or a CR/LF -- the step-2a
+#     "not a single provable read" test of Get-LokiCommandClass, named ONCE so the classifier and the offline
+#     agent's pipe-refusal feedback (issue #85) share one definition. Reports presence only; decides no class.
 #   Get-LokiAllowDecision -CommandLine <string> -> [pscustomobject]{ CommandLine; Class;
 #     AutoAllowed; RequiresConfirm; Blocked; Reason }
 #     Thin caller-facing wrapper around Get-LokiCommandClass. AutoAllowed = (Class -eq 'read'),
@@ -98,6 +102,19 @@ $script:LokiPureReadCommands = @(
     'Test-Path', 'Resolve-Path', 'Select-String'
 )
 
+function Test-LokiCommandHasBlockingShellSyntax {
+    # PURE. True iff the command line carries a shell metacharacter -- a pipe |, a separator ; or &, a
+    # subexpression/grouping ( ) { }, a redirection < >, a backtick escape `, or a $ expansion -- or a CR/LF
+    # newline. Any of these means the line is NOT a single, provably-read command: a whitespace tokenizer could
+    # no longer guarantee the first token is the whole command (a second command could hide behind a separator or
+    # inside a subexpression). This is step 2a of Get-LokiCommandClass extracted as the ONE named definition of
+    # that character set, so the classifier (which REFUSES such a line as non-read) and the offline agent's refusal
+    # feedback (which tells the model to resend a single unpiped cmdlet, issue #85) reference the same set and can
+    # never drift. It reports the PRESENCE of blocking syntax only; it does NOT decide read/mutate/denied.
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$CommandLine)
+    return ($CommandLine -match '[;|&`$(){}<>]') -or ($CommandLine -match '[\r\n]')
+}
+
 function Get-LokiCommandClass {
     param(
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$CommandLine
@@ -111,10 +128,9 @@ function Get-LokiCommandClass {
 
     # Step 2: READ (checked BEFORE deny -- see header). Only if both (a) and (b) hold.
     # (a) No unsafe separator/pipe/subexpression/redirection/scriptblock character, and no newline.
-    $hasUnsafeChar = $c -match '[;|&`$(){}<>]'
-    $hasNewline = $c -match '[\r\n]'
-
-    if ((-not $hasUnsafeChar) -and (-not $hasNewline)) {
+    #     Test-LokiCommandHasBlockingShellSyntax (above) is the ONE definition of that set, so this refusal and
+    #     the offline agent's "resend one plain cmdlet" feedback can never drift apart (issue #85).
+    if (-not (Test-LokiCommandHasBlockingShellSyntax -CommandLine $c)) {
         # Safe to tokenize by whitespace now: step 2a guaranteed no separator hides a second command.
         $tokens = $c -split '\s+'
         $first = $tokens[0]
