@@ -126,6 +126,39 @@ Describe 'Get-LokiModelManifest (real manifest + fail-closed validation)' {
     }
 }
 
+Describe 'Read-LokiModelManifestSafe (fail-closed wrapper -> an operator-actionable result, issue #87)' {
+    # Wraps the fail-closed validator so a consuming command (offline/hwscan/doctor) can turn a rejected manifest into
+    # a "rebuild the stick" hint instead of a raw dispatcher stack trace. The validator itself is UNCHANGED -- these
+    # prove the wrapper translates a throw to Ok=$false WITHOUT ever returning a half-validated manifest.
+
+    It 'a valid manifest -> Ok, the models, and an empty Detail' {
+        $r = Read-LokiModelManifestSafe -Path $script:ManifestPath
+        $r.Ok              | Should -BeTrue
+        @($r.Models).Count | Should -BeGreaterThan 0
+        $r.Detail          | Should -Be ''
+    }
+
+    It 'an OUTDATED stick manifest (a moving /resolve/main/ ref -- the exact #87 case) -> Ok=$false + the validator Detail, never a throw' {
+        $bad = New-TempManifest @{ Url = 'https://huggingface.co/o/r/resolve/main/m.gguf' }
+        { Read-LokiModelManifestSafe -Path $bad } | Should -Not -Throw   # the wrapper swallows the validator throw
+        $r = Read-LokiModelManifestSafe -Path $bad
+        $r.Ok              | Should -BeFalse
+        $r.Detail          | Should -Match '(?i)immutable|resolve|revision'
+        @($r.Models).Count | Should -Be 0
+    }
+
+    It 'a missing manifest file -> Ok=$false + Detail, never a throw' {
+        $r = Read-LokiModelManifestSafe -Path (Join-Path $script:RootTmp 'does-not-exist\manifest.psd1')
+        $r.Ok     | Should -BeFalse
+        $r.Detail | Should -Match '(?i)not found'
+    }
+
+    It 'BREAK-THE-GUARD: Ok tracks reality -- it neither fails a valid manifest nor passes a broken one' {
+        (Read-LokiModelManifestSafe -Path $script:ManifestPath).Ok                            | Should -BeTrue
+        (Read-LokiModelManifestSafe -Path (New-TempManifest @{ Sha256 = 'nothex' })).Ok       | Should -BeFalse
+    }
+}
+
 Describe 'Get-LokiModelDownloadPlan' {
 
     It 'maps selected ids to url + sha256 + dest path; throws on an unknown id' {

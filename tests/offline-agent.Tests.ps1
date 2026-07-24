@@ -732,6 +732,21 @@ Describe 'Command offline --agent (wiring: floor decline, ambiguity, routing)' {
         Should -Invoke Invoke-LokiOfflineAgent -Times 0 -Exactly
     }
 
+    It 'an OUTDATED/invalid model manifest -> OfflineEngineMissing and the command STOPS at the manifest (fail-closed, #87)' {
+        # A stick older than the code carries a pre-#79 manifest the validator rejects. Read-LokiModelManifestSafe
+        # turns that throw into Ok=$false, and the command must refuse with the rebuild hint -- returning BEFORE the
+        # agent block. The Select -Times 0 is the load-bearing part: a mutation that let Ok=$false fall through would
+        # still reach Select with EMPTY models -> the SAME OfflineEngineMissing exit, so the exit code alone cannot
+        # tell the guard from the empty-manifest path -- only "model selection was never reached" can (proven: with
+        # the wrapper mutated to Ok=$true this assertion goes red while the exit-code one stays green).
+        Mock Get-LokiModelManifest { throw "Model 'nano': a huggingface.co Url must pin an immutable 40-hex revision, not a moving ref like /resolve/main/." }
+        Mock Select-LokiOfflineAgentModel { $null }
+        Mock Invoke-LokiOfflineAgent { throw 'the agent must NOT run on an unusable manifest' }
+        (Invoke-LokiCmd_offline (New-OfflineCtx @('--agent'))) | Should -Be (Get-LokiExitCode 'OfflineEngineMissing')
+        Should -Invoke Select-LokiOfflineAgentModel -Times 0 -Exactly
+        Should -Invoke Invoke-LokiOfflineAgent -Times 0 -Exactly
+    }
+
     It 'a capable installed model -> runs the agent with THAT model and returns exit Ok (routing + result mapping)' {
         Mock Get-LokiModelManifest { , @(@{ Id = 'mid'; Model = 'the-8B'; ContextTokens = 40960; ResidentGB = 7.0; FileName = 'mid.gguf' }) }
         Mock Select-LokiOfflineAgentModel { @{ Id = 'mid'; Model = 'the-8B'; ContextTokens = 40960 } }
