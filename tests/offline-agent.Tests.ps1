@@ -468,6 +468,16 @@ Describe 'Invoke-LokiOfflineAgentTurnLoop (the capped multi-turn diagnose loop; 
         $r.Iterations | Should -Be 2
     }
 
+    It 'asks the engine for the raised per-turn cap (2048), NOT the old truncating 512 (ADR-0029, #84)' {
+        # The measured bug: 512 cut off Qwen3-8B's <think> block mid-thought, turning a working turn into
+        # a dead strike. This pins that the loop requests the raised cap -- and, as break-the-guard, that it
+        # never requests 512 again (a regression to that value would revive the truncation).
+        Mock Invoke-LokiEngineChat { @{ Ok = $true; Reason = 'ok'; ToolCalls = (New-ToolCall 'final_answer' '{"answer":"x"}') } }
+        $null = Invoke-LokiOfflineAgentTurnLoop -BaseUri 'x' -Messages $script:seed -Tools @()
+        Should -Invoke Invoke-LokiEngineChat -Times 1 -Exactly -ParameterFilter { $MaxTokens -eq 2048 }
+        Should -Invoke Invoke-LokiEngineChat -Times 0 -Exactly -ParameterFilter { $MaxTokens -eq 512 }
+    }
+
     It 'threads the -ConfirmCallback down to the gated command (Slice 2b, ADR-0022)' {
         Mock Invoke-LokiEngineChat {
             if ((@($Messages)[-1]).role -eq 'tool') { @{ Ok = $true; Reason = 'ok'; ToolCalls = (New-ToolCall 'final_answer' '{"answer":"done"}' 'c2') } }

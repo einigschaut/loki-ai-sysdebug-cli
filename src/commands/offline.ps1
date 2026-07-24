@@ -61,6 +61,10 @@ function Invoke-LokiCmd_offline {
             Write-LokiErr (Get-LokiText 'offline.agentTooSmall')
             return (Get-LokiExitCode 'OfflineEngineMissing')
         }
+        # --agent is experimental and measured NOT field-viable as built (ADR-0029/#84): even with the truncation
+        # fixed it runs for many minutes and may never reach a conclusion. Say so BEFORE the operator waits, and point
+        # them at --analyze, which gives a fast reliable verdict. This is a notice, not a gate -- the operator asked.
+        Write-LokiWarn (Get-LokiText 'offline.agentExperimental')
         # Capable model -> the read-only agent loop. Ok -> print the answer; otherwise map the harness Reason through
         # the SAME Get-LokiOfflineFailure that --analyze uses, so the two offline modes cannot drift apart.
         Write-LokiInfo (Get-LokiText 'offline.agentWorking' -ArgumentList @([string]$model.Model))

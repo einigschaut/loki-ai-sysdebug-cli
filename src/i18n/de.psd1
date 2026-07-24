@@ -202,6 +202,7 @@
     'offline.orphan'            = 'Eine Offline-Engine aus einem frueheren Lauf laeuft noch. Schliesse sie (oder starte neu) und versuche es erneut.'
     'offline.engineFailed'      = 'Die Offline-Engine konnte die Analyse nicht abschliessen.'
     'offline.agentTooSmall'     = 'Auf diesem Stick ist kein Agent-taugliches (~8B+) Modell installiert. Fuehre loki setup aus, um eine mid- oder groessere Stufe hinzuzufuegen, oder nutze loki offline --analyze <dump>.'
+    'offline.agentExperimental' = 'EXPERIMENTELL: --agent braucht schnelle Hardware, laeuft mehrere Minuten und kommt womoeglich zu keinem Schluss. Fuer ein schnelles, verlaessliches Offline-Urteil stattdessen "loki offline --analyze" nutzen.'
     'offline.agentWorking'      = 'Fuehre den Offline-Agent mit {0} aus (ueberwacht: jede Aenderung braucht deine Freigabe). Das kann einige Minuten dauern...'
     'offline.agentConfirmProposed' = 'Der Offline-Assistent schlaegt eine AENDERUNG an diesem Rechner vor: {0}'
     'offline.agentConfirmReason' = '  (Allow-List-Einstufung: {0})'

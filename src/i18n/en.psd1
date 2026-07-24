@@ -202,6 +202,7 @@
     'offline.orphan'            = 'An offline engine from an earlier run is still active. Close it (or reboot) and try again.'
     'offline.engineFailed'      = 'The offline engine could not complete the analysis.'
     'offline.agentTooSmall'     = 'No agent-capable (~8B+) model is installed on this stick. Run loki setup to add a mid or larger tier, or use loki offline --analyze <dump>.'
+    'offline.agentExperimental' = 'EXPERIMENTAL: --agent needs fast hardware, runs for several minutes, and may not reach a conclusion. For a fast, reliable offline verdict, use "loki offline --analyze" instead.'
     'offline.agentWorking'      = 'Running the offline agent with {0} (supervised: any change needs your approval). This can take a few minutes...'
     'offline.agentConfirmProposed' = 'The offline assistant proposes a CHANGE to this machine: {0}'
     'offline.agentConfirmReason' = '  (allow-list classification: {0})'
