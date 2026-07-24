@@ -94,7 +94,13 @@ function Invoke-LokiCmd_doctor {
     # 19 GB tier on USB. The default doctor must stay instant; an operator asking THIS question is asking for the cost.
     if (@($Context.Args) -contains '--engine') {
         $engineData = Get-LokiEngineManifest -Path (Join-Path $Context.AppRoot 'engine\manifest.psd1')
-        $models = Get-LokiModelManifest -Path (Get-LokiModelLayout -AppRoot $Context.AppRoot).ManifestPath
+        # #87: an outdated stick's model manifest fails fail-closed validation -> rebuild hint, not a raw throw.
+        $modelMf = Read-LokiModelManifestSafe -Path (Get-LokiModelLayout -AppRoot $Context.AppRoot).ManifestPath
+        if (-not $modelMf.Ok) {
+            Write-LokiErr (Get-LokiText 'offline.stickOutdated' -ArgumentList @([string]$modelMf.Detail))
+            return (Get-LokiExitCode 'OfflineEngineMissing')
+        }
+        $models = @($modelMf.Models)
 
         Write-LokiHeading (Get-LokiText 'integrity.heading')
         Write-LokiLine ''

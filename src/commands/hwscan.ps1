@@ -66,7 +66,14 @@ function Invoke-LokiCmd_hwscan {
     }
 
     $modelLayout = Get-LokiModelLayout -AppRoot $Context.AppRoot
-    $models = Get-LokiModelManifest -Path $modelLayout.ManifestPath
+    # #87: an outdated stick's model manifest fails fail-closed validation -> tell the operator to rebuild the stick
+    # rather than surface a raw validation throw.
+    $modelMf = Read-LokiModelManifestSafe -Path $modelLayout.ManifestPath
+    if (-not $modelMf.Ok) {
+        Write-LokiErr (Get-LokiText 'offline.stickOutdated' -ArgumentList @([string]$modelMf.Detail))
+        return (Get-LokiExitCode 'OfflineEngineMissing')
+    }
+    $models = @($modelMf.Models)
     $installed = Get-LokiInstalledTiers -Models $models -ModelsDir $modelLayout.Dir
     Write-LokiLine (Get-LokiText 'hwscan.installed' -ArgumentList @(@($installed).Count, @($models).Count))
 
