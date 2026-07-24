@@ -19,8 +19,10 @@ computers.
 > `doctor` / `auth` / `hwscan` / `collect`, config + settings precedence, the environment-isolation
 > primitives, localization, and the **online engine** (`ask` / `scan` / `chat`) behind the allow-list gate.
 > `collect` writes a raw diagnostic dump with no network, model or admin required — the answer when nothing
-> else can help. The **offline engine** itself is not wired up yet, and the online commands'
-> interactive/live paths are still being hardened. See the [roadmap](docs/DESIGN.md#7-roadmap).
+> else can help. The **offline engine** runs too: `offline --analyze` gives a fast one-shot verdict on a
+> dump and is the field tool; `offline --agent` (a multi-turn read-only loop) works but is **experimental**
+> and not field-viable as built — it needs fast hardware and may not conclude ([ADR-0029](docs/adr/0029-offline-agent-experimental.md)).
+> The online commands' interactive/live paths are still being hardened. See the [roadmap](docs/DESIGN.md#7-roadmap).
 
 ## Honest security scope
 

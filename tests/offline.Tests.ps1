@@ -12,7 +12,9 @@ BeforeAll {
     . "$PSScriptRoot\..\src\lib\auth.ps1"      # Remove-LokiCredentialEnv -- the one credential list (ADR-0027)
     . "$PSScriptRoot\..\src\lib\agent.ps1"     # Invoke-LokiWithEngine (mocked -- the preflight guard lives here)
     . "$PSScriptRoot\..\src\lib\claude.ps1"    # Get-LokiJsonProp -- the StrictMode-safe JSON probe Get-LokiEngineTurnStat reuses
+    . "$PSScriptRoot\..\src\lib\allowlist.ps1" # the gate Invoke-LokiOfflineAgentCommand routes through
     . "$PSScriptRoot\..\src\lib\offline.ps1"
+    . "$PSScriptRoot\..\src\lib\offline-agent.ps1"  # Select-LokiOfflineAgentModel / Invoke-LokiOfflineAgent -- the --agent path
     . "$PSScriptRoot\..\src\commands\offline.ps1"
     Initialize-LokiUi -NoColor
     Initialize-LokiI18n -AppRoot (Resolve-Path "$PSScriptRoot\..\src").Path -Locale 'en' | Out-Null
@@ -533,5 +535,15 @@ Describe 'Command offline --analyze (wiring + Reason -> exit-code mapping)' {
         # "not set up" (5), and must not throw or return a reassuring code.
         Mock Get-LokiModelManifest { , @() }
         (Invoke-LokiCmd_offline (New-OfflineCtx @('--analyze', $script:goodDump))) | Should -Be (Get-LokiExitCode 'OfflineEngineMissing')
+    }
+
+    It '--agent announces itself as EXPERIMENTAL before it runs (ADR-0029, #84)' {
+        # A capable tier is present, so the loop WOULD run; mock it away and assert the notice fires first.
+        # -match 'EXPERIMENT' matches both the en ("EXPERIMENTAL") and de ("EXPERIMENTELL") catalog text.
+        Mock Select-LokiOfflineAgentModel { @{ Id = 'mid'; Model = 'Qwen3-8B' } }
+        Mock Invoke-LokiOfflineAgent { @{ Ok = $true; Answer = 'VERDICT: disk full' } }
+        Mock Write-LokiWarn { }
+        (Invoke-LokiCmd_offline (New-OfflineCtx @('--agent'))) | Should -Be (Get-LokiExitCode 'Ok')
+        Should -Invoke Write-LokiWarn -Times 1 -Exactly -ParameterFilter { $Text -match 'EXPERIMENT' }
     }
 }

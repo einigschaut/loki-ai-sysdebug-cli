@@ -441,6 +441,18 @@ function Confirm-LokiOfflineMutation {
 # untrusted DATA, never instructions (CLAUDE.md 5). The tool guidance steers toward SIMPLE, single, unpiped reads --
 # the conservative allow-list (ADR-0006 v1) refuses a pipe, so a piped read would just be rejected by the gate.
 $script:LokiOfflineAgentMaxObsChars = 2000   # per-observation bound fed back to the model (keeps the context bounded)
+
+# Per-turn generation cap. Was 512, which SYSTEMATICALLY truncated the thinking model: the `mid` tier is Qwen3-8B,
+# a hybrid-thinking model, and with --jinja its <think> block is on. Measured on the real engine (#84): a turn spends
+# 1000-2500 chars thinking BEFORE the tool call, so at 512 tokens generation stopped mid-thought (finish=length) with
+# no tool_call and no content -- a dead turn that the loop then counted as a strike. At 2048 the same turns complete
+# and emit their command (measured: 0 truncated turns vs 2 at 512, across a 6-turn run). Raising it is a real bug fix
+# (ADR-0029), NOT a claim that --agent is now field-viable -- it is not (see the experimental notice in commands/
+# offline.ps1). The reasoning block is generated but discarded from the history (only content + tool_calls are kept),
+# so a larger cap costs generation TIME per turn but does not bloat the context window. It must stay coupled to the
+# AnswerTokens the window is sized for (Invoke-LokiOfflineAgent below), or the truncation just moves from the token
+# cap to the window edge.
+$script:LokiOfflineAgentTurnMaxTokens = 2048
 $script:LokiOfflineAgentSystemPrompt = @'
 You are a Windows diagnostic assistant running OFFLINE on the machine being diagnosed. Find the single most likely
 fault. Use read-only commands to diagnose; when a fix is truly needed you MAY propose ONE change, but it runs only if
@@ -529,7 +541,7 @@ function Invoke-LokiOfflineAgentTurnLoop {
         $remainingSec = [math]::Max(1, [int][math]::Ceiling($TimeBudgetSec - $sw.Elapsed.TotalSeconds))
         # .ToArray(), not @($history): a generic List[object] does not satisfy an [array] (System.Array) parameter
         # under 5.1 ("Argument types do not match"); ToArray() returns a real object[] that binds cleanly.
-        $chat = Invoke-LokiEngineChat -BaseUri $BaseUri -Messages $history.ToArray() -Tools $Tools -MaxTokens 512 -TimeoutSec $remainingSec
+        $chat = Invoke-LokiEngineChat -BaseUri $BaseUri -Messages $history.ToArray() -Tools $Tools -MaxTokens $script:LokiOfflineAgentTurnMaxTokens -TimeoutSec $remainingSec
         # An EMPTY TURN is the MODEL producing no move -- it is NOT the engine failing, and the two must not be
         # reported as the same thing. lib/offline.ps1 only says 'engine-empty-answer' after a SUCCESSFUL request whose
         # message carried neither tool_calls nor content; a transport failure says 'engine-request-failed'. A small
@@ -630,8 +642,11 @@ function Invoke-LokiOfflineAgent {
     # degrades to the fixed proxy when RAM/geometry is unknown. Sizing only; no security boundary here.
     $hwProfile = Get-LokiHardwareProfile
     $ctxIn = Resolve-LokiOfflineCtxInputs -Model $Model -HardwareProfile $hwProfile
+    # AnswerTokens is the per-generation headroom the window must hold, so it is coupled to the turn cap (ADR-0029):
+    # a turn can generate up to LokiOfflineAgentTurnMaxTokens (thinking + tool call), and the window has to hold that
+    # alongside the peak history, or the truncation the cap was raised to prevent just reappears at the window edge.
     $ctx = Get-LokiOfflineContextSize -ModelMaxContext ([int]$Model.ContextTokens) `
-        -DumpChars ($MaxIterations * ($obsChars + 256)) -AnswerTokens 768 `
+        -DumpChars ($MaxIterations * ($obsChars + 256)) -AnswerTokens $script:LokiOfflineAgentTurnMaxTokens `
         -KvBudgetBytes $ctxIn.KvBudgetBytes -KvBytesPerToken $ctxIn.KvBytesPerToken
 
     $messages = @(
