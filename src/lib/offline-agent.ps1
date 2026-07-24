@@ -596,6 +596,16 @@ function Invoke-LokiOfflineAgentTurnLoop {
                 $obs = [string]$exec.Output
                 if ([string]::IsNullOrWhiteSpace($obs)) { $obs = '(the command produced no output)' }
             }
+            elseif (([string]$exec.Class -ne 'denied') -and (Test-LokiCommandHasBlockingShellSyntax -CommandLine ([string]$move.Command))) {
+                # The command was refused (NOT denied) AND it carried a pipe / ; & / ( ) { } / redirection / $ /
+                # backtick / newline. Under the conservative allow-list (ADR-0006 v1) a pipeline is never a provable
+                # read, so a piped read like `Get-CimInstance Win32_LogicalDisk | Select-Object ...` is classed a
+                # mutate and -- headless -- fail-safe declined. Naming the pipe specifically (issue #85) lets the small
+                # model resend ONE plain cmdlet, instead of taking the generic "operator declined a change, do not
+                # retry" text below as a reason to abandon the question. FEEDBACK ONLY: the gate decision is unchanged
+                # and nothing new executes; Test-LokiCommandHasBlockingShellSyntax is the classifier's own one set.
+                $obs = 'REFUSED: that command used a pipe or a shell operator (one of | ; & ` $ ( ) { } < >) or a line break, which the offline reader will not run. Send the SAME request as ONE plain command with none of those -- for example "Get-CimInstance Win32_LogicalDisk" instead of "Get-CimInstance Win32_LogicalDisk | Select-Object ...". The tool result already gives you the full output, so read it yourself rather than filtering inside the command.'
+            }
             elseif ($exec.ContainsKey('Declined') -and $exec.Declined) {
                 $obs = 'DECLINED: the operator did not approve that change. Do NOT retry it -- choose a different step, or call final_answer.'
             }

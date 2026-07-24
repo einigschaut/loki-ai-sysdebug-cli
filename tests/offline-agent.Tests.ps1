@@ -468,6 +468,44 @@ Describe 'Invoke-LokiOfflineAgentTurnLoop (the capped multi-turn diagnose loop; 
         $r.Iterations | Should -Be 2
     }
 
+    It 'a REFUSED PIPED read gets pipe-specific feedback (resend one cmdlet), NOT the misleading "declined, do not retry" (issue #85)' {
+        # Headless, a piped read like `Get-CimInstance ... | Select-Object ...` is classed a mutate and fail-safe
+        # declined (no operator to confirm). The observation fed back must NAME the pipe and tell the model to resend
+        # ONE plain cmdlet -- not the generic "operator declined a change, do NOT retry", which would make the model
+        # abandon the question instead of dropping the pipe. Asserts the exact text the loop feeds back (real
+        # Test-LokiCommandHasBlockingShellSyntax runs against the real piped command string).
+        Mock Invoke-LokiOfflineAgentCommand { @{ Executed = $false; Class = 'mutate'; Reason = 'mutation-declined'; Declined = $true } }
+        Mock Invoke-LokiEngineChat {
+            $msgs = @($Messages)
+            if ((@($msgs)[-1]).role -eq 'tool') {
+                $obs = [string](@($msgs | Where-Object { $_.role -eq 'tool' })[0]).content
+                $obs | Should -Match '(?i)pipe'
+                $obs | Should -Match '(?i)one plain command'
+                $obs | Should -Not -Match '(?i)do NOT retry'
+                @{ Ok = $true; Reason = 'ok'; ToolCalls = (New-ToolCall 'final_answer' '{"answer":"done"}' 'c2') }
+            }
+            else { @{ Ok = $true; Reason = 'ok'; ToolCalls = (New-ToolCall 'run_command' '{"command":"Get-CimInstance Win32_LogicalDisk | Select-Object DeviceID"}') } }
+        }
+        (Invoke-LokiOfflineAgentTurnLoop -BaseUri 'x' -Messages $script:seed -Tools @()).StopReason | Should -Be 'final'
+    }
+
+    It 'a declined mutate with NO shell syntax still gets the generic "declined, do not retry" -- the #85 branch is pipe-specific, not a blanket' {
+        # Break-the-guard for over-firing: a genuine mutate the operator declines (`Restart-Service Spooler`, no pipe)
+        # must keep the normal DECLINED text. If the #85 branch fired on every refusal, this would wrongly say "pipe".
+        Mock Invoke-LokiOfflineAgentCommand { @{ Executed = $false; Class = 'mutate'; Reason = 'mutation-declined'; Declined = $true } }
+        Mock Invoke-LokiEngineChat {
+            $msgs = @($Messages)
+            if ((@($msgs)[-1]).role -eq 'tool') {
+                $obs = [string](@($msgs | Where-Object { $_.role -eq 'tool' })[0]).content
+                $obs | Should -Match '(?i)do NOT retry'
+                $obs | Should -Not -Match '(?i)pipe'
+                @{ Ok = $true; Reason = 'ok'; ToolCalls = (New-ToolCall 'final_answer' '{"answer":"done"}' 'c2') }
+            }
+            else { @{ Ok = $true; Reason = 'ok'; ToolCalls = (New-ToolCall 'run_command' '{"command":"Restart-Service Spooler"}') } }
+        }
+        (Invoke-LokiOfflineAgentTurnLoop -BaseUri 'x' -Messages $script:seed -Tools @()).StopReason | Should -Be 'final'
+    }
+
     It 'asks the engine for the raised per-turn cap (2048), NOT the old truncating 512 (ADR-0029, #84)' {
         # The measured bug: 512 cut off Qwen3-8B's <think> block mid-thought, turning a working turn into
         # a dead strike. This pins that the loop requests the raised cap -- and, as break-the-guard, that it
