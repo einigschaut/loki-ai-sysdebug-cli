@@ -47,8 +47,16 @@ function Invoke-LokiCmd_offline {
     # Engine + model catalog come from the pinned manifests on the stick (shared by both modes).
     $engineData = Get-LokiEngineManifest -Path (Join-Path $Context.AppRoot 'engine\manifest.psd1')
     $modelLayout = Get-LokiModelLayout -AppRoot $Context.AppRoot
-    $models = Get-LokiModelManifest -Path $modelLayout.ManifestPath   # assign FIRST
-    $modelList = @($models)                                           # THEN wrap
+    # #87: a stick OLDER than the code carries a pre-#79 model manifest (a moving /resolve/main/ ref) the validator
+    # rejects fail-closed. Catch that here and tell the operator to rebuild the stick, instead of letting the raw
+    # validation throw reach the dispatcher as a stack trace. The engine load above stays raw -- its manifest lacks the
+    # 40-hex pin, so an old stick still validates it; the MODEL manifest is what bites (issue #87).
+    $modelMf = Read-LokiModelManifestSafe -Path $modelLayout.ManifestPath
+    if (-not $modelMf.Ok) {
+        Write-LokiErr (Get-LokiText 'offline.stickOutdated' -ArgumentList @([string]$modelMf.Detail))
+        return (Get-LokiExitCode 'OfflineEngineMissing')
+    }
+    $modelList = @($modelMf.Models)
 
     if ($wantAgent) {
         # The agent needs the recommended INSTALLED agent-capable tier -- NOT the catalog Default (which is `small`,

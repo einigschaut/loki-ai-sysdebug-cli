@@ -13,6 +13,10 @@
 #       engine-offline\, DESIGN.md section 2.2). The counterpart of Get-LokiEngineLayout -- so where the tiers live is
 #       stated once, not re-spelled by every command that needs them.
 #   Get-LokiModelManifest -Path <psd1> -> [object[]] validated model entries (throws fail-closed on any bad entry).
+#   Read-LokiModelManifestSafe -Path <psd1> -> [hashtable]{ Ok; Models; Detail }. Wraps Get-LokiModelManifest so a
+#       validation THROW becomes Ok=$false + Detail (the validator's message) instead of a raw stack trace at the
+#       dispatcher -- the "this stick is older than the code, rebuild it" hint path (issue #87). Fail-closed preserved:
+#       Ok=$false is never a usable manifest; the caller must refuse.
 #   Get-LokiModelDownloadPlan -Models <entries> -SelectedIds <string[]> -DestDir <dir> -> [pscustomobject[]]
 #       { Id; Model; Url; Sha256; SizeBytes; DestPath }  (throws on an unknown id).
 # ASCII-only file -> no BOM (CLAUDE.md section 1).
@@ -86,6 +90,24 @@ function Get-LokiModelManifest {
         $seen[$id] = $true
     }
     return , $models   # leading comma: keep it an array even for a single entry (no pipeline unwrap)
+}
+
+function Read-LokiModelManifestSafe {
+    # Load the model manifest through the fail-closed validator Get-LokiModelManifest (above), but turn a validation
+    # THROW into a structured result instead of letting the raw RuntimeException surface at the dispatcher as a stack
+    # trace (loki.ps1 prints $_.Exception.Message + a GeneralError exit). The overwhelmingly likely cause is a stick
+    # OLDER than the code -- e.g. a pre-#79 manifest whose huggingface.co Url still carries /resolve/main/ -- so a
+    # consuming command (offline/hwscan/doctor) can print an operator-actionable "rebuild the stick" hint plus this
+    # Detail (issue #87). The validator is UNCHANGED and still fail-closed: Ok=$false is NOT a usable manifest and the
+    # caller must refuse -- never "skip the bad entry and carry on". Both keys are always present (StrictMode-safe read).
+    param([Parameter(Mandatory = $true)][string]$Path)
+    try {
+        $models = Get-LokiModelManifest -Path $Path
+        return @{ Ok = $true; Models = $models; Detail = '' }
+    }
+    catch {
+        return @{ Ok = $false; Models = @(); Detail = [string]$_.Exception.Message }
+    }
 }
 
 function Get-LokiModelDownloadPlan {

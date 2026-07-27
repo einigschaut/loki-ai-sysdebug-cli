@@ -197,6 +197,7 @@
     'offline.working'           = 'Analyzing the dump offline with {0} (read-only)...'
     'offline.dumpUnreadable'    = 'Cannot read the diagnostic dump: {0}'
     'offline.notSetup'          = 'The offline engine or this model is not on the stick. Run loki setup on a connected machine.'
+    'offline.stickOutdated'     = 'This stick''s offline model manifest is not valid for this Loki version -- most likely the stick is older than the code. Rebuild the stick with build\New-LokiStick.ps1 (or update it with build\Update-Loki.ps1). Detail: {0}'
     'offline.cannotRunHere'     = 'The offline engine cannot run on this machine (not enough free RAM, or the runtime is missing).'
     'offline.tampered'          = 'The offline engine or model does not match its pinned hash. Do not trust this stick; re-run loki setup on a machine you trust.'
     'offline.orphan'            = 'An offline engine from an earlier run is still active. Close it (or reboot) and try again.'

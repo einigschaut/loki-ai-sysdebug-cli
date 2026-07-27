@@ -197,6 +197,7 @@
     'offline.working'           = 'Analysiere den Dump offline mit {0} (read-only)...'
     'offline.dumpUnreadable'    = 'Diagnose-Dump nicht lesbar: {0}'
     'offline.notSetup'          = 'Offline-Engine oder dieses Modell liegen nicht auf dem Stick. Fuehre loki setup auf einem verbundenen Rechner aus.'
+    'offline.stickOutdated'     = 'Das Offline-Modell-Manifest dieses Sticks ist fuer diese Loki-Version ungueltig -- vermutlich ist der Stick aelter als der Code. Bau den Stick neu mit build\New-LokiStick.ps1 (oder aktualisiere ihn mit build\Update-Loki.ps1). Detail: {0}'
     'offline.cannotRunHere'     = 'Die Offline-Engine kann auf diesem Rechner nicht laufen (zu wenig freier RAM oder die Runtime fehlt).'
     'offline.tampered'          = 'Offline-Engine oder Modell passen nicht zu ihrem gepinnten Hash. Diesem Stick nicht vertrauen; loki setup auf einem vertrauenswuerdigen Rechner erneut ausfuehren.'
     'offline.orphan'            = 'Eine Offline-Engine aus einem frueheren Lauf laeuft noch. Schliesse sie (oder starte neu) und versuche es erneut.'

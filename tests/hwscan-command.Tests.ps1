@@ -58,6 +58,16 @@ Describe 'Command hwscan' {
             ) }
     }
 
+    It 'an OUTDATED/invalid model manifest -> the rebuild hint + OfflineEngineMissing, and tier selection NEVER runs (fail-closed, #87)' {
+        # A stick older than the code -> the model manifest is rejected fail-closed. hwscan must show the operator the
+        # "rebuild the stick" hint and stop, not surface a raw validation throw and not proceed to tier selection.
+        Mock Get-LokiModelManifest { throw "Model 'x': a huggingface.co Url must pin an immutable 40-hex revision, not a moving ref like /resolve/main/." }
+        Mock Get-LokiInstalledTiers { throw 'tier selection must NOT run on an unusable manifest' }
+        $r = Invoke-HwscanCommand -Context (New-TestHwContext)
+        $r.Code    | Should -Be (Get-LokiExitCode 'OfflineEngineMissing')
+        $r.AllText | Should -Match '(?i)rebuild'
+    }
+
     Context 'metadata & registry' {
         It 'metadata is complete (Name == file name, Group Health)' {
             $m = Get-LokiCmdMeta_hwscan

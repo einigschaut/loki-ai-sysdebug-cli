@@ -159,6 +159,17 @@ Describe 'loki doctor --engine (ADR-0014)' {
         $r.AllText | Should -Match 'verified against the pin'
     }
 
+    It 'an OUTDATED/invalid model manifest -> the rebuild hint + OfflineEngineMissing, and the integrity report NEVER runs (fail-closed, #87)' {
+        # Build a real stick FIRST (so its own setup uses the real manifest), THEN reject the model manifest at load
+        # time. doctor --engine must refuse with the rebuild hint and never hash anything on an unusable manifest.
+        $appRoot = New-TestEngineStick
+        Mock Get-LokiModelManifest { throw "Model 'x': a huggingface.co Url must pin an immutable 40-hex revision, not a moving ref like /resolve/main/." }
+        Mock Get-LokiEngineReport { throw 'the integrity report must NOT run on an unusable manifest' }
+        $r = Invoke-DoctorCommand -Context (New-TestDoctorContext -AppRoot $appRoot -CmdArgs @('--engine'))
+        $r.Code    | Should -Be 5
+        $r.AllText | Should -Match '(?i)rebuild'
+    }
+
     It 'no engine on the stick -> OfflineEngineMissing(5), not a generic error' {
         # ADR-0014 section 8: a fresh stick is not a broken stick. 5 says "run loki setup", which is actionable.
         $r = Invoke-DoctorCommand -Context (New-TestDoctorContext -AppRoot (New-TestEngineStick -NoEngine) -CmdArgs @('--engine'))
