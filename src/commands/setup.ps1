@@ -40,7 +40,10 @@ function Invoke-LokiCmd_setup {
     # Everything the user picks is resolved and validated BEFORE any network work: an unknown tier id must cost a usage
     # error, not an engine download followed by a usage error.
     $modelLayout = Get-LokiModelLayout -AppRoot $Context.AppRoot
-    $models = Get-LokiModelManifest -Path $modelLayout.ManifestPath
+    # The operator's own catalog joins the shipped one here too (#103), so `setup --tier <own-id>` uses the same
+    # verified-download path as any shipped tier. setup keeps the RAW throw (#87): it reads the manifest of the
+    # checkout it runs from, so a broken file is a problem the person at this machine wrote and must see.
+    $models = Get-LokiModelCatalog -Path $modelLayout.ManifestPath -LocalPath $modelLayout.LocalManifestPath
     $destDir = $modelLayout.Dir
 
     # Always show the catalog (sizes let the user pick to fit their stick + RAM -- the whole point of the picker).

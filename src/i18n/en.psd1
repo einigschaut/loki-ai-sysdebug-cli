@@ -168,6 +168,7 @@
     'hwscan.ramUnknownFatal'    = 'Without a RAM reading Loki will not pick a model: guessing here means swapping the machine you came to fix. Use --model <tier> --force to override.'
     'hwscan.limits'             = 'Limits:    a model may use up to {0} GB on this machine; {1} GB is free enough right now'
     'hwscan.installed'          = 'Models:    {0} of {1} tier(s) on this stick'
+    'hwscan.localTiers'         = 'Local:     {0} tier(s) come from your own catalog (models\manifest.local.psd1) - their licenses are your responsibility'
     'hwscan.tierRow'            = '    {0,-14} {1,-26} ~{2,-4} GB  {3}'
     'hwscan.verdictFits'        = 'fits now'
     'hwscan.verdictNeedsFree'   = 'needs {0} GB more free'

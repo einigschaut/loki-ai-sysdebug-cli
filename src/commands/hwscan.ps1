@@ -68,7 +68,7 @@ function Invoke-LokiCmd_hwscan {
     $modelLayout = Get-LokiModelLayout -AppRoot $Context.AppRoot
     # #87: an outdated stick's model manifest fails fail-closed validation -> tell the operator to rebuild the stick
     # rather than surface a raw validation throw.
-    $modelMf = Read-LokiModelManifestSafe -Path $modelLayout.ManifestPath
+    $modelMf = Read-LokiModelManifestSafe -Path $modelLayout.ManifestPath -LocalPath $modelLayout.LocalManifestPath
     if (-not $modelMf.Ok) {
         Write-LokiErr (Get-LokiText 'offline.stickOutdated' -ArgumentList @([string]$modelMf.Detail))
         return (Get-LokiExitCode 'OfflineEngineMissing')
@@ -76,6 +76,11 @@ function Invoke-LokiCmd_hwscan {
     $models = @($modelMf.Models)
     $installed = Get-LokiInstalledTiers -Models $models -ModelsDir $modelLayout.Dir
     Write-LokiLine (Get-LokiText 'hwscan.installed' -ArgumentList @(@($installed).Count, @($models).Count))
+    # Name the operator's own tiers explicitly (#103). A tier that is not in the shipped catalog would otherwise be
+    # unexplained -- and the licence for those entries is the operator's call, not the project's, so saying so is part
+    # of the deal rather than a nicety.
+    $localCount = @($models | Where-Object { $_.ContainsKey('Source') -and ([string]$_.Source -eq 'local') }).Count
+    if ($localCount -gt 0) { Write-LokiLine (Get-LokiText 'hwscan.localTiers' -ArgumentList @($localCount)) }
 
     $report = Get-LokiTierFitReport -Tiers $installed -TotalRamGB $hw.TotalRamGB -AvailableRamGB $hw.AvailableRamGB
     foreach ($row in @($report)) {

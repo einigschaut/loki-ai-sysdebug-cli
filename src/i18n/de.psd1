@@ -168,6 +168,7 @@
     'hwscan.ramUnknownFatal'    = 'Ohne RAM-Wert wählt Loki kein Modell: hier zu raten heißt, genau den Rechner lahmzulegen, den man reparieren wollte. Mit --model <tier> --force überstimmen.'
     'hwscan.limits'             = 'Grenzen:   ein Modell darf auf diesem Rechner bis {0} GB belegen; {1} GB sind gerade frei genug'
     'hwscan.installed'          = 'Modelle:   {0} von {1} Tier(s) auf diesem Stick'
+    'hwscan.localTiers'         = 'Lokal:     {0} Tier(s) stammen aus deinem eigenen Katalog (models\manifest.local.psd1) - fuer deren Lizenzen bist du selbst verantwortlich'
     'hwscan.tierRow'            = '    {0,-14} {1,-26} ~{2,-4} GB  {3}'
     'hwscan.verdictFits'        = 'passt jetzt'
     'hwscan.verdictNeedsFree'   = 'braucht {0} GB mehr frei'

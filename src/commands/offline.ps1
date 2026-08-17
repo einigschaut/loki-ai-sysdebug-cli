@@ -51,7 +51,7 @@ function Invoke-LokiCmd_offline {
     # rejects fail-closed. Catch that here and tell the operator to rebuild the stick, instead of letting the raw
     # validation throw reach the dispatcher as a stack trace. The engine load above stays raw -- its manifest lacks the
     # 40-hex pin, so an old stick still validates it; the MODEL manifest is what bites (issue #87).
-    $modelMf = Read-LokiModelManifestSafe -Path $modelLayout.ManifestPath
+    $modelMf = Read-LokiModelManifestSafe -Path $modelLayout.ManifestPath -LocalPath $modelLayout.LocalManifestPath
     if (-not $modelMf.Ok) {
         Write-LokiErr (Get-LokiText 'offline.stickOutdated' -ArgumentList @([string]$modelMf.Detail))
         return (Get-LokiExitCode 'OfflineEngineMissing')

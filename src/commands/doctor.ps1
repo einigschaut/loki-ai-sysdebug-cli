@@ -95,7 +95,8 @@ function Invoke-LokiCmd_doctor {
     if (@($Context.Args) -contains '--engine') {
         $engineData = Get-LokiEngineManifest -Path (Join-Path $Context.AppRoot 'engine\manifest.psd1')
         # #87: an outdated stick's model manifest fails fail-closed validation -> rebuild hint, not a raw throw.
-        $modelMf = Read-LokiModelManifestSafe -Path (Get-LokiModelLayout -AppRoot $Context.AppRoot).ManifestPath
+        $mfLayout = Get-LokiModelLayout -AppRoot $Context.AppRoot
+        $modelMf = Read-LokiModelManifestSafe -Path $mfLayout.ManifestPath -LocalPath $mfLayout.LocalManifestPath
         if (-not $modelMf.Ok) {
             Write-LokiErr (Get-LokiText 'offline.stickOutdated' -ArgumentList @([string]$modelMf.Detail))
             return (Get-LokiExitCode 'OfflineEngineMissing')

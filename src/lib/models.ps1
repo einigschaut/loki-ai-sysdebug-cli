@@ -9,11 +9,19 @@
 #   * models are DATA: nothing here (or in the engine) ever executes them; the engine must verify a model's hash
 #     before loading it (load-time verify, ADR-0012).
 # Contract:
-#   Get-LokiModelLayout -AppRoot <dir> -> [hashtable]{ Dir; ManifestPath }  (pure path math; the models\ sibling of
-#       engine-offline\, DESIGN.md section 2.2). The counterpart of Get-LokiEngineLayout -- so where the tiers live is
-#       stated once, not re-spelled by every command that needs them.
+#   Get-LokiModelLayout -AppRoot <dir> -> [hashtable]{ Dir; ManifestPath; LocalManifestPath }  (pure path math; the
+#       models\ sibling of engine-offline\, DESIGN.md section 2.2). The counterpart of Get-LokiEngineLayout -- so where
+#       the tiers live is stated once, not re-spelled by every command that needs them. LocalManifestPath is the
+#       operator's OWN catalog (issue #103): never shipped, never committed, usually absent.
 #   Get-LokiModelManifest -Path <psd1> -> [object[]] validated model entries (throws fail-closed on any bad entry).
-#   Read-LokiModelManifestSafe -Path <psd1> -> [hashtable]{ Ok; Models; Detail }. Wraps Get-LokiModelManifest so a
+#   Merge-LokiModelCatalog -Catalog <entries> -Local <entries> -> [object[]]   (#103)
+#       PURE. One tier list from the shipped + private catalogs, each entry stamped Source='catalog'|'local'. A
+#       duplicate id ACROSS the two throws (load order must never decide which weights a tier points at). Copies
+#       entries; validates nothing -- both inputs must already have passed Get-LokiModelManifest.
+#   Get-LokiModelCatalog -Path <psd1> [-LocalPath <psd1>] -> [object[]]   (#103)
+#       The tiers an operator actually has: shipped + private, merged and stamped. THROWS like Get-LokiModelManifest.
+#       An ABSENT local manifest is normal (result identical to pre-#103); one that exists but is broken throws.
+#   Read-LokiModelManifestSafe -Path <psd1> [-LocalPath <psd1>] -> [hashtable]{ Ok; Models; Detail }. Wraps Get-LokiModelManifest so a
 #       validation THROW becomes Ok=$false + Detail (the validator's message) instead of a raw stack trace at the
 #       dispatcher -- the "this stick is older than the code, rebuild it" hint path (issue #87). Fail-closed preserved:
 #       Ok=$false is never a usable manifest; the caller must refuse.
@@ -33,8 +41,13 @@ function Get-LokiModelLayout {
     param([Parameter(Mandatory = $true)][string]$AppRoot)
     $dir = Join-Path $AppRoot 'models'
     return @{
-        Dir          = $dir
-        ManifestPath = (Join-Path $dir 'manifest.psd1')
+        Dir               = $dir
+        ManifestPath      = (Join-Path $dir 'manifest.psd1')
+        # The operator's OWN catalog (issue #103), never shipped and never committed: a model whose license is
+        # permissive in practice but is not Apache-2.0/MIT cannot enter the public manifest, yet a single operator may
+        # legitimately accept those terms for their own stick. Sitting BESIDE the public manifest keeps one concept in
+        # one place -- the same file name works on the stick and in the setup checkout. Absence is the normal case.
+        LocalManifestPath = (Join-Path $dir 'manifest.local.psd1')
     }
 }
 
@@ -92,6 +105,73 @@ function Get-LokiModelManifest {
     return , $models   # leading comma: keep it an array even for a single entry (no pipeline unwrap)
 }
 
+function Merge-LokiModelCatalog {
+    <#
+        PURE. Combine the shipped catalog with the operator's own entries (issue #103) into ONE tier list, and stamp
+        each entry with where it came from: Source='catalog' for the shipped manifest, Source='local' for the private
+        one. The stamp is what lets a command tell the operator why a tier they never installed from the catalog is on
+        their stick -- an unexplained tier is worse than no tier.
+
+        A DUPLICATE id across the two manifests THROWS. Silently letting one win would make the effective catalog depend
+        on load order, and "which weights did that tier actually point at" is precisely the question a supply chain must
+        never answer with a shrug. Fail-closed, exactly like the duplicate check inside a single manifest.
+
+        Entries are COPIED, not mutated: the caller's arrays (and the hashtables Import-PowerShellDataFile handed back)
+        stay untouched, so stamping cannot leak back into a manifest object another caller is still reading.
+
+        This function does NOT validate -- both inputs must already have come through Get-LokiModelManifest, which is
+        unchanged and still fail-closed. "Private" never means "unchecked": a local entry is held to the same SHA256
+        pin, KV geometry, safe filename and https rules as a shipped one. The one thing the local path does NOT inherit
+        is the Apache/MIT license test, which is a CI assertion over the SHIPPED manifest only -- that is the whole
+        point of #103, and the reason the license responsibility sits with the operator who wrote the file.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][array]$Catalog,
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][array]$Local
+    )
+    $merged = New-Object System.Collections.Generic.List[object]
+    $seen = @{}
+    foreach ($pair in @(@{ Items = @($Catalog); Source = 'catalog' }, @{ Items = @($Local); Source = 'local' })) {
+        foreach ($m in $pair.Items) {
+            $id = [string]$m.Id
+            if ($seen.ContainsKey($id)) {
+                throw "Model catalog: duplicate id '$id' -- it is in both the shipped manifest and the local one."
+            }
+            $seen[$id] = $true
+            $copy = @{}
+            foreach ($k in @($m.Keys)) { $copy[[string]$k] = $m[$k] }
+            $copy['Source'] = [string]$pair.Source
+            $merged.Add($copy)
+        }
+    }
+    return , @($merged.ToArray())
+}
+
+function Get-LokiModelCatalog {
+    <#
+        The full tier list an operator actually has: the shipped manifest plus, when present, their own (issue #103).
+        THROWS on any validation failure, exactly like Get-LokiModelManifest -- this is the raw primitive; the
+        "turn it into an operator-actionable message" job belongs to Read-LokiModelManifestSafe, which wraps this.
+
+        An ABSENT local manifest is the normal case, not a fault: it loads the shipped catalog alone and the result is
+        identical to before #103. A local manifest that EXISTS but is broken throws -- it is never skipped, because
+        quietly dropping the operator's own tiers would change which model runs without saying so.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [AllowEmptyString()][string]$LocalPath = ''
+    )
+    # ASSIGN FIRST, then wrap. Get-LokiModelManifest ends in `return , $models` (so a single-entry catalog does not
+    # collapse to a scalar), which means @(FUNC) yields ONE element containing the whole array -- the merge would then
+    # iterate a single array-shaped "entry" and stamp nothing. Measured, twice; hence this note.
+    $catalog = Get-LokiModelManifest -Path $Path
+    $local = @()
+    if ((-not [string]::IsNullOrWhiteSpace($LocalPath)) -and (Test-Path -LiteralPath $LocalPath)) {
+        $local = Get-LokiModelManifest -Path $LocalPath
+    }
+    return Merge-LokiModelCatalog -Catalog @($catalog) -Local @($local)
+}
+
 function Read-LokiModelManifestSafe {
     # Load the model manifest through the fail-closed validator Get-LokiModelManifest (above), but turn a validation
     # THROW into a structured result instead of letting the raw RuntimeException surface at the dispatcher as a stack
@@ -100,9 +180,16 @@ function Read-LokiModelManifestSafe {
     # consuming command (offline/hwscan/doctor) can print an operator-actionable "rebuild the stick" hint plus this
     # Detail (issue #87). The validator is UNCHANGED and still fail-closed: Ok=$false is NOT a usable manifest and the
     # caller must refuse -- never "skip the bad entry and carry on". Both keys are always present (StrictMode-safe read).
-    param([Parameter(Mandatory = $true)][string]$Path)
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        # OPTIONAL private catalog (issue #103). Omitting it, or pointing it at a file that does not exist, is the
+        # normal case and behaves exactly as before -- so every existing caller is unaffected. When the file IS there it
+        # goes through the SAME fail-closed validator: a broken local manifest makes the whole load Ok=$false rather
+        # than being skipped, because "carry on without the operator's own tiers" would silently change which model runs.
+        [AllowEmptyString()][string]$LocalPath = ''
+    )
     try {
-        $models = Get-LokiModelManifest -Path $Path
+        $models = Get-LokiModelCatalog -Path $Path -LocalPath $LocalPath
         return @{ Ok = $true; Models = $models; Detail = '' }
     }
     catch {
