@@ -1,6 +1,6 @@
 # ADR-0031: The offline agent's closing turn is constrained to `final_answer`
 
-Status: Accepted (2026-07-29)
+Status: Accepted (2026-08-17)
 
 ## Context
 
@@ -9,7 +9,7 @@ The loop asks the model to conclude -- the system prompt says "when the evidence
 final_answer" -- and the model may simply not do it. Raising the per-turn generation cap to 2048
 (ADR-0029) fixed *truncation*; it did not fix *non-termination*.
 
-The 2026-07-28 tier evaluation measured this across 12 candidate models on the real agent contract
+The 2026-08-17 tier evaluation measured this across 12 candidate models on the real agent contract
 (real system prompt, toolset, allow-list gate, tool-call parser; `max_tokens=2048`; CPU-only):
 
 - **`DeepSeek-R1-0528-Qwen3-8B` ran every turn it had, emitted four valid native tool calls, and never
