@@ -30,6 +30,10 @@
 #   Get-LokiOfflineAgentToolset -> [array]   (#20)
 #       PURE. The model's entire move set: the run_command + final_answer tool schemas (OpenAI shape) that
 #       Invoke-LokiEngineChat sends. llama-server constrains the arguments to each schema (ADR-0021).
+#   Get-LokiOfflineAgentTurnToolset -Tools <array> -Iteration <int> -MaxIterations <int> -> [array]   (#104)
+#       PURE. The move set THIS turn may choose from: the full set before the closing turn, ONLY final_answer on it, so
+#       the last turn cannot spend itself on another fact. Narrows what the MODEL may propose; the gate is untouched.
+#       Fails safe to the full set if no final_answer entry exists (never returns an empty tool list).
 #   ConvertFrom-LokiAgentToolCall [-ToolCalls <array>] [-Content <string>] -> [hashtable]{ Kind; Command?; Answer?; Reason? }   (#20)
 #       PURE, fail-safe. Turns the engine reply into the loop's next move: 'run' (a command), 'final' (an answer), or
 #       'none' (nothing usable). Never throws, never returns 'run' with a command it could not read.
@@ -160,6 +164,46 @@ function Get-LokiOfflineAgentToolset {
             }
         }
     )
+}
+
+function Get-LokiOfflineAgentTurnToolset {
+    <#
+        PURE. The move set THIS turn is allowed to choose from (issue #104). Before the closing turn: everything
+        Get-LokiOfflineAgentToolset offers. ON the closing turn (the last one the iteration cap will permit): ONLY
+        final_answer.
+
+        WHY a grammar and not a prompt: llama-server compiles each offered tool's schema to a GBNF grammar and
+        constrains generation to it (ADR-0021). Removing run_command from the list therefore makes another fact-gathering
+        call UNGENERATABLE, rather than merely discouraged. The system prompt already ASKS the model to conclude when the
+        evidence is enough, and models ignore it: measured in the 2026-07-28 tier evaluation, DeepSeek-R1-0528-Qwen3-8B
+        spent all four turns gathering, produced four valid tool calls, and never called final_answer -- ending on
+        'iteration-cap' with no diagnosis at all. Only 1 of 12 models both diagnosed correctly and terminated by itself.
+        A prompt shifts probabilities; a grammar removes the alternative.
+
+        This narrows what the MODEL MAY PROPOSE. It does not touch the allow-list gate, does not widen what may execute,
+        and adds no execution path -- a forced final_answer runs nothing at all.
+
+        Fail-safe by construction: if the toolset carries no final_answer entry (a future rename), the filter would come
+        back empty, so it falls back to the FULL set rather than sending an empty tool list the engine cannot answer
+        with. A silently toolless turn would be a worse failure than a late run_command.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][array]$Tools,
+        [Parameter(Mandatory = $true)][int]$Iteration,
+        [Parameter(Mandatory = $true)][int]$MaxIterations
+    )
+    # NO comma operator here (unlike Get-LokiOfflineTierRank): `return ,@($x)` hands back an array WRAPPING the array,
+    # so a caller writing the ordinary @(...) idiom counts 1 instead of the real tool count. Measured, not assumed.
+    # Get-LokiOfflineAgentToolset returns its set the same plain way, and the consumer is an [array] parameter that
+    # re-wraps a lone element anyway -- so a single-tool closing set cannot collapse into something the engine rejects.
+    if ($Iteration -lt $MaxIterations) { return @($Tools) }
+    $closing = @($Tools | Where-Object {
+        $n = ''
+        try { $n = [string]$_.function.name } catch { $n = '' }
+        $n -eq 'final_answer'
+    })
+    if ($closing.Count -eq 0) { return @($Tools) }
+    return @($closing)
 }
 
 function ConvertFrom-LokiAgentToolCall {
@@ -539,9 +583,20 @@ function Invoke-LokiOfflineAgentTurnLoop {
         # 'engine-request-failed' -- the engine blamed for the clock running out. Measured on the second real 8B run
         # (#81): 321s against a 300s budget, ending in exactly that false report.
         $remainingSec = [math]::Max(1, [int][math]::Ceiling($TimeBudgetSec - $sw.Elapsed.TotalSeconds))
+
+        # The closing turn is CONSTRAINED to final_answer (#104): on the last turn the cap allows, run_command is not in
+        # the grammar, so "gathered enough but never concluded" stops being a possible outcome. The nudge below tells the
+        # model WHY its other tool vanished -- without it the constraint reads as a malfunction, and a confused model
+        # writes a worse diagnosis than an informed one. It is Loki's own text, not scanned data, so it carries no
+        # injection surface. It deliberately keeps "insufficient-data" on the table: forcing an ENDING must never force
+        # an INVENTED finding (the review risk named in #104).
+        $turnTools = Get-LokiOfflineAgentTurnToolset -Tools $Tools -Iteration $iteration -MaxIterations $MaxIterations
+        if ($iteration -ge $MaxIterations) {
+            $history.Add(@{ role = 'user'; content = 'This is the final step -- no further commands can be run. Give your diagnosis now with final_answer, based only on the evidence gathered so far. If that evidence is not enough to name a fault, answer "insufficient-data" and say what is missing. Do not invent a finding.' })
+        }
         # .ToArray(), not @($history): a generic List[object] does not satisfy an [array] (System.Array) parameter
         # under 5.1 ("Argument types do not match"); ToArray() returns a real object[] that binds cleanly.
-        $chat = Invoke-LokiEngineChat -BaseUri $BaseUri -Messages $history.ToArray() -Tools $Tools -MaxTokens $script:LokiOfflineAgentTurnMaxTokens -TimeoutSec $remainingSec
+        $chat = Invoke-LokiEngineChat -BaseUri $BaseUri -Messages $history.ToArray() -Tools $turnTools -MaxTokens $script:LokiOfflineAgentTurnMaxTokens -TimeoutSec $remainingSec
         # An EMPTY TURN is the MODEL producing no move -- it is NOT the engine failing, and the two must not be
         # reported as the same thing. lib/offline.ps1 only says 'engine-empty-answer' after a SUCCESSFUL request whose
         # message carried neither tool_calls nor content; a transport failure says 'engine-request-failed'. A small

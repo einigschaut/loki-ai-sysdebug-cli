@@ -89,6 +89,52 @@ Describe 'Get-LokiOfflineAgentToolset (the model move set: run_command + final_a
     }
 }
 
+Describe 'Get-LokiOfflineAgentTurnToolset (the closing turn is constrained to final_answer, issue #104)' {
+    BeforeAll { $script:allTools = Get-LokiOfflineAgentToolset }
+
+    It 'iteration <I> of <M> offers <Expected> tool(s)' -TestCases @(
+        @{ I = 1; M = 8; Expected = 2 }   # first turn: gather freely
+        @{ I = 7; M = 8; Expected = 2 }   # one before the last: still free
+        @{ I = 8; M = 8; Expected = 1 }   # THE closing turn: final_answer only
+        @{ I = 9; M = 8; Expected = 1 }   # defensive: past the cap stays constrained, never reopens
+        @{ I = 1; M = 1; Expected = 1 }   # a one-turn budget: that turn IS the closing turn
+    ) {
+        @(Get-LokiOfflineAgentTurnToolset -Tools $script:allTools -Iteration $I -MaxIterations $M).Count | Should -Be $Expected
+    }
+
+    It 'the closing set is EXACTLY final_answer -- run_command is not generatable there' {
+        $closing = @(Get-LokiOfflineAgentTurnToolset -Tools $script:allTools -Iteration 8 -MaxIterations 8)
+        (@($closing | ForEach-Object { $_.function.name }) -join ',') | Should -Be 'final_answer'
+    }
+
+    It 'the pre-closing set is the FULL set, unchanged (this must not narrow the normal turns)' {
+        $open = @(Get-LokiOfflineAgentTurnToolset -Tools $script:allTools -Iteration 1 -MaxIterations 8)
+        (@($open | ForEach-Object { $_.function.name }) -join ',') | Should -Be 'run_command,final_answer'
+    }
+
+    It 'the closing tool STILL permits insufficient-data -- forcing an ending must not force a finding' {
+        # The review risk named in #104: a model with only final_answer left must be able to say "I do not know".
+        # If this description ever loses that option, a forced close becomes a forced invention.
+        $closing = @(Get-LokiOfflineAgentTurnToolset -Tools $script:allTools -Iteration 8 -MaxIterations 8)
+        $answerDesc = [string]$closing[0].function.parameters.properties.answer.description
+        $answerDesc | Should -Match '(?i)insufficient-data'
+    }
+
+    It 'fails SAFE: a toolset with no final_answer keeps the FULL set (never an empty tool list)' {
+        # An empty tool list would leave the engine with nothing to answer with -- a worse failure than a late
+        # run_command. Guards a future rename of the tool.
+        $onlyRun = @($script:allTools | Where-Object { $_.function.name -eq 'run_command' })
+        $r = @(Get-LokiOfflineAgentTurnToolset -Tools $onlyRun -Iteration 8 -MaxIterations 8)
+        $r.Count | Should -Be 1
+        $r[0].function.name | Should -Be 'run_command'
+    }
+
+    It 'PURE: it returns a filtered view and does not mutate the caller''s toolset' {
+        [void](Get-LokiOfflineAgentTurnToolset -Tools $script:allTools -Iteration 8 -MaxIterations 8)
+        @($script:allTools).Count | Should -Be 2
+    }
+}
+
 Describe 'ConvertFrom-LokiAgentToolCall (engine reply -> next move; fail-safe, never a half-read command)' {
     It 'a run_command call -> Kind run + the command, trimmed' {
         $tc = @([pscustomobject]@{ function = [pscustomobject]@{ name = 'run_command'; arguments = '{"command":"  Get-Process  "}' } })
@@ -534,6 +580,73 @@ Describe 'Invoke-LokiOfflineAgentTurnLoop (the capped multi-turn diagnose loop; 
         $r.StopReason | Should -Be 'iteration-cap'
         $r.Iterations | Should -Be 3
         $r.Answer     | Should -Match 'insufficient-data'
+    }
+
+    It 'the CLOSING turn is handed ONLY final_answer -- the #104 non-termination case' {
+        # The measured failure this exists for (tier evaluation 2026-07-28): DeepSeek-R1-0528-Qwen3-8B gathered facts
+        # for every turn it had, emitted four valid tool calls, and never concluded. This mock is that model: it always
+        # asks for another fact. Turns 1-2 must stay free; turn 3 must not even be able to ask.
+        $tools = Get-LokiOfflineAgentToolset
+        Mock Invoke-LokiEngineChat { @{ Ok = $true; Reason = 'ok'; ToolCalls = (New-ToolCall 'run_command' '{"command":"Get-Process"}') } }
+        Mock Invoke-LokiOfflineAgentCommand { @{ Executed = $true; Class = 'read'; Reason = 'read-allowlisted'; Output = 'x'; Truncated = $false } }
+        [void](Invoke-LokiOfflineAgentTurnLoop -BaseUri 'x' -Messages $script:seed -Tools $tools -MaxIterations 3)
+        Should -Invoke Invoke-LokiEngineChat -Times 2 -Exactly -ParameterFilter { @($Tools).Count -eq 2 }
+        Should -Invoke Invoke-LokiEngineChat -Times 1 -Exactly -ParameterFilter {
+            (@($Tools).Count -eq 1) -and ([string](@($Tools)[0].function.name) -eq 'final_answer')
+        }
+    }
+
+    It 'a FORCED close ENDS the run with a real answer instead of the iteration cap' {
+        # The payoff: the same never-concluding model now returns StopReason 'final' (a diagnosis from the evidence it
+        # has), not 'iteration-cap' with "insufficient-data: reached the step limit".
+        $tools = Get-LokiOfflineAgentToolset
+        Mock Invoke-LokiEngineChat {
+            if (@($Tools).Count -eq 1) { @{ Ok = $true; Reason = 'ok'; ToolCalls = (New-ToolCall 'final_answer' '{"answer":"disk C: is at 0.4% free"}' 'c9') } }
+            else { @{ Ok = $true; Reason = 'ok'; ToolCalls = (New-ToolCall 'run_command' '{"command":"Get-Process"}') } }
+        }
+        Mock Invoke-LokiOfflineAgentCommand { @{ Executed = $true; Class = 'read'; Reason = 'read-allowlisted'; Output = 'x'; Truncated = $false } }
+        $r = Invoke-LokiOfflineAgentTurnLoop -BaseUri 'x' -Messages $script:seed -Tools $tools -MaxIterations 2
+        $r.StopReason | Should -Be 'final'
+        $r.Answer     | Should -Be 'disk C: is at 0.4% free'
+    }
+
+    It 'a FORCED close may STILL answer insufficient-data -- an ending is forced, a FINDING is not' {
+        # THE review risk of #104. If a constrained model could only ever emit a fault, the loop would manufacture
+        # diagnoses on thin evidence -- worse than admitting it does not know.
+        $tools = Get-LokiOfflineAgentToolset
+        Mock Invoke-LokiEngineChat {
+            if (@($Tools).Count -eq 1) { @{ Ok = $true; Reason = 'ok'; ToolCalls = (New-ToolCall 'final_answer' '{"answer":"insufficient-data: no disk counters were readable"}' 'c9') } }
+            else { @{ Ok = $true; Reason = 'ok'; ToolCalls = (New-ToolCall 'run_command' '{"command":"Get-Process"}') } }
+        }
+        Mock Invoke-LokiOfflineAgentCommand { @{ Executed = $true; Class = 'read'; Reason = 'read-allowlisted'; Output = 'x'; Truncated = $false } }
+        $r = Invoke-LokiOfflineAgentTurnLoop -BaseUri 'x' -Messages $script:seed -Tools $tools -MaxIterations 2
+        $r.StopReason | Should -Be 'final'
+        $r.Answer     | Should -Match 'insufficient-data'
+    }
+
+    It 'the closing turn is TOLD why its other tool vanished, and that insufficient-data stays allowed' {
+        # Without this the constraint reads as a malfunction to the model. Loki's own text -- not scanned data -- so it
+        # carries no injection surface.
+        $tools = Get-LokiOfflineAgentToolset
+        Mock Invoke-LokiEngineChat { @{ Ok = $true; Reason = 'ok'; ToolCalls = (New-ToolCall 'final_answer' '{"answer":"done"}') } }
+        [void](Invoke-LokiOfflineAgentTurnLoop -BaseUri 'x' -Messages $script:seed -Tools $tools -MaxIterations 1)
+        Should -Invoke Invoke-LokiEngineChat -Times 1 -Exactly -ParameterFilter {
+            $last = @($Messages)[-1]
+            ([string]$last.role -eq 'user') -and
+            ([string]$last.content -match '(?i)final step') -and
+            ([string]$last.content -match '(?i)insufficient-data') -and
+            ([string]$last.content -match '(?i)not invent')
+        }
+    }
+
+    It 'NORMAL turns are untouched: no closing nudge, full toolset, before the cap' {
+        # Guards the other direction -- the constraint must not leak into ordinary turns.
+        $tools = Get-LokiOfflineAgentToolset
+        Mock Invoke-LokiEngineChat { @{ Ok = $true; Reason = 'ok'; ToolCalls = (New-ToolCall 'final_answer' '{"answer":"done"}') } }
+        [void](Invoke-LokiOfflineAgentTurnLoop -BaseUri 'x' -Messages $script:seed -Tools $tools -MaxIterations 8)
+        Should -Invoke Invoke-LokiEngineChat -Times 1 -Exactly -ParameterFilter {
+            (@($Tools).Count -eq 2) -and ([string](@($Messages)[-1]).content -notmatch '(?i)final step')
+        }
     }
 
     It 'the TIME cap stops before any turn when the budget is already spent' {
