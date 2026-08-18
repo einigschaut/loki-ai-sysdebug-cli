@@ -159,6 +159,105 @@ Describe 'Read-LokiModelManifestSafe (fail-closed wrapper -> an operator-actiona
     }
 }
 
+Describe 'Merge-LokiModelCatalog (shipped + the operator''s own catalog, issue #103)' {
+
+    It 'stamps where each entry came from, keeping catalog order first' {
+        # assign FIRST, then wrap: like Get-LokiModelManifest this returns `, @(...)` so a single-entry result stays an
+        # array; @(FUNC) directly would collapse it to one element holding the array.
+        $merged = Merge-LokiModelCatalog -Catalog @(@{ Id = 'small' }, @{ Id = 'mid' }) -Local @(@{ Id = 'byo' })
+        $merged = @($merged)
+        $merged.Count | Should -Be 3
+        (@($merged | ForEach-Object { $_.Id }) -join ',')     | Should -Be 'small,mid,byo'
+        (@($merged | ForEach-Object { $_.Source }) -join ',') | Should -Be 'catalog,catalog,local'
+    }
+
+    It 'an ABSENT local catalog is the normal case: the result is exactly the shipped one' {
+        $merged = @(Merge-LokiModelCatalog -Catalog @(@{ Id = 'small' }) -Local @())
+        $merged.Count  | Should -Be 1
+        $merged[0].Id  | Should -Be 'small'
+    }
+
+    It 'a DUPLICATE id across the two manifests THROWS -- load order must never decide which weights a tier points at' {
+        { Merge-LokiModelCatalog -Catalog @(@{ Id = 'mid' }) -Local @(@{ Id = 'mid' }) } | Should -Throw
+    }
+
+    It 'PURE: it copies entries -- stamping never mutates the caller''s manifest objects' {
+        $catalog = @(@{ Id = 'small' })
+        [void](Merge-LokiModelCatalog -Catalog $catalog -Local @())
+        $catalog[0].ContainsKey('Source') | Should -BeFalse
+    }
+}
+
+Describe 'Get-LokiModelCatalog / Read-LokiModelManifestSafe -LocalPath (the BYO path, issue #103)' {
+
+    It 'no local manifest -> identical to before #103 (absence is not a fault)' {
+        $r = Read-LokiModelManifestSafe -Path $script:ManifestPath -LocalPath (Join-Path $script:RootTmp 'nope\manifest.local.psd1')
+        $r.Ok | Should -BeTrue
+        @($r.Models).Count | Should -BeGreaterThan 0
+        @($r.Models | Where-Object { [string]$_.Source -eq 'local' }).Count | Should -Be 0
+    }
+
+    It 'a local entry is ADDED to the tier list and marked as local' {
+        $local = New-TempManifest @{ Id = 'byo-nemo'; FileName = 'byo.gguf' }
+        $r = Read-LokiModelManifestSafe -Path $script:ManifestPath -LocalPath $local
+        $r.Ok | Should -BeTrue
+        $byo = @($r.Models | Where-Object { [string]$_.Id -eq 'byo-nemo' })
+        $byo.Count       | Should -Be 1
+        $byo[0].Source   | Should -Be 'local'
+    }
+
+    It 'a NON-Apache/MIT license is accepted in the LOCAL catalog -- that is the whole point of #103' {
+        # The shipped manifest is held to Apache-2.0/MIT by the test above; the operator's own file is not, because the
+        # licence decision there is theirs. Concrete driver: NVIDIA Nemotron (NVIDIA Open Model License).
+        $local = New-TempManifest @{ Id = 'byo-nemo'; FileName = 'byo.gguf'; License = 'NVIDIA Open Model License' }
+        $r = Read-LokiModelManifestSafe -Path $script:ManifestPath -LocalPath $local
+        $r.Ok | Should -BeTrue
+        (@($r.Models | Where-Object { [string]$_.Id -eq 'byo-nemo' })[0]).License | Should -Be 'NVIDIA Open Model License'
+    }
+
+    It 'PRIVATE IS NOT UNCHECKED: a local entry with a bad sha256 fails the whole load, fail-closed' {
+        # The integrity rules are NOT relaxed for the private path -- only the licence test is out of scope there.
+        $local = New-TempManifest @{ Id = 'byo-bad'; FileName = 'byo.gguf'; Sha256 = 'nothex' }
+        $r = Read-LokiModelManifestSafe -Path $script:ManifestPath -LocalPath $local
+        $r.Ok     | Should -BeFalse
+        $r.Detail | Should -Match '(?i)sha256'
+        @($r.Models).Count | Should -Be 0
+    }
+
+    It 'PRIVATE IS NOT UNCHECKED: a local entry on a MOVING huggingface ref fails too (ADR-0026 still applies)' {
+        $local = New-TempManifest @{ Id = 'byo-moving'; FileName = 'byo.gguf'; Url = 'https://huggingface.co/o/r/resolve/main/m.gguf' }
+        (Read-LokiModelManifestSafe -Path $script:ManifestPath -LocalPath $local).Ok | Should -BeFalse
+    }
+
+    It 'a broken local manifest is never SKIPPED -- dropping the operator''s tiers would change which model runs' {
+        $local = New-TempManifest @{ Id = 'byo'; FileName = 'byo.gguf'; SizeBytes = 0 }
+        $r = Read-LokiModelManifestSafe -Path $script:ManifestPath -LocalPath $local
+        $r.Ok | Should -BeFalse   # NOT "Ok=$true with the shipped catalog only"
+    }
+
+    It 'Get-LokiModelCatalog THROWS on a broken local manifest (the raw primitive setup relies on)' {
+        $local = New-TempManifest @{ Id = 'byo'; FileName = 'byo.gguf'; Sha256 = 'nothex' }
+        { Get-LokiModelCatalog -Path $script:ManifestPath -LocalPath $local } | Should -Throw
+    }
+
+    It 'Get-LokiModelLayout exposes the local path beside the shipped one' {
+        $layout = Get-LokiModelLayout -AppRoot 'C:\stick'
+        $layout.ManifestPath      | Should -BeLike '*\models\manifest.psd1'
+        $layout.LocalManifestPath | Should -BeLike '*\models\manifest.local.psd1'
+    }
+}
+
+Describe 'The PUBLIC supply chain stays Apache/MIT-only (the guard #103 must never weaken)' {
+
+    It 'the REPO carries no manifest.local.psd1 -- a committed BYO catalog would push its licence on every user' {
+        # .gitignore covers it; this is the belt to that braces. A local catalog may hold a non-Apache/MIT model by
+        # design, so one landing in the shipped tree would silently break the licence guarantee the gate exists for.
+        $repoRoot = (Resolve-Path "$PSScriptRoot\..").Path
+        $found = @(Get-ChildItem -LiteralPath $repoRoot -Recurse -File -Filter 'manifest.local.psd1' -ErrorAction SilentlyContinue)
+        $found.Count | Should -Be 0 -Because 'a private BYO catalog must never be committed'
+    }
+}
+
 Describe 'Get-LokiModelDownloadPlan' {
 
     It 'maps selected ids to url + sha256 + dest path; throws on an unknown id' {

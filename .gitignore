@@ -13,6 +13,13 @@ engine-offline/
 bin/
 tools/
 
+# === Operator's private model catalog (issue #103) — NEVER commit ===
+# A bring-your-own-model entry may carry a license that is permissive in practice but is not Apache-2.0/MIT, which is
+# exactly what the shipped manifest must never contain. Committing one would push that license onto every downstream
+# user of the public supply chain. tests/models.Tests.ps1 asserts the repo carries no such file, so this is belt AND
+# braces; the operator's own catalog lives on their stick (or their checkout), never in git.
+manifest.local.psd1
+
 # === Stick / build artifacts ===
 build/out/
 *.sig
