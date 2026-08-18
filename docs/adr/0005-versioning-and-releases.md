@@ -64,3 +64,43 @@ trigger a release.
   into something non-parseable.
 - The first automated Release PR appears once a release-worthy Conventional Commit lands
   on `main` after this ADR; the baseline `0.1.0` is declared in the manifest.
+
+## Operational note: the release token
+
+release-please authenticates with the repository secret `RELEASE_PLEASE_TOKEN` — a **fine-grained
+PAT** (Contents: RW, Pull requests: RW, this repository only), not the default `GITHUB_TOKEN`.
+GitHub's anti-recursion rule means a PR opened via `GITHUB_TOKEN` triggers no further workflows,
+which would leave every Release PR without CI — the one gate that must never be skipped before a
+release.
+
+The price of that choice is an expiry date, and **the failure mode is silence**: when the token
+lapses, no Release PR is opened and nothing says so. Merged work simply stops reaching a release.
+That is not hypothetical — the token expired on 2026-08-13 and the gap surfaced only when a
+release was wanted, five days later.
+
+Renewing it carries a second trap. `gh secret set` hides the input completely — no echo, no
+asterisks — so a paste that does not land stores an **empty** secret and still reports success.
+The two failures look different in the run log:
+
+| Symptom | Meaning |
+|---|---|
+| `Input required and not supplied: token` | the secret is empty — it fails ~4 ms in, inside the action's own input validation, before any network call |
+| `Bad credentials` | the secret holds a token that is expired or revoked |
+
+**Set the value in the web form** (Settings > Secrets and variables > Actions). It refuses an empty
+input; the CLI prompt cannot, because it shows nothing back.
+
+A **preflight step** in `release-please.yml` now runs ahead of the action and states all of this in
+plain words. It fails with a named error when the secret is empty, rejected (401), blocked (403) or
+not scoped to this repository (404 — a fine-grained PAT gets 404, not 403, for a repository it may
+not read), and it warns when the token expires within 14 days, so the lapse is announced before it
+happens rather than after. Any other failure (5xx, network) only warns and lets release-please
+report the real outcome: a partial GitHub outage overlapped the 2026-08-17 diagnosis and kept it
+ambiguous for a day, and a preflight that turned an outage into a hard stop would recreate that
+same confusion from the other side.
+
+What the preflight does **not** prove is scope: it establishes that GitHub accepts the token for
+this repository, not that the token carries Contents and Pull requests **write**. A read-only PAT
+still passes the preflight and fails inside release-please. That is deliberate -- verifying write
+access would mean performing a write -- and it is the rarer mistake, because the permissions are
+chosen once when the token is created, while the expiry recurs on its own.

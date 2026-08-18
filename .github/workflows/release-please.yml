@@ -35,6 +35,101 @@ jobs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
+      # Preflight, added after a token renewal failed silently across five runs (2026-08-17/18).
+      # Both ways this secret breaks surface as a one-line runner error that names neither the
+      # secret nor the remedy: an EMPTY value dies inside the action's own input validation
+      # ("Input required and not supplied: token", 4 ms in, before any network call), an EXPIRED
+      # one dies later against the API ("Bad credentials"). Attributing either cost a full day --
+      # made worse by a GitHub outage that overlapped and offered a plausible wrong explanation.
+      # This step names the secret, the failure and the fix, and warns BEFORE the next expiry
+      # rather than after it, because the failure mode is silence: no Release PR is ever opened.
+      - name: Preflight -- release token present, accepted, not about to expire
+        env:
+          # Through the environment, never as an argument: argv is readable by every process in
+          # the job, this step's environment is not (CLAUDE.md section 5 -- secret never in argv).
+          RELEASE_PLEASE_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Never `set -x` in this step -- it would echo the curl invocation, token included.
+
+          remedy() {
+            echo "Fix: create a fine-grained PAT -- Contents: Read and write, Pull requests: Read"
+            echo "     and write, scoped to THIS repository only -- and store it as the repository"
+            echo "     secret RELEASE_PLEASE_TOKEN (Settings > Secrets and variables > Actions)."
+            echo "Set the value in the WEB form. 'gh secret set' hides the input completely (no"
+            echo "echo, no asterisks), so a paste that does not land writes an EMPTY secret and"
+            echo "still reports success -- that is the failure which produced this preflight."
+          }
+
+          if [ -z "${RELEASE_PLEASE_TOKEN:-}" ]; then
+            echo "::error title=RELEASE_PLEASE_TOKEN is empty::The repository secret carries no value, so release-please cannot open a Release PR."
+            remedy
+            exit 1
+          fi
+
+          headers="$(mktemp)"
+          # The token reaches curl through a config file on STDIN, not as -H on the command line,
+          # for the same argv reason as above.
+          set +e
+          status="$(printf 'header = "Authorization: Bearer %s"\n' "${RELEASE_PLEASE_TOKEN}" \
+            | curl --silent --show-error --config - \
+                   --header 'Accept: application/vnd.github+json' \
+                   --header 'X-GitHub-Api-Version: 2022-11-28' \
+                   --output /dev/null --dump-header "${headers}" --write-out '%{http_code}' \
+                   "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}")"
+          rc=$?
+          set -e
+          if [ "${rc}" -ne 0 ]; then status='000'; fi
+
+          case "${status}" in
+            200) ;;
+            401)
+              echo "::error title=RELEASE_PLEASE_TOKEN rejected::GitHub answered 401 -- the token is expired or was revoked."
+              remedy
+              exit 1
+              ;;
+            403)
+              echo "::error title=RELEASE_PLEASE_TOKEN not authorised::GitHub answered 403 -- the token is live but blocked for ${GITHUB_REPOSITORY}."
+              remedy
+              exit 1
+              ;;
+            404)
+              # A fine-grained PAT that cannot see a repository gets 404, not 403 -- GitHub hides
+              # the existence of what the token may not read. So 404 here means wrong scope.
+              echo "::error title=RELEASE_PLEASE_TOKEN cannot see this repository::GitHub answered 404 -- the token is not scoped to ${GITHUB_REPOSITORY}."
+              remedy
+              exit 1
+              ;;
+            *)
+              # Anything else is GitHub being unwell, not a bad token. On 2026-08-17 a partial
+              # GitHub outage overlapped a genuine token failure and kept the diagnosis ambiguous
+              # for a day; a preflight that turned an outage into a hard stop would recreate that
+              # confusion from the other side. Say so, and let release-please report the truth.
+              echo "::warning title=Release token not verified::HTTP ${status} while checking the token -- continuing, release-please will report the real outcome."
+              exit 0
+              ;;
+          esac
+
+          expiry="$(grep -i '^github-authentication-token-expiration:' "${headers}" \
+            | head -1 | sed 's/^[^:]*: *//' | tr -d '\r' || true)"
+          if [ -z "${expiry}" ]; then
+            echo "Release token accepted; it carries no expiry date."
+            exit 0
+          fi
+
+          expiry_epoch="$(date -u -d "${expiry}" +%s 2>/dev/null || true)"
+          if [ -z "${expiry_epoch}" ]; then
+            echo "Release token accepted; expiry reported as '${expiry}', which this step could not parse."
+            exit 0
+          fi
+
+          days=$(( (expiry_epoch - $(date -u +%s)) / 86400 ))
+          echo "Release token accepted; expires ${expiry} (${days} day(s) left)."
+          echo "Release token expires ${expiry} -- ${days} day(s) left." >> "${GITHUB_STEP_SUMMARY}"
+          if [ "${days}" -le 14 ]; then
+            echo "::warning title=Release token expires soon::RELEASE_PLEASE_TOKEN expires on ${expiry}, ${days} day(s) from now. Renew it before then -- when it lapses, no Release PR is opened and nothing says so."
+          fi
+
       - name: Run release-please
         id: release
         uses: googleapis/release-please-action@v4
@@ -42,8 +137,9 @@ jobs:
           # Fine-grained PAT, NOT the default GITHUB_TOKEN: a PR opened via GITHUB_TOKEN does not
           # trigger further workflows (GitHub's anti-recursion rule), which would leave every Release
           # PR without CI. Using a PAT makes the Release PR run the normal CI gate before it is merged.
-          # Secret RELEASE_PLEASE_TOKEN = a repo-scoped PAT (Contents + Pull requests: RW); renew before
-          # it expires or the bot can no longer open Release PRs. See docs/adr/0005-versioning-and-releases.md.
+          # Secret RELEASE_PLEASE_TOKEN = a repo-scoped PAT (Contents + Pull requests: RW). The preflight
+          # step above fails loudly when it is empty or rejected and warns 14 days before it expires --
+          # left to lapse it opens no Release PR and says nothing. See docs/adr/0005-versioning-and-releases.md.
           token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
