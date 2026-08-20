@@ -22,6 +22,41 @@ BeforeAll {
     $script:liveOn = ($env:LOKI_LIVE_OFFLINE -eq '1') -and (-not [string]::IsNullOrWhiteSpace($script:liveStick)) -and
         (Test-Path -LiteralPath $script:liveStick)
 
+    # #113: a stick built from an older Loki is the likeliest way to waste this run, and it hit the very FIRST
+    # execution of the pre-release ritual (ADR-0033). A 0.9.0 stick made every test here die inside the manifest
+    # validator with "Model manifest entry is missing key 'KVCache'" -- ADR-0025 working exactly as designed, but a
+    # message that names a hashtable key inside models.ps1 reads as a defect in the code under test, and it costs a
+    # diagnosis before the first real assertion runs.
+    # FAIL rather than skip: this suite is run deliberately, as a release gate, so an unusable rig is an error and not
+    # an absence -- and ADR-0033 already warns that a skip is easy to scroll past.
+    $script:stickProblem = ''
+    if ($script:liveOn) {
+        $repoVersion = ([string](Get-Content -LiteralPath "$PSScriptRoot\..\version.txt" -Raw -Encoding utf8)).Trim()
+        $stickVersionPath = Join-Path $script:liveStick 'version.txt'
+        $stickVersion = '(none)'
+        if (Test-Path -LiteralPath $stickVersionPath) {
+            $stickVersion = ([string](Get-Content -LiteralPath $stickVersionPath -Raw -Encoding utf8)).Trim()
+        }
+        $rebuild = "powershell -ExecutionPolicy Bypass -File build\New-LokiStick.ps1 -Destination '$script:liveStick'"
+        if ($stickVersion -ne $repoVersion) {
+            $script:stickProblem = "This stick is not the code under test: it reports version $stickVersion, the repository is at $repoVersion. " +
+                "Rebuild it from this commit first -- $rebuild -- which writes src\ and version.txt only and never " +
+                'touches models\*.gguf, engine-offline\, home\ or reports\.'
+        }
+        else {
+            # A matching version is NOT proof. version.txt only moves at a release, so a stick built from an older
+            # commit of the same version still carries an older manifest -- and the manifest is what actually broke.
+            # Parse it with THIS build's validator, which is the check that would have caught the original failure.
+            try {
+                [void](Get-LokiModelManifest -Path (Get-LokiModelLayout -AppRoot $script:liveStick).ManifestPath)
+            }
+            catch {
+                $script:stickProblem = "This stick's model manifest is not readable by the code under test: $($_.Exception.Message) " +
+                    "Rebuild it from this commit first -- $rebuild"
+            }
+        }
+    }
+
     # --- Minimal GGUF header reader (test-only), for the ADR-0025 cross-check: prove the manifest's pinned KV geometry
     # matches the geometry the SHIPPING model file actually declares. We read only the metadata KV section (near the
     # file start), skipping every value type -- including arrays -- so we can walk to the keys we need.
@@ -93,6 +128,7 @@ Describe 'offline --analyze against the REAL engine (opt-in; ADR-0015 section 6)
             Set-ItResult -Skipped -Because 'opt-in: set LOKI_LIVE_OFFLINE=1 and LOKI_LIVE_STICK=<real stick> to run it'
             return
         }
+        if ($script:stickProblem) { throw $script:stickProblem }
         # Stub ONLY the RAM-fit verdict (ADR-0015). Integrity, runtime, model load, chat and kill all stay real.
         Mock Get-LokiTierFit { @{ Verdict = 'fits'; NeedFreeGB = 0 } }
 
@@ -156,6 +192,7 @@ Describe 'manifest KV geometry matches the installed GGUF headers (opt-in cross-
             Set-ItResult -Skipped -Because 'opt-in: set LOKI_LIVE_OFFLINE=1 and LOKI_LIVE_STICK=<real stick> to run it'
             return
         }
+        if ($script:stickProblem) { throw $script:stickProblem }
         # The manifest pins KV geometry from each model's config.json; this closes the loop against the SHIPPING file:
         # a wrong-low pin (the dangerous direction, it would over-fill KV-cache RAM) fails here the first time that
         # tier's GGUF is on a stick. Only tiers actually installed are checked -- an absent GGUF is not a failure.

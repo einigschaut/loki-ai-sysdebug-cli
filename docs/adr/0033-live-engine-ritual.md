@@ -37,7 +37,9 @@ Measured on a provisioned rig (2026-08-18, v0.16.0, Windows PowerShell 5.1):
 | KV geometry vs GGUF headers | every installed tier | 59.4 s |
 | `offline --agent` | `mid` — Qwen3-8B, 4.7 GB | **324.6 s** (5 min 25 s) |
 
-The whole ritual takes **6 min 48 s** of wall clock, and the agent test alone is 80 % of it.
+The whole ritual takes **6 min 48 s** of wall clock, and the agent test dominates it. Treat these as a scale, not
+a benchmark: the agent test's length depends on how long the model reasons, and a second run measured 251.9 s
+for the same test. What is stable is the ranking -- the agent run costs several times the other two together.
 
 A CI runner would have to fetch and cache 2.3 GB for the cheap half and 4.7 GB for the agent half, on every cache
 miss, for a suite whose normal run is ~4 minutes of pure PowerShell. The agent path — the half where all three
@@ -74,8 +76,14 @@ deployment, and it costs a diagnosis before the first real assertion runs.
 
 The ritual therefore **begins** by rebuilding the stick from the commit under test with `build\New-LokiStick.ps1`,
 which writes `src\` and `version.txt` and never touches `models\*.gguf`, `engine-offline\`, `home\` or `reports\`.
-Making the live tests themselves say "this stick is older than the code under test" is tracked as #113 — the
-ritual should not depend on the operator recognising a validator error.
+
+Since #113 the ritual no longer depends on the operator recognising a validator error: both live files check the
+stick before they touch the engine and **fail** with the mismatch and the exact rebuild command. Fail rather than
+skip, because this suite is run deliberately as a release gate — an unusable rig is an error, not an absence, and
+this ADR already warns that a skip is easy to scroll past. The check has two halves and both earn their place: a
+version comparison catches the stale deployment in ~200 ms, and a parse of the stick's manifest with the current
+validator catches a stick built from an older *commit of the same version* — which the version comparison cannot
+see, because `version.txt` only moves at a release.
 
 ## Consequences
 
