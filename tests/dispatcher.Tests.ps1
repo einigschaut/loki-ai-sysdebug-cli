@@ -48,10 +48,20 @@ BeforeAll {
 
 Describe 'Dispatcher routing & exit codes (PS 5.1 child process)' {
 
-    It 'bare loki => menu, exit 0' {
+    It 'bare loki => the guided mode, exit 0 (ADR-0034)' {
         $r = & $script:InvokeLoki @()
         $r.Code | Should -Be 0
-        $r.Text | Should -BeLike '*loki help*'
+        $r.Text | Should -BeLike '*guided mode*'
+    }
+
+    It 'bare loki and `loki guide` are the SAME path, not two implementations' {
+        # ADR-0034 claims the dispatcher REWRITES an empty command name rather than growing a mode. If that
+        # ever stops being true, two entry points start drifting apart -- and the one nobody types is the
+        # one that rots. Byte-identical output is the cheapest way to keep the claim honest.
+        $bare  = & $script:InvokeLoki @()
+        $named = & $script:InvokeLoki @('guide')
+        $bare.Code | Should -Be $named.Code
+        $bare.Text | Should -Be $named.Text
     }
 
     It 'version => exit 0, shows the version from version.txt' {
