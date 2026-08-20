@@ -20,7 +20,7 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       # This step, not the tests, has been the flakiest part of CI: a run on `main` died here with
       #   Set-PSRepository : No repository with the name 'PSGallery' was found.
