@@ -158,7 +158,7 @@ jobs:
       TAG: ${{ needs.release-please.outputs.tag_name }}
     steps:
       - name: Check out the tagged commit
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ needs.release-please.outputs.tag_name }}
           # A tag is a single commit, but git archive reads the ref from the local repo, so it

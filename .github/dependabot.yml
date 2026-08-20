@@ -1,0 +1,33 @@
+# Dependabot -- GitHub Actions only.
+#
+# Loki has no package manager: the CLI is pure Windows PowerShell 5.1 and ships no npm/NuGet/pip
+# dependencies. Its two build-time modules (Pester, PSScriptAnalyzer) are pinned in
+# build/module-versions.psd1 and come from the PowerShell Gallery, which Dependabot does not
+# support -- those stay a manual bump.
+#
+# What IS left to age silently are the actions in .github/workflows/*.yml. They are the only part
+# of the supply chain nothing watches: no gate fails when an action goes a major version stale, and
+# the one signal that does exist arrives as a runner warning nobody is obliged to read (today:
+# release-please-action@v4 targets Node 20, which GitHub already forces onto Node 24).
+#
+# GROUPED ON PURPOSE. The house rule is to work Dependabot PRs in a batch rather than merging them
+# one at a time, so the grouping is configured here instead of being left to discipline at review
+# time -- one PR per month carrying every action bump, not four PRs racing each other through CI.
+#
+# Monthly, not weekly: four actions change rarely, and a schedule that produces noise gets muted,
+# which is the failure mode this file exists to prevent.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    # Conventional Commits are required (CONTRIBUTING.md) and drive the release bump (ADR-0005).
+    # `ci` is deliberate: an action bump changes the build, not the shipped CLI, and must not by
+    # itself produce a release.
+    commit-message:
+      prefix: "ci"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
