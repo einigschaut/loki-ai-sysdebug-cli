@@ -4,8 +4,6 @@
 @{
     'app.tagline'                = 'portabler AI-Debug-Stick'
 
-    'dispatch.overviewHint'      = 'Übersicht: loki help'
-    'dispatch.statusHint'        = 'Status:    loki status'
     'error.unknownCommandQuoted' = "Unbekanntes Command: '{0}'."
     'error.didYouMean'           = "Meintest du 'loki {0}'?"
     'hint.overview'              = 'Übersicht: loki help'
@@ -255,4 +253,41 @@
     'setup.verifyFailed'        = '{0}: FEHLGESCHLAGEN ({1}) - nicht behalten.'
     'setup.done'                = 'Fertig - {0} Modell(e) auf dem Stick bereit.'
     'setup.engineNote'          = 'Engine und Modelle liegen auf dem Stick. Sie auszuführen (die Offline-Session) kommt in einer späteren Version.'
+
+    # --- Gefuehrter Modus (loki guide; blankes `loki` landet hier) -------------------------------------------
+    'guide.summary'             = 'Geführter Modus: was diese Maschine gerade kann und was als Nächstes sinnvoll ist'
+    'guide.title'               = 'loki v{0} - geführter Modus'
+    'guide.intro'               = 'Das ist auf dieser Maschine gerade möglich.'
+    'guide.prompt'              = 'Zahl wählen (Enter zum Beenden)'
+    'guide.nonInteractive'      = 'Die Eingabe ist umgeleitet, deshalb wird nichts gefragt -- die Liste oben ist die Antwort. Für die Auswahl loki guide in einer Konsole starten.'
+    'guide.equivalent'          = 'Dasselbe auf der Kommandozeile: {0}'
+
+    'guide.opt.collect'         = 'Rohdaten sammeln (ohne Modell, ohne Netz, ohne Administratorrechte)'
+    'guide.opt.analyze'         = 'Gesammelte Daten mit dem Offline-Modell auswerten'
+    'guide.opt.agent'           = 'Den Offline-Agenten selbst nachsehen lassen (nur lesend)'
+    'guide.opt.ask'             = 'Der Online-Engine eine einzelne Frage stellen'
+    'guide.opt.chat'            = 'Eine Online-Diagnosesitzung öffnen'
+    'guide.opt.doctor'          = 'Umgebung und Zustand dieses Rechners prüfen'
+
+    'guide.reason.noEngine'     = 'Die Offline-Engine ist auf diesem Stick nicht installiert.'
+    'guide.reason.noFittingTier' = 'Kein installiertes Modell passt in den Speicher dieser Maschine.'
+    'guide.reason.noDump'       = 'Es liegen noch keine gesammelten Daten zum Auswerten vor.'
+    'guide.reason.noAgentTier'  = 'Der Agent braucht mindestens die Stufe mid (~8B); keine ist installiert und passend.'
+    'guide.reason.agentTierTooBig' = 'Ein agentenfähiges Modell ist installiert, passt aber gerade nicht in den freien Speicher dieser Maschine.'
+    'guide.reason.noAuth'       = 'Auf diesem Stick ist kein Zugang zur Online-Engine hinterlegt.'
+    'guide.reason.offline'      = 'Diese Maschine erreicht die Online-Engine gerade nicht.'
+    'guide.reason.unknown'      = 'Für diesen Eintrag gibt es keine Verfügbarkeitsregel.'
+
+    'guide.remedy.setup'        = 'loki setup auf dem Rechner ausführen, auf dem der Stick vorbereitet wird.'
+    'guide.remedy.hwscan'       = 'loki hwscan zeigt, was hier passen würde.'
+    'guide.remedy.collectFirst' = 'Zuerst 1 wählen -- Sammeln dauert einen Moment und braucht nichts.'
+    'guide.remedy.setupMid'     = 'loki setup --tier mid dort ausführen, wo der Stick vorbereitet wird.'
+    'guide.remedy.freeMemory'   = 'loki hwscan nennt, wie viel freizugeben ist und welche Prozesse den Speicher halten.'
+    'guide.remedy.authLogin'    = 'Einmalig loki auth login auf dem eigenen Rechner ausführen.'
+    'guide.remedy.useOffline'   = 'Die Offline-Einträge funktionieren ohne Netz.'
+    'guide.remedy.none'         = 'Das ist ein Fehler im Werkzeug -- bitte melden.'
+
+    'guide.error.notANumber'    = 'Bitte eine der angezeigten Zahlen eingeben.'
+    'guide.error.outOfRange'    = 'Diese Zahl steht nicht auf der Liste.'
+    'guide.error.noSuchCommand' = 'Interner Fehler: Der geführte Modus bietet "{0}" an, ein solches Command ist aber nicht registriert.'
 }

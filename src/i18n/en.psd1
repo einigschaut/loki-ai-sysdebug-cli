@@ -4,8 +4,6 @@
 @{
     'app.tagline'                = 'portable AI debug stick'
 
-    'dispatch.overviewHint'      = 'Overview:  loki help'
-    'dispatch.statusHint'        = 'Status:    loki status'
     'error.unknownCommandQuoted' = "Unknown command: '{0}'."
     'error.didYouMean'           = "Did you mean 'loki {0}'?"
     'hint.overview'              = 'Overview: loki help'
@@ -257,4 +255,41 @@
     'setup.verifyFailed'        = '{0}: FAILED ({1}) - not kept.'
     'setup.done'                = 'Done - {0} model(s) ready on the stick.'
     'setup.engineNote'          = 'Engine and models are on the stick. Running them (the offline session) comes in a later version.'
+
+    # --- guided mode (loki guide; bare `loki` routes here) ---------------------------------------------------
+    'guide.summary'             = 'Guided mode: what this machine can do right now, and what to run next'
+    'guide.title'               = 'loki v{0} - guided mode'
+    'guide.intro'               = 'Here is what is possible on this machine right now.'
+    'guide.prompt'              = 'Choose a number (Enter to quit)'
+    'guide.nonInteractive'      = 'Input is redirected, so nothing is being asked -- the list above is the answer. Run loki guide in a console to choose.'
+    'guide.equivalent'          = 'The same thing from the command line: {0}'
+
+    'guide.opt.collect'         = 'Collect raw diagnostics (no model, no network, no admin needed)'
+    'guide.opt.analyze'         = 'Analyze a collected dump with the offline model'
+    'guide.opt.agent'           = 'Let the offline agent look into this machine (read-only)'
+    'guide.opt.ask'             = 'Ask the online engine a single question'
+    'guide.opt.chat'            = 'Open an online diagnostic session'
+    'guide.opt.doctor'          = 'Check the environment and this host posture'
+
+    'guide.reason.noEngine'     = 'The offline engine is not installed on this stick.'
+    'guide.reason.noFittingTier' = 'No installed model fits the memory of this machine.'
+    'guide.reason.noDump'       = 'There is no collected dump yet to analyze.'
+    'guide.reason.noAgentTier'  = 'The agent needs a mid tier model (~8B); none is both installed and fitting.'
+    'guide.reason.agentTierTooBig' = 'An agent-capable model is installed, but it does not fit into the memory free on this machine right now.'
+    'guide.reason.noAuth'       = 'No access to the online engine is stored on this stick.'
+    'guide.reason.offline'      = 'This machine cannot reach the online engine right now.'
+    'guide.reason.unknown'      = 'This entry has no availability rule.'
+
+    'guide.remedy.setup'        = 'Run loki setup on the machine where you prepare the stick.'
+    'guide.remedy.hwscan'       = 'loki hwscan shows what would fit here.'
+    'guide.remedy.collectFirst' = 'Choose 1 first -- collecting takes a moment and needs nothing.'
+    'guide.remedy.setupMid'     = 'Run loki setup --tier mid where you prepare the stick.'
+    'guide.remedy.freeMemory'   = 'loki hwscan names how much to free and which processes are holding it.'
+    'guide.remedy.authLogin'    = 'Run loki auth login once, on your own machine.'
+    'guide.remedy.useOffline'   = 'The offline entries work without a network.'
+    'guide.remedy.none'         = 'This is a defect -- please report it.'
+
+    'guide.error.notANumber'    = 'Please enter one of the numbers shown.'
+    'guide.error.outOfRange'    = 'That number is not on the list.'
+    'guide.error.noSuchCommand' = 'Internal error: the guide offers "{0}", but no such command is registered.'
 }

@@ -49,15 +49,14 @@ try {
 
     $registry = Get-LokiCommandRegistry
 
-    if ($null -eq $commandName -and -not $flags.Help) {
-        # Bare `loki` -> stage-0 banner (later: status menu)
-        Write-LokiHeading ("loki v{0} - {1}" -f $version, (Get-LokiText 'app.tagline'))
-        Write-LokiLine ''
-        Write-LokiInfo  (Get-LokiText 'dispatch.overviewHint')
-        Write-LokiLine  (Get-LokiText 'dispatch.statusHint')
-        $exit = Get-LokiExitCode 'Ok'
-    }
-    elseif ($flags.Help) {
+    # Bare `loki` -> the guided mode (ADR-0034). This REWRITES the command name rather than special-casing a
+    # banner here, so `loki` and `loki guide` travel the identical path: one registered handler, one context
+    # shape, and the registry, docs and dead-code gates keep covering the entry point like every other command.
+    # A guided mode wired in beside the registry would be the first thing in this tool that `help` cannot
+    # describe -- exactly the drift CLAUDE.md section 3 exists to prevent.
+    if ($null -eq $commandName -and -not $flags.Help) { $commandName = 'guide' }
+
+    if ($flags.Help) {
         # `--help` -> command help (with command) or overall help (without command), no handler
         Write-LokiLine (Format-LokiHelp -Registry $registry -CommandName $commandName -AppVersion $version)
         $exit = Get-LokiExitCode 'Ok'

@@ -90,7 +90,9 @@ powershell -ExecutionPolicy Bypass -File build\New-LokiStick.ps1 -Destination E:
 From here on you work **on the stick**, and `loki.cmd` at its root is the entry point:
 
 ```powershell
-E:\loki.cmd status        # write-free environment check -- start here
+E:\loki.cmd               # guided mode -- START HERE. Shows what THIS machine can do right now,
+                          # why anything is unavailable, and what would fix it.
+E:\loki.cmd status        # write-free environment check
 E:\loki.cmd setup         # download the offline engine + model tier(s). Needs internet; run it
                           # on the machine where you prepare the stick, never on the target.
 E:\loki.cmd auth login    # ONLY if you want the online engine (see below)
@@ -99,6 +101,9 @@ E:\loki.cmd help          # command overview
 
 Add the stick root to `PATH` (or `cd E:\`) and every command in this README works verbatim as
 `loki <command>`.
+
+The guided mode is the front door, not a wall: after each step it prints the command line that
+would have done the same thing, so the menu teaches the CLI instead of hiding it.
 
 `loki setup` is the guided part: it lists the model tiers with their RAM needs, marks the
 recommended default, and downloads what you pick — verifying every file against a pinned SHA256
@@ -164,6 +169,7 @@ table by hand; run `build/Update-LokiDocs.ps1` (a CI gate fails the build if it 
 | Command | Group | Description |
 | --- | --- | --- |
 | `collect` | Diagnostics | Write a raw diagnostic dump (no network, model or admin needed) |
+| `guide` | Diagnostics | Guided mode: what this machine can do right now, and what to run next |
 | `doctor` | Health | Full environment & host-posture diagnosis |
 | `help` | Health | Help / command overview (also: loki <cmd> --help) |
 | `hwscan` | Health | Check what the offline engine can run on this machine (writes nothing) |
