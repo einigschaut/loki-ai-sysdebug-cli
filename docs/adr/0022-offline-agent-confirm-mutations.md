@@ -66,7 +66,7 @@ set stays refused regardless. Defense-in-depth on top of the gate, not a substit
 * **Backward-compatible by construction.** `-ConfirmCallback` is optional and defaults to none, so every Slice 2a
   caller and test that does not pass it keeps the exact read-only-or-refuse behaviour. Only `Invoke-LokiOfflineAgent`
   opts in.
-* **Deferred, documented:** a dry-run/preview before a mutation and a rollback/undo (the `fix` flow, DESIGN.md Stage 2)
+* **Deferred, documented:** a dry-run/preview before a mutation and a rollback/undo (the `fix` flow, now tracked in #111, deferred past 1.0)
   are **not** here — Slice 2b is confirm-then-run. A richer Loki confirm UI (showing the model's rationale inline, a
   "always allow this session" option) is also deferred; the first cut shows command + reason + y/N.
 * **Depends on the #54 gate fix (secret-target wildcard/8.3 deny) -- MERGE ORDER MATTERS.** Slice 2b turns a `mutate`

@@ -457,11 +457,17 @@ the first feature lands than from retrofitting them later.
 - **Stage 2 — Offline, complete.** The raw collector (works everywhere, no AI
   required) first, then the unified `llama-server` + harness path supporting both
   `--analyze` and `--agent`, hardware scan and tier selection, the category-A
-  read-only toolbox, the guided `fix` flow with dry-run and rollback, and report
-  management.
+  read-only toolbox, and report management.
 - **Stage 3 — Hardening.** The integrity manifest and code signing, an optional
   two-partition volume layout, the opt-in category-B power toolbox, shell completion,
   log rotation, and — optionally — a compiled single-binary distribution.
+- **After 1.0 — the guided `fix` flow** with dry-run and rollback. Deliberately moved
+  out of Stage 2: it is by a distance the riskiest feature in the project, and Loki's
+  core promise — diagnose safely, leave no trace — does not depend on it. Note that
+  mutation itself is not what is missing; `chat` has opened the ask-by-default path
+  since ADR-0006. What `fix` would add is **preview and reversibility**. The decided
+  shape — a curated playbook as the source of truth with the engine selecting from
+  it, and no action admitted without a defined inverse — is recorded in issue #111.
 
 ---
 
