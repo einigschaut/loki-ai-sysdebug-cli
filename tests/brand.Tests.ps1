@@ -122,3 +122,32 @@ Describe 'Get-LokiGuideState -OnStep' {
         $state.StepError | Should -Be '' -Because 'a healthy run records no failure'
     }
 }
+
+Describe 'spinner throttle (issue #125)' {
+    # 1 ms = 10,000 ticks.
+    It 'the first tick always draws' {
+        Test-LokiSpinnerDue -LastTicks 0 -NowTicks 123456789 | Should -BeTrue
+    }
+
+    It 'inside the interval it does NOT draw' {
+        $now = [long]10000000000
+        Test-LokiSpinnerDue -LastTicks ($now - 400000) -NowTicks $now -MinIntervalMs 80 | Should -BeFalse
+    }
+
+    It 'past the interval it draws' {
+        $now = [long]10000000000
+        Test-LokiSpinnerDue -LastTicks ($now - 1000000) -NowTicks $now -MinIntervalMs 80 | Should -BeTrue
+    }
+
+    It 'a clock that ran backwards draws instead of freezing' {
+        # DST, a corrected system time, a VM resuming from a snapshot. Waiting for the difference to be made up
+        # would leave the spinner dead for exactly as long as the jump.
+        Test-LokiSpinnerDue -LastTicks 20000000000 -NowTicks 10000000000 | Should -BeTrue
+    }
+
+    It 'WHY the throttle exists: the best tick point calls the writer tens of thousands of times' {
+        # A 5 GB model through the 128 KB copy loop. Unthrottled, drawing the spinner would cost more than the
+        # download it reports on.
+        [int](5GB / 131072) | Should -BeGreaterThan 30000
+    }
+}

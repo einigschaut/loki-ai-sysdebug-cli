@@ -1,4 +1,4 @@
-# lib/download.ps1 -- verified file acquisition (security core, CLAUDE.md section 5, ADR-0011/ADR-0012).
+﻿# lib/download.ps1 -- verified file acquisition (security core, CLAUDE.md section 5, ADR-0011/ADR-0012).
 # The ONE way Loki brings a remote file onto the stick. Two consumers: lib/models.ps1 (GGUF data) and
 # lib/engine.ps1 (the llama.cpp engine archive, which is CODE we later execute) -- so this lives in lib/
 # per CLAUDE.md section 2 (shared logic has exactly one home), not inside either caller.
@@ -25,7 +25,7 @@
 #   Copy-LokiCappedStream -Source <Stream> -Destination <Stream> -MaxBytes <long> -> [long] bytes copied
 #       Streams Source into Destination and THROWS the moment more than MaxBytes arrives. PURE stream logic --
 #       unit-tested with MemoryStreams, no network. This is the disk-fill guard.
-#   Get-LokiHttpFile -Url <https> -OutFile <path> -MaxBytes <long>  -- the raw streaming download
+#   Get-LokiHttpFile -Url <https> -OutFile <path> -MaxBytes <long> [-OnProgress <scriptblock>]  -- raw streaming
 #       (the mock seam; tests replace it). Thin wiring over the two pure helpers above.
 #   Invoke-LokiVerifiedDownload -Url -ExpectedSha256 -ExpectedBytes -DestPath [-StagingDir <dir>]
 #       -> [hashtable]{ Ok; Reason; [Skipped] }
@@ -118,7 +118,10 @@ function Copy-LokiCappedStream {
     param(
         [Parameter(Mandatory = $true)]$Source,
         [Parameter(Mandatory = $true)]$Destination,
-        [Parameter(Mandatory = $true)][long]$MaxBytes
+        [Parameter(Mandatory = $true)][long]$MaxBytes,
+        # Called with the running byte total after each chunk reaches the disk. This is the ONLY place that
+        # knows a chunk landed, which is why it belongs here rather than in a caller.
+        [AllowNull()][scriptblock]$OnProgress = $null
     )
     if ($MaxBytes -le 0) { throw 'Download: MaxBytes must be positive.' }
     $buf = New-Object byte[] $script:LokiDownloadBufferBytes
@@ -130,6 +133,12 @@ function Copy-LokiCappedStream {
         # Checked BEFORE the write, so the over-limit bytes never reach the disk at all.
         if ($total -gt $MaxBytes) { throw ("Download: stream exceeded the pinned " + $MaxBytes + " bytes -- aborted.") }
         $Destination.Write($buf, 0, $n)
+        if ($null -ne $OnProgress) {
+            # A progress callback must NEVER be able to abort a multi-gigabyte download. And it is disabled
+            # after the first failure rather than swallowed on every chunk: a broken spinner would otherwise
+            # throw forty thousand times on one model file.
+            try { & $OnProgress $total } catch { $OnProgress = $null }
+        }
     }
     return $total
 }
@@ -148,7 +157,8 @@ function Get-LokiHttpFile {
     param(
         [Parameter(Mandatory = $true)][string]$Url,
         [Parameter(Mandatory = $true)][string]$OutFile,
-        [Parameter(Mandatory = $true)][long]$MaxBytes
+        [Parameter(Mandatory = $true)][long]$MaxBytes,
+        [AllowNull()][scriptblock]$OnProgress = $null
     )
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
     $req = [Net.HttpWebRequest]::Create($Url)
@@ -168,7 +178,7 @@ function Get-LokiHttpFile {
         try {
             if ($in.CanTimeout) { $in.ReadTimeout = $script:LokiDownloadReadTimeoutMs }
             $out = [System.IO.File]::Open($OutFile, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
-            try { [void](Copy-LokiCappedStream -Source $in -Destination $out -MaxBytes $MaxBytes) }
+            try { [void](Copy-LokiCappedStream -Source $in -Destination $out -MaxBytes $MaxBytes -OnProgress $OnProgress) }
             finally { $out.Close() }
         }
         finally { $in.Close() }
@@ -185,7 +195,8 @@ function Invoke-LokiVerifiedDownload {
         # change exists to remove, so there is no "unenforced" default to fall into.
         [Parameter(Mandatory = $true)][long]$ExpectedBytes,
         [Parameter(Mandatory = $true)][string]$DestPath,
-        [string]$StagingDir
+        [string]$StagingDir,
+        [AllowNull()][scriptblock]$OnProgress = $null
     )
     # Set INSIDE the function (function-scoped, so it neither leaks to the caller nor depends on them): Copy-Item /
     # Move-Item / Remove-Item failures are NON-terminating by default, so without this the catch blocks below never
@@ -232,7 +243,7 @@ function Invoke-LokiVerifiedDownload {
     if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
 
     try {
-        Get-LokiHttpFile -Url $Url -OutFile $tmp -MaxBytes $ExpectedBytes
+        Get-LokiHttpFile -Url $Url -OutFile $tmp -MaxBytes $ExpectedBytes -OnProgress $OnProgress
     }
     catch {
         if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }

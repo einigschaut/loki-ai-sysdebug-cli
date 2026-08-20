@@ -1,4 +1,4 @@
-# tests/setup.Tests.ps1 -- Command `loki setup`: metadata, routing, selection, engine step, exit codes
+﻿# tests/setup.Tests.ps1 -- Command `loki setup`: metadata, routing, selection, engine step, exit codes
 # (CLAUDE.md section 5/6, ADR-0011/0012). The real network and the real disk are never touched:
 # Test-LokiConnectivity, Invoke-LokiVerifiedDownload, Expand-LokiVerifiedArchive and the runtime staging are Mocked,
 # so the tests exercise the command's wiring (selection -> engine -> runtime -> models -> exit) against the REAL
@@ -8,6 +8,7 @@ Set-StrictMode -Version Latest
 BeforeAll {
     . "$PSScriptRoot\..\src\lib\i18n.ps1"
     . "$PSScriptRoot\..\src\lib\ui.ps1"
+    . "$PSScriptRoot\..\src\lib\brand.ps1"   # the command writes the spinner (issue #125)
     . "$PSScriptRoot\..\src\lib\exitcodes.ps1"
     . "$PSScriptRoot\..\src\lib\net.ps1"
     . "$PSScriptRoot\..\src\lib\download.ps1"
