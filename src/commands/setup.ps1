@@ -1,4 +1,4 @@
-# commands/setup.ps1 -- `loki setup` (structurally identical to a scaffolded command; hand-written like commands/auth.ps1
+﻿# commands/setup.ps1 -- `loki setup` (structurally identical to a scaffolded command; hand-written like commands/auth.ps1
 # because it pairs with the hand-curated src/models/manifest.psd1 + src/engine/manifest.psd1). ADR-0002/0011/0012.
 # Run on the internet-connected machine where the stick is prepared: put the offline ENGINE and the chosen MODEL
 # tier(s) on the stick, each verified against a pinned SHA256. Thin wiring -- lib/engine.ps1 and lib/models.ps1 own the
@@ -188,8 +188,25 @@ function Invoke-LokiCmd_setup {
     $failed = 0
     foreach ($p in $plan) {
         Write-LokiInfo (Get-LokiText 'setup.downloading' -ArgumentList @($p.Model, [math]::Round(([double]$p.SizeBytes / 1GB), 2)))
-        $res = Invoke-LokiVerifiedDownload -Url $p.Url -ExpectedSha256 $p.Sha256 `
-            -ExpectedBytes ([long]$p.SizeBytes) -DestPath $p.DestPath
+        # The byte total comes free from the copy loop, so the serpent carries a percentage rather than
+        # mere motion. On the longest wait in the whole tool that is the difference between "alive" and
+        # "nearly done".
+        $totalBytes = [double]$p.SizeBytes
+        Initialize-LokiSpinner
+        $onProgress = {
+            param($done)
+            $pct = 0
+            if ($totalBytes -gt 0) { $pct = [int][math]::Floor(([double]$done / $totalBytes) * 100) }
+            Write-LokiSpinnerTick -Label ('{0} %' -f $pct)
+        }.GetNewClosure()
+        # try/finally, not two statements: if the download throws, the spinner line would otherwise stay
+        # open and the error message would be written INTO it. An unreadable error is worse than no
+        # spinner at all.
+        try {
+            $res = Invoke-LokiVerifiedDownload -Url $p.Url -ExpectedSha256 $p.Sha256 `
+                -ExpectedBytes ([long]$p.SizeBytes) -DestPath $p.DestPath -OnProgress $onProgress
+        }
+        finally { Write-LokiSpinnerDone }
         if ($res.Ok) {
             if ($res.ContainsKey('Skipped') -and $res.Skipped) { Write-LokiOk (Get-LokiText 'setup.skipped' -ArgumentList @($p.Model)) }
             else { Write-LokiOk (Get-LokiText 'setup.verified' -ArgumentList @($p.Model)) }

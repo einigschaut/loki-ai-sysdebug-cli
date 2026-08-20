@@ -1,4 +1,4 @@
-# tests/collect-command.Tests.ps1 -- Command `loki collect`: metadata, arg parsing, artifacts, exit codes.
+﻿# tests/collect-command.Tests.ps1 -- Command `loki collect`: metadata, arg parsing, artifacts, exit codes.
 # A lib and a command share the name, so the command tests live here and the lib tests in tests/collect.Tests.ps1 --
 # same split as auth / auth-command and hwscan / hwscan-command.
 # Invoke-LokiCollect is Mocked throughout: these tests pin the WIRING (parse -> collect -> shape -> write -> exit
@@ -8,6 +8,7 @@ Set-StrictMode -Version Latest
 BeforeAll {
     . "$PSScriptRoot\..\src\lib\i18n.ps1"
     . "$PSScriptRoot\..\src\lib\ui.ps1"
+    . "$PSScriptRoot\..\src\lib\brand.ps1"   # the command writes the spinner (issue #125)
     . "$PSScriptRoot\..\src\lib\exitcodes.ps1"
     . "$PSScriptRoot\..\src\lib\hwscan.ps1"
     . "$PSScriptRoot\..\src\lib\posture.ps1"

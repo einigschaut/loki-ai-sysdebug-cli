@@ -36,13 +36,12 @@ function Invoke-LokiCmd_guide {
         Write-LokiLine ''
     }
 
-    # The serpent crawls one column per completed probe. A [ref] plus GetNewClosure(), because a plain
-    # assignment inside a scriptblock creates a local and the counter would never move.
-    $tick = [ref]0
+    # The serpent advances its own frame per draw and rate-limits itself, so the caller just says "still busy".
     $label = Get-LokiText 'guide.checking'
-    $onStep = { $tick.Value++; Write-LokiSpinnerTick -Label $label -Index $tick.Value }.GetNewClosure()
+    Initialize-LokiSpinner
+    $onStep = { Write-LokiSpinnerTick -Label $label }.GetNewClosure()
     $state = Get-LokiGuideState -AppRoot $Context.AppRoot -Config $config -OnStep $onStep
-    Write-LokiSpinnerDone -Label $label
+    Write-LokiSpinnerDone
     # ASSIGN FIRST, then wrap: Get-LokiGuideMenu ends in `return , @(...)`, so @(FUNC) would be 1 element.
     $options = Get-LokiGuideMenu -State $state
     $options = @($options)

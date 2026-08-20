@@ -1,4 +1,4 @@
-# commands/collect.ps1 -- `loki collect` (scaffolded by build/New-LokiCommand.ps1, then implemented). ADR-0002/0018.
+﻿# commands/collect.ps1 -- `loki collect` (scaffolded by build/New-LokiCommand.ps1, then implemented). ADR-0002/0018.
 # The raw diagnostic dump: what Loki can still tell an operator with no network, no auth, no model and no admin.
 # Read-only apart from the two artifacts it writes to reports\ ON THE STICK -- never the host profile.
 # Thin wiring: lib/collect.ps1 owns the batteries, the shaping and the rendering. This file parses arguments,
@@ -59,7 +59,13 @@ function Invoke-LokiCmd_collect {
     Write-LokiLine ''
     Write-LokiInfo (Get-LokiText 'collect.working')
 
-    $dump = Invoke-LokiCollect -Only $selected
+    # The battery id is the label: it is already part of the CLI surface (`--only <battery,...>`), so it
+    # tells the operator what is being read right now without inventing a second vocabulary.
+    Initialize-LokiSpinner
+    try {
+        $dump = Invoke-LokiCollect -Only $selected -OnStep { param($id) Write-LokiSpinnerTick -Label ([string]$id) }
+    }
+    finally { Write-LokiSpinnerDone }
     $document = ConvertTo-LokiCollectDocument -Dump $dump -LokiVersion ([string]$Context.Version)
 
     $okCount = 0

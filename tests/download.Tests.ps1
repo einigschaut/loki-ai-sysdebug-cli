@@ -1,4 +1,4 @@
-# tests/download.Tests.ps1 -- verified file acquisition (security core, CLAUDE.md section 5/6, ADR-0011/ADR-0012).
+﻿# tests/download.Tests.ps1 -- verified file acquisition (security core, CLAUDE.md section 5/6, ADR-0011/ADR-0012).
 # Covers lib/download.ps1, the ONE path by which a remote file reaches the stick (models AND the engine binary).
 # The key security property under test: a verified download keeps a matching file and DELETES a mismatching or
 # interrupted one -- nothing unverified ever survives at the destination. The real network fetch (Get-LokiHttpFile)
@@ -350,6 +350,49 @@ Describe 'Copy-LokiCappedStream (pure: the disk-fill guard; ADR-0026)' {
         $src = New-Object System.IO.MemoryStream -ArgumentList (, [byte[]](1..10))
         $dst = New-Object System.IO.MemoryStream
         try { { Copy-LokiCappedStream -Source $src -Destination $dst -MaxBytes 0 } | Should -Throw }
+        finally { $src.Close(); $dst.Close() }
+    }
+}
+
+Describe 'Copy-LokiCappedStream -OnProgress (issue #125)' {
+    It 'reports the RUNNING TOTAL once per chunk' {
+        # 300 KB against a 128 KB buffer -> three chunks, three calls, monotonically increasing totals.
+        $bytes = New-Object byte[] 307200
+        $src = New-Object System.IO.MemoryStream -ArgumentList (, $bytes)
+        $dst = New-Object System.IO.MemoryStream
+        $seen = New-Object System.Collections.Generic.List[long]
+        try {
+            $n = Copy-LokiCappedStream -Source $src -Destination $dst -MaxBytes 307200 -OnProgress { param($t) $seen.Add([long]$t) }
+            $n | Should -Be 307200
+            $seen.Count | Should -Be 3
+            $seen[0] | Should -BeLessThan $seen[1]
+            $seen[$seen.Count - 1] | Should -Be 307200
+        }
+        finally { $src.Close(); $dst.Close() }
+    }
+
+    It 'BREAK-THE-GUARD: a THROWING progress callback must never abort the download' {
+        # The callback is decoration on a multi-gigabyte transfer. If a broken spinner can kill that, the spinner is
+        # a liability rather than a feature.
+        $bytes = New-Object byte[] 307200
+        $src = New-Object System.IO.MemoryStream -ArgumentList (, $bytes)
+        $dst = New-Object System.IO.MemoryStream
+        $calls = [ref]0
+        try {
+            $n = Copy-LokiCappedStream -Source $src -Destination $dst -MaxBytes 307200 -OnProgress { $calls.Value++; throw 'broken spinner' }.GetNewClosure()
+            $n | Should -Be 307200
+            $dst.Length | Should -Be 307200
+            # Disabled after the FIRST failure, not swallowed on every chunk: on a real model file that would be
+            # forty thousand exceptions instead of one.
+            $calls.Value | Should -Be 1
+        }
+        finally { $src.Close(); $dst.Close() }
+    }
+
+    It 'no callback at all is still the normal case' {
+        $src = New-Object System.IO.MemoryStream -ArgumentList (, [byte[]](1..50))
+        $dst = New-Object System.IO.MemoryStream
+        try { Copy-LokiCappedStream -Source $src -Destination $dst -MaxBytes 50 | Should -Be 50 }
         finally { $src.Close(); $dst.Close() }
     }
 }

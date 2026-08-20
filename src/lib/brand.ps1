@@ -6,7 +6,10 @@
 #   Get-LokiSpinnerFrameSet -Tier <string> -> [string[]]                          PURE. The animation, one entry per frame.
 #   Get-LokiSpinnerFrame -Tier <string> -Index <int> -> [string]                PURE. Wraps; any index is legal.
 #   Write-LokiBrand [-Width <int>] [-Tier <string>]                             renders the banner
-#   Write-LokiSpinnerTick -Label <string> -Index <int>                          one frame on ITS OWN line, in place
+#   Test-LokiSpinnerDue -LastTicks <long> -NowTicks <long> [-MinIntervalMs] -> [bool]  PURE throttle rule
+#   Initialize-LokiSpinner                                                          back to frame 0
+#   Write-LokiSpinnerTick -Label <string>                                       one frame on ITS OWN line
+#   Write-LokiSpinnerDone                                                       clears the spinner line
 #   Write-LokiSpinnerDone -Label <string>                                       clears the spinner line
 #
 # WHY THE MASCOT IS A FACE AND NOT A CHARACTER. The figure is drawn from the Snaptun stone -- a real 10th-century
@@ -106,21 +109,62 @@ function Write-LokiBrand {
     }
 }
 
-function Write-LokiSpinnerTick {
+# The spinner counts its OWN frames and rate-limits itself, and both halves of that matter.
+#
+# Rate limit: the best tick point in this tool is the 128 KB copy loop of a download, so a 5 GB model would
+# call this roughly 40,000 times. Unthrottled, drawing the spinner would cost more than the download it is
+# reporting on. Callers must be free to tick as often as they like; protecting the console is this function's
+# job, not theirs.
+#
+# Own frame counter: with a rate limit, an index supplied by the caller would jump by hundreds between two
+# draws, and index modulo six is then effectively random -- the coil would flicker instead of crawling. The
+# frame advances once per DRAW, which is the only thing that makes it look like movement.
+$script:LokiSpinnerFrame = 0
+$script:LokiSpinnerLastTicks = [long]0
+$script:LokiSpinnerMaxLen = 0
+
+function Test-LokiSpinnerDue {
     param(
-        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Label,
-        [Parameter(Mandatory = $true)][int]$Index
+        [Parameter(Mandatory = $true)][long]$LastTicks,
+        [Parameter(Mandatory = $true)][long]$NowTicks,
+        [int]$MinIntervalMs = 80
     )
-    # The spinner OWNS ITS LINE. A carriage return rewinds to column 0 of the physical line, so anything already
-    # printed there gets eaten -- observed the first time this was tried. Nothing else may write while it ticks.
+    # PURE. The first tick always draws. A clock that appears to run backwards (DST, a corrected system
+    # time) must not freeze the spinner until the difference has been made up -- so a negative interval
+    # draws too, rather than waiting.
+    if ($LastTicks -le 0) { return $true }
+    $elapsedMs = [long](($NowTicks - $LastTicks) / 10000)
+    if ($elapsedMs -lt 0) { return $true }
+    return ($elapsedMs -ge $MinIntervalMs)
+}
+
+function Initialize-LokiSpinner {
+    $script:LokiSpinnerFrame = 0
+    $script:LokiSpinnerLastTicks = [long]0
+    $script:LokiSpinnerMaxLen = 0
+}
+
+function Write-LokiSpinnerTick {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Label)
+    # The spinner OWNS ITS LINE. A carriage return rewinds to column 0 of the physical line, so anything
+    # already printed there gets eaten -- observed the first time this was tried. Nothing else may write
+    # while it ticks.
     if ([Console]::IsOutputRedirected) { return }
-    $frame = Get-LokiSpinnerFrame -Tier (Get-LokiGlyphTier) -Index $Index
-    Write-Host ("`r  {0}  {1}" -f $frame, $Label) -NoNewline -ForegroundColor DarkGreen
+    $now = [datetime]::UtcNow.Ticks
+    if (-not (Test-LokiSpinnerDue -LastTicks $script:LokiSpinnerLastTicks -NowTicks $now)) { return }
+    $script:LokiSpinnerLastTicks = $now
+    $frame = Get-LokiSpinnerFrame -Tier (Get-LokiGlyphTier) -Index $script:LokiSpinnerFrame
+    $script:LokiSpinnerFrame++
+    $line = "  {0}  {1}" -f $frame, $Label
+    if ($line.Length -gt $script:LokiSpinnerMaxLen) { $script:LokiSpinnerMaxLen = $line.Length }
+    Write-Host ("`r" + $line) -NoNewline -ForegroundColor DarkGreen
 }
 
 function Write-LokiSpinnerDone {
-    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Label)
     if ([Console]::IsOutputRedirected) { return }
-    # Overwrite the whole line with blanks before releasing it, or the tail of the longest frame stays on screen.
-    Write-Host ("`r{0}`r" -f (' ' * (12 + $Label.Length))) -NoNewline
+    # Cleared to the WIDEST line actually written, not to a guess. A label that grows while it ticks --
+    # "5 %" becoming "100 %" -- would otherwise leave its own tail behind on the console.
+    if ($script:LokiSpinnerMaxLen -le 0) { return }
+    Write-Host ("`r{0}`r" -f (' ' * $script:LokiSpinnerMaxLen)) -NoNewline
+    Initialize-LokiSpinner
 }

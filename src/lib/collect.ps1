@@ -1,4 +1,4 @@
-# lib/collect.ps1 -- the raw diagnostic collector (DESIGN.md section 3.2 + section 7 Stage 2, ADR-0018).
+﻿# lib/collect.ps1 -- the raw diagnostic collector (DESIGN.md section 3.2 + section 7 Stage 2, ADR-0018).
 # The escape hatch: what `loki` can still tell an operator when there is no network, no auth, no model, and no
 # admin -- the machine that no other command can help. Everything here is read-only and MUST NOT throw outward.
 #
@@ -564,7 +564,11 @@ function Invoke-LokiCollect {
     #>
     param(
         [string[]]$Only,
-        [int]$TimeoutSec = 0
+        [int]$TimeoutSec = 0,
+        # Called after each battery. Optional, guarded, and never able to fail the collection: a dump with
+        # six good batteries is the point of the exercise (see above), and that must hold for a broken
+        # progress indicator too.
+        [AllowNull()][scriptblock]$OnStep = $null
     )
     $ids = Get-LokiCollectBatteryId
     if (($null -ne $Only) -and (@($Only).Count -gt 0)) {
@@ -575,6 +579,7 @@ function Invoke-LokiCollect {
     $results = New-Object System.Collections.Generic.List[object]
     foreach ($id in $ids) {
         $results.Add((Invoke-LokiCollectBattery -Id $id -TimeoutSec $TimeoutSec))
+        if ($null -ne $OnStep) { try { & $OnStep $id } catch { $OnStep = $null } }
     }
 
     return [pscustomobject]@{
