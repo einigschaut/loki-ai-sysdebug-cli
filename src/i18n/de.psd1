@@ -258,6 +258,7 @@
     'guide.summary'             = 'Geführter Modus: was diese Maschine gerade kann und was als Nächstes sinnvoll ist'
     'guide.title'               = 'loki v{0} - geführter Modus'
     'guide.intro'               = 'Das ist auf dieser Maschine gerade möglich.'
+    'guide.checking'            = 'prüfe diese Maschine'
     'guide.prompt'              = 'Zahl wählen (Enter zum Beenden)'
     'guide.nonInteractive'      = 'Die Eingabe ist umgeleitet, deshalb wird nichts gefragt -- die Liste oben ist die Antwort. Für die Auswahl loki guide in einer Konsole starten.'
     'guide.equivalent'          = 'Dasselbe auf der Kommandozeile: {0}'

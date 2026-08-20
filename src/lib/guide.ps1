@@ -1,4 +1,4 @@
-# lib/guide.ps1 -- the MODEL behind `loki guide`. The rendering and the prompting live in commands/guide.ps1;
+﻿# lib/guide.ps1 -- the MODEL behind `loki guide`. The rendering and the prompting live in commands/guide.ps1;
 # everything that decides anything lives here, because an interactive screen is only testable if the decisions are
 # not tangled up with the drawing (CLAUDE.md section 2).
 #
@@ -36,12 +36,18 @@ function Get-LokiGuideState {
     param(
         [Parameter(Mandatory = $true)][string]$AppRoot,
         [Parameter(Mandatory = $true)][hashtable]$Config,
-        [switch]$SkipNetwork
+        [switch]$SkipNetwork,
+        # Called once after each probe. Exists so the caller can animate WITHOUT a second thread: the serpent
+        # advances when Loki actually finishes a step, which is more honest than a timer pretending to be
+        # busy -- and it keeps console writes on one thread, where they belong.
+        [AllowNull()][scriptblock]$OnStep = $null
     )
+
 
     $state = @{
         EngineOk     = $false
         EngineDetail = ''
+        StepError    = ''
         Tiers        = @()
         FittingTiers = @()
         AgentTiers   = @()
@@ -51,6 +57,15 @@ function Get-LokiGuideState {
         AuthMethod   = ''
         Online       = $false
         TotalRamGB   = 0.0
+    }
+
+    $step = {
+        if ($null -ne $OnStep) {
+            # Decoration must never be able to fail the diagnosis it decorates -- so the failure is
+            # swallowed ON PURPOSE. Recorded rather than discarded, though: a permanently broken
+            # spinner that leaves no trace anywhere is a bug nobody will ever find.
+            try { & $OnStep } catch { $state.StepError = [string]$_.Exception.Message }
+        }
     }
 
     # --- offline engine -------------------------------------------------------------------------------------
@@ -65,6 +80,7 @@ function Get-LokiGuideState {
         }
     }
     catch { $state.EngineDetail = [string]$_.Exception.Message }
+    & $step
 
     # --- models ---------------------------------------------------------------------------------------------
     # Read-LokiModelManifestSafe rather than the raw parser: a stale or broken manifest must leave the guide
@@ -101,6 +117,7 @@ function Get-LokiGuideState {
         }
     }
     catch { $state.EngineDetail = [string]$_.Exception.Message }
+    & $step
 
     # --- existing dumps -------------------------------------------------------------------------------------
     # Newest first, because the answer to "which dump did you mean" is almost always "the one I just made".
@@ -114,6 +131,7 @@ function Get-LokiGuideState {
         }
     }
     catch { $state.Dumps = @() }
+    & $step
 
     # --- auth + reachability --------------------------------------------------------------------------------
     try {
@@ -123,9 +141,11 @@ function Get-LokiGuideState {
         $state.AuthMethod = [string]$auth.Method
     }
     catch { $state.AuthPresent = $false }
+    & $step
 
     if (-not $SkipNetwork) {
         try { $state.Online = [bool](Test-LokiConnectivity) } catch { $state.Online = $false }
+        & $step
     }
 
     return $state
