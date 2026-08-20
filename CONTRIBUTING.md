@@ -210,6 +210,53 @@ Releases are automated with
 - Nothing releases automatically — the maintainer merges the Release PR
   deliberately.
 
+### Before merging a Release PR: the live-engine ritual
+
+Almost the whole suite mocks the offline engine. Two files do not —
+`tests/offline.live.Tests.ps1` and `tests/offline-agent.live.Tests.ps1` start a
+real `llama-server`, load real weights, and drive the real loop. They are
+**opt-in** and skip unless you set the variables below, which is exactly why
+they need a ritual: three defects have reached `main` that the mocked suite
+could not catch, and the live path found all three. See
+[`docs/adr/0033-live-engine-ritual.md`](docs/adr/0033-live-engine-ritual.md)
+for why this is a ritual rather than a CI job.
+
+Run it on a machine with a provisioned stick, before merging a Release PR.
+
+**1. Rebuild the stick from the commit under test.** Skipping this is the
+fastest way to lose an hour: a stick built from an older Loki fails with
+`Model manifest entry is missing key 'KVCache'` — the validator correctly
+rejecting a manifest that predates ADR-0025, which reads like a defect in the
+code under test and is not one.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File build\New-LokiStick.ps1 -Destination <StickRoot>
+```
+
+It writes `src\` and `version.txt` only. `models\*.gguf`, `engine-offline\`,
+`home\` and `reports\` are never touched, and nothing is deleted without
+`-Prune`.
+
+**2. Run the live tests** under Windows PowerShell 5.1 — the target runtime,
+not pwsh 7:
+
+```powershell
+$env:LOKI_LIVE_OFFLINE = '1'
+$env:LOKI_LIVE_AGENT   = '1'
+$env:LOKI_LIVE_STICK   = '<StickRoot>'
+$env:LOKI_LANG         = 'en'
+Invoke-Pester -Path tests\offline.live.Tests.ps1, tests\offline-agent.live.Tests.ps1 -Output Detailed
+```
+
+**3. Read the skips — a skip is not a pass.** `offline --agent` skips when the
+stick has no agent-capable tier (the agent floor is `mid`), so a small-only rig
+produces a green run that exercised none of the agent path — the half where all
+three known defects lived. The skip reason says so; read it.
+
+**4. Confirm no orphans survived.** Both tests assert that no `llama-server`
+outlives them. If a run is interrupted, check by hand before trusting the next
+one.
+
 ## Security-Critical Contributions
 
 Changes to isolation (`env-isolate`), the allow-list gate, authentication,
