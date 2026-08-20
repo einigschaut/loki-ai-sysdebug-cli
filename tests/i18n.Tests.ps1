@@ -233,3 +233,31 @@ Describe 'Catalog parity gate - every locale is complete' {
         }
     }
 }
+
+Describe 'Catalog text survives a non-Unicode CONSOLE, not only the source file (#121)' {
+    It 'every catalog string can be encoded by an OEM (CP850) and an ANSI (CP1252) console' {
+        # Sibling of the BOM guard above, one layer further out. That one proves the file was READ correctly; this
+        # proves the values can be WRITTEN to a console that is not UTF-8. U+2713 taught the difference the hard
+        # way: the source file was fine, and the output still became the letter "V" on CP850 (issue #121).
+        # Probe characters are written as char codes so this test file stays pure ASCII, like the guard above.
+        $offenders = New-Object System.Collections.Generic.List[string]
+        foreach ($locale in @($script:Catalogs.Keys)) {
+            foreach ($cp in @(850, 1252)) {
+                $enc = [System.Text.Encoding]::GetEncoding($cp)
+                foreach ($k in @($script:Catalogs[$locale].Keys)) {
+                    $v = [string]$script:Catalogs[$locale][$k]
+                    if ($enc.GetString($enc.GetBytes($v)) -ne $v) { $offenders.Add(('{0}/CP{1}: {2}' -f $locale, $cp, $k)) }
+                }
+            }
+        }
+        $offenders.Count | Should -Be 0 -Because ('unrenderable on a non-UTF-8 console -- ' + ($offenders -join '; '))
+    }
+
+    It 'the check can actually fail: a character no OEM page carries is detected' {
+        # Without this the loop above could quietly iterate over nothing and report "all clean" forever.
+        $enc = [System.Text.Encoding]::GetEncoding(850)
+        $arrow = [string][char]8594     # U+2192 RIGHTWARDS ARROW, absent from CP850
+        $enc.GetString($enc.GetBytes($arrow)) | Should -Not -Be $arrow
+        @($script:Catalogs.Keys).Count | Should -BeGreaterThan 1 -Because 'at least en and de must be under test'
+    }
+}
