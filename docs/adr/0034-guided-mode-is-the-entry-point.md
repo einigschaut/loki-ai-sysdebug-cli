@@ -1,6 +1,6 @@
 # ADR-0034: The guided mode is the entry point (`loki` with no arguments)
 
-Status: Accepted (2026-08-18)
+Status: Accepted (2026-08-20)
 
 ## Context
 
@@ -66,7 +66,7 @@ worse than none.
 After a step runs, the guide prints the command line that would have done the same thing:
 
 ```
-The same thing from the command line: loki offline --analyze reports\dump-2026-08-18-1042.json
+The same thing from the command line: loki offline --analyze reports\dump-2026-08-20-1042.json
 ```
 
 A guided mode that never names what it did produces dependants. One that always does produces operators who
@@ -78,7 +78,7 @@ Guided (`loki`), direct (`loki offline --agent`, unchanged), and conversational 
 guided mode is a door to the other two, not a wall in front of them: the conversational paths exist today and are
 merely undiscoverable.
 
-## The visual layer (added 2026-08-18, slice 2)
+## The visual layer (added 2026-08-20, slice 2)
 
 Slice 1 shipped the guided mode without any identity, on the principle that a beautiful menu which lies about what
 works is worse than the plain list it replaces. Honesty first; this is the face that follows.
