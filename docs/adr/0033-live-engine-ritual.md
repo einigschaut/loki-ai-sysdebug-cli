@@ -1,6 +1,6 @@
 # ADR-0033: The live-engine tests stay opt-in and run as a pre-release ritual, not in CI
 
-Status: Accepted (2026-08-18)
+Status: Accepted (2026-08-20)
 
 ## Context
 
@@ -29,7 +29,7 @@ CI.** The ritual lives in `CONTRIBUTING.md`, next to the release process it atta
 
 ### Why not in CI
 
-Measured on a provisioned rig (2026-08-18, v0.16.0, Windows PowerShell 5.1):
+Measured on a provisioned rig (2026-08-20, v0.16.0, Windows PowerShell 5.1):
 
 | Test | Tier used | Duration |
 |---|---|---|
