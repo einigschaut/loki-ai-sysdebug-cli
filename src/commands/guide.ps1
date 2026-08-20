@@ -1,4 +1,4 @@
-# commands/guide.ps1 -- `loki guide`, the guided mode. Bare `loki` routes here (see src/loki.ps1).
+﻿# commands/guide.ps1 -- `loki guide`, the guided mode. Bare `loki` routes here (see src/loki.ps1).
 # Metadata (Get-LokiCmdMeta_guide) is the single source of truth; the handler (Invoke-LokiCmd_guide) executes it.
 # ADR-0002 / ADR-0034.
 #
@@ -30,7 +30,19 @@ function Invoke-LokiCmd_guide {
     $configPath = Join-Path $Context.AppRoot 'loki.config.json'
     if (Test-Path -LiteralPath $configPath) { $config = Read-LokiConfig -Path $configPath }
 
-    $state = Get-LokiGuideState -AppRoot $Context.AppRoot -Config $config
+    $quiet = ($Context.Flags -is [hashtable]) -and $Context.Flags.ContainsKey('Quiet') -and [bool]$Context.Flags.Quiet
+    if (-not $quiet) {
+        Write-LokiBrand
+        Write-LokiLine ''
+    }
+
+    # The serpent crawls one column per completed probe. A [ref] plus GetNewClosure(), because a plain
+    # assignment inside a scriptblock creates a local and the counter would never move.
+    $tick = [ref]0
+    $label = Get-LokiText 'guide.checking'
+    $onStep = { $tick.Value++; Write-LokiSpinnerTick -Label $label -Index $tick.Value }.GetNewClosure()
+    $state = Get-LokiGuideState -AppRoot $Context.AppRoot -Config $config -OnStep $onStep
+    Write-LokiSpinnerDone -Label $label
     # ASSIGN FIRST, then wrap: Get-LokiGuideMenu ends in `return , @(...)`, so @(FUNC) would be 1 element.
     $options = Get-LokiGuideMenu -State $state
     $options = @($options)

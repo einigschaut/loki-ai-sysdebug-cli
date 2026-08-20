@@ -260,6 +260,7 @@
     'guide.summary'             = 'Guided mode: what this machine can do right now, and what to run next'
     'guide.title'               = 'loki v{0} - guided mode'
     'guide.intro'               = 'Here is what is possible on this machine right now.'
+    'guide.checking'            = 'checking this machine'
     'guide.prompt'              = 'Choose a number (Enter to quit)'
     'guide.nonInteractive'      = 'Input is redirected, so nothing is being asked -- the list above is the answer. Run loki guide in a console to choose.'
     'guide.equivalent'          = 'The same thing from the command line: {0}'

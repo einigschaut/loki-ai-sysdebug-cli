@@ -78,6 +78,49 @@ Guided (`loki`), direct (`loki offline --agent`, unchanged), and conversational 
 guided mode is a door to the other two, not a wall in front of them: the conversational paths exist today and are
 merely undiscoverable.
 
+## The visual layer (added 2026-08-18, slice 2)
+
+Slice 1 shipped the guided mode without any identity, on the principle that a beautiful menu which lies about what
+works is worse than the plain list it replaces. Honesty first; this is the face that follows.
+
+**The mascot is a face, the serpent is the motion, and they are two roles rather than two candidate logos.** The
+figure is drawn from the Snaptun stone, a real 10th-century hearth stone whose sewn lips are the iconic image of the
+Loki of the actual Norse sources. That choice is deliberate on two counts: it is unmistakably the mythological
+figure, and it is unmistakably not the modern comic-book one, so the resemblance question never has to be argued.
+The crawling coil is the world serpent, Loki's child, and it marks work in progress.
+
+Anthropic's CLI, examined for comparison, ships **no** ASCII mascot at all -- its identity is carried by a brand
+accent colour that doubles as the spinner colour, plus motion and typography. Loki goes one step further with the
+face; the serpent-as-spinner is the part that follows the same reasoning.
+
+### The art is chosen by encoding, not by taste
+
+Three of three first drafts used characters that CP850 silently replaces, which is how issue #121 was found. So the
+banner and the spinner are selected by the glyph tier: `rich` and `oem` share one design built only from characters
+proven present in **both** CP850 and CP437, and `ascii` has its own, pure-ASCII form. `rich` deliberately draws the
+same picture as `oem` -- if the conservative set renders it well, a second design would only be a second thing to
+keep in step. A test asserts that each tier emits only what its own encoding can hold, so a rounded corner cannot
+creep back in.
+
+Below 34 columns the banner collapses to a single line rather than wrapping into rubble.
+
+### The spinner ticks; it is not animated on a timer
+
+The serpent advances **one column per completed probe**, driven by an optional `-OnStep` callback on
+`Get-LokiGuideState`. That is a deliberate choice over a background runspace:
+
+- It keeps every console write on one thread. Two threads writing to a shared cursor is a class of bug this project
+  should not invite for decoration.
+- It is honest. The coil moves because Loki finished something, not because a timer fired.
+- The callback is wrapped so that a throwing spinner cannot fail the diagnosis it decorates -- tested.
+
+The limitation is real and stated: a single long blocking call, such as one engine generation, has no tick points,
+so the serpent stands still through it. Animating that needs a second runspace and its own decision; it is not
+smuggled in here.
+
+**The spinner owns its line.** A carriage return rewinds to column 0 of the physical line and eats whatever is
+already there -- observed the first time it was tried, when the spinner devoured its own label.
+
 ## Consequences
 
 - Bare `loki` no longer prints a banner. Its two catalog keys (`dispatch.overviewHint`, `dispatch.statusHint`) were
