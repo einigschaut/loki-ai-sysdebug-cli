@@ -223,11 +223,12 @@ for why this is a ritual rather than a CI job.
 
 Run it on a machine with a provisioned stick, before merging a Release PR.
 
-**1. Rebuild the stick from the commit under test.** Skipping this is the
-fastest way to lose an hour: a stick built from an older Loki fails with
-`Model manifest entry is missing key 'KVCache'` — the validator correctly
-rejecting a manifest that predates ADR-0025, which reads like a defect in the
-code under test and is not one.
+**1. Rebuild the stick from the commit under test.** If you forget, the live
+tests say so and stop within a second, naming both versions and repeating this
+command. They no longer die deep inside the manifest validator with
+`Model manifest entry is missing key 'KVCache'` — which is exactly what the
+first run of this ritual did, and it cost a diagnosis before the first real
+assertion ran.
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File build\New-LokiStick.ps1 -Destination <StickRoot>
