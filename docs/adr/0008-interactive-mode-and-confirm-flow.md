@@ -102,7 +102,7 @@ security core `src/lib/claude.ps1`; `src/commands/chat.ps1` is thin wiring.
   (ADR-0007 residual) also remains, now mitigated on the mutate path too by the secret-target hardening above.
 - **Deferred (documented, not done here):** passing an initial user message into the interactive session (needs
   the live invocation verified first); a richer Loki-side confirmation UI over Claude Code's built-in prompt;
-  a `fix` flow with dry-run and rollback (DESIGN.md Stage 2).
+  a `fix` flow with dry-run and rollback (now tracked in #111, deferred past 1.0).
 - The gate stays engine-agnostic and single-sourced: `read`/`mutate`/`denied` is still decided in exactly one
   place (`Resolve-LokiCommandDecision` over `lib/allowlist.ps1`, ADR-0006); interactive mode only changes what
   the *hook* does with a `mutate`, never the classification.
