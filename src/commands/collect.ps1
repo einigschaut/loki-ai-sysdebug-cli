@@ -60,12 +60,41 @@ function Invoke-LokiCmd_collect {
     Write-LokiInfo (Get-LokiText 'collect.working')
 
     # The battery id is the label: it is already part of the CLI surface (`--only <battery,...>`), so it
-    # tells the operator what is being read right now without inventing a second vocabulary.
+    # tells the operator what is being read right now without inventing a second vocabulary. The second
+    # footer line is digits and ASCII bars only -- deliberately no prose, so this adds no catalog key
+    # and no new CP850 surface (CLAUDE.md section 10).
+    #
+    # TWO MECHANISMS, NEVER AT THE SAME TIME. If a live region engages it owns the bottom two rows and
+    # finished batteries scroll away above it; if it refuses -- redirected output, CI, --plain, a
+    # console too small or too odd -- the shipped single-line spinner runs instead, exactly as before.
+    # The choice is made ONCE, here, so nothing downstream has to ask which one is drawing.
+    $plain = ($Context.Flags -is [hashtable]) -and $Context.Flags.ContainsKey('Plain') -and [bool]$Context.Flags.Plain
+    $total = @($known).Count
+    if ($null -ne $selected) { $total = @($selected).Count }
+    # A hashtable and not an int: a scriptblock invoked from inside another function runs in its own
+    # scope, so `$done++` would increment a local copy and the footer would never move.
+    $progress = @{ Done = 0; Frame = 0 }
+    $useRegion = Open-LokiRegion -Height 2 -Color ([System.ConsoleColor]::Green) -Plain:$plain
     Initialize-LokiSpinner
+    $onStep = {
+        param($id)
+        $progress.Done++
+        $progress.Frame++
+        if ($useRegion) {
+            $bar = [int][math]::Floor(($progress.Done / [math]::Max($total, 1)) * 20)
+            Write-LokiRegion -Lines @(
+                ('  {0}  {1}' -f (Get-LokiSpinnerFrame -Tier (Get-LokiGlyphTier) -Index $progress.Frame), [string]$id),
+                ('  [{0}{1}]  {2}/{3}' -f ('#' * $bar), ('-' * (20 - $bar)), $progress.Done, $total)
+            )
+        }
+        else { Write-LokiSpinnerTick -Label ([string]$id) }
+    }.GetNewClosure()
     try {
-        $dump = Invoke-LokiCollect -Only $selected -OnStep { param($id) Write-LokiSpinnerTick -Label ([string]$id) }
+        $dump = Invoke-LokiCollect -Only $selected -OnStep $onStep
     }
-    finally { Write-LokiSpinnerDone }
+    finally {
+        if ($useRegion) { Close-LokiRegion } else { Write-LokiSpinnerDone }
+    }
     $document = ConvertTo-LokiCollectDocument -Dump $dump -LokiVersion ([string]$Context.Version)
 
     $okCount = 0

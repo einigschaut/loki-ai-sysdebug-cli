@@ -8,7 +8,8 @@ Set-StrictMode -Version Latest
 BeforeAll {
     . "$PSScriptRoot\..\src\lib\i18n.ps1"
     . "$PSScriptRoot\..\src\lib\ui.ps1"
-    . "$PSScriptRoot\..\src\lib\brand.ps1"   # the command writes the spinner (issue #125)
+    . "$PSScriptRoot\..\src\lib\brand.ps1"        # the command writes the spinner (issue #125)
+    . "$PSScriptRoot\..\src\lib\liveregion.ps1"   # ... or a live footer, where the console allows one (issue #130)
     . "$PSScriptRoot\..\src\lib\exitcodes.ps1"
     . "$PSScriptRoot\..\src\lib\hwscan.ps1"
     . "$PSScriptRoot\..\src\lib\posture.ps1"
@@ -26,7 +27,12 @@ BeforeAll {
 
     function global:New-TestCollectContext {
         param([string[]]$CmdArgs = @(), [string]$AppRoot = $script:Work)
-        return @{ AppRoot = $AppRoot; Version = '9.9.9'; Args = $CmdArgs; Flags = @{}; Registry = @() }
+        # Plain = $true, deliberately. Without it the live region's engage/refuse decision would depend on
+        # HOW the suite was started: piped through CI it sees redirected output and refuses, but run in a
+        # bare console by a developer it would engage and repaint over the test output. A test whose
+        # behaviour changes with the terminal it runs in is not a test. The engaged path has its own
+        # coverage in tests/liveregion.Tests.ps1, against mocked console primitives.
+        return @{ AppRoot = $AppRoot; Version = '9.9.9'; Args = $CmdArgs; Flags = @{ Plain = $true }; Registry = @() }
     }
 
     function global:Invoke-CollectCommand {
@@ -332,5 +338,38 @@ Describe 'Command collect -- an unwritable dump IS an error' {
         $ctx = New-TestCollectContext -AppRoot (([string]$free[0]) + ':\no-such-drive\app')
         $r = Invoke-CollectCommand -Context $ctx
         $r.Code | Should -Be 1
+    }
+}
+
+Describe 'Command collect -- the live footer' {
+    # Issue #130. The footer is the visible half of the change; the half that matters to every other
+    # consumer of this command is that it can be switched OFF and then behaves exactly as it did.
+    BeforeAll {
+        Mock Invoke-LokiCollect {
+            [pscustomobject]@{
+                CreatedAt = ([datetime]'2026-07-16 14:30:00')
+                Batteries = @(
+                    [pscustomobject]@{
+                        Id = 'os'; Status = 'ok'; DurationMs = 441; Error = $null
+                        Data = [pscustomobject]@{ Caption = 'Microsoft Windows 11 Pro'; UptimeHours = 34.2 }
+                    }
+                )
+            }
+        }
+    }
+
+    It 'honours --plain by never opening a region, and still collects' {
+        $r = Invoke-CollectCommand -Context (New-TestCollectContext)
+        $r.Code | Should -Be 0
+        Test-LokiRegionOpen | Should -BeFalse
+        Get-LokiRegionRefusal | Should -Be 'plain' -Because 'the operator asked, and that answer beats every capability question'
+    }
+
+    It 'leaves no region open once the command returns' {
+        # The command owns the footer for the length of the collection and not one line longer: the
+        # battery results and the report paths printed below it are ordinary output and must not be
+        # repainted over. Guarded by try/finally in the command, asserted here.
+        [void](Invoke-CollectCommand -Context (New-TestCollectContext))
+        Test-LokiRegionOpen | Should -BeFalse
     }
 }

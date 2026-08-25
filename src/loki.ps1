@@ -18,7 +18,7 @@ Get-ChildItem -LiteralPath $commandsDir -Filter '*.ps1' -File | Sort-Object Name
 # --- parse args: first non-flag token = command; capture global flags; rest = CommandArgs ---
 $commandName = $null
 $commandArgs = @()
-$flags = @{ NoColor = $false; Help = $false; Verbose = $false; Quiet = $false; Lang = $null }
+$flags = @{ NoColor = $false; Help = $false; Verbose = $false; Quiet = $false; Lang = $null; Plain = $false }
 $expectLang = $false
 foreach ($a in $args) {
     if ($expectLang) { $flags.Lang = $a; $expectLang = $false; continue }
@@ -27,6 +27,7 @@ foreach ($a in $args) {
         '^--lang=(.+)$'     { $flags.Lang = $Matches[1]; continue }
         '^--lang$'          { $expectLang = $true; continue }
         '^--no-color$'      { $flags.NoColor = $true; continue }
+        '^--plain$'         { $flags.Plain = $true; continue }
         '^(--help|-h)$'     { $flags.Help = $true; continue }
         '^(--verbose|-v)$'  { $flags.Verbose = $true; continue }
         '^(--quiet|-q)$'    { $flags.Quiet = $true; continue }
@@ -34,7 +35,12 @@ foreach ($a in $args) {
     }
 }
 
+# LOKI_PLAIN alongside --plain, mirroring how NO_COLOR sits alongside --no-color: an operator who
+# pipes Loki through a wrapper cannot always add a flag, but can always set an environment variable.
+if (-not [string]::IsNullOrEmpty($env:LOKI_PLAIN)) { $flags.Plain = $true }
+
 Initialize-LokiUi -NoColor:$flags.NoColor
+Initialize-LokiRegion
 $version = Get-LokiVersion -AppRoot $AppRoot
 $exit = Get-LokiExitCode 'Ok'
 
@@ -92,7 +98,10 @@ catch {
 }
 finally {
     # Teardown anchor (stage 0 minimal; later: env-isolate cleanup, llama-server kill, footprint guard).
-    # Deliberately empty, but present -> every later command cleans up here centrally.
+    # A live region parks the cursor mid-screen and owns rows the shell is about to write over, so it
+    # must be closed on EVERY exit path -- including the one through the catch above. It is a no-op
+    # when nothing is open, which is the overwhelmingly common case.
+    Close-LokiRegion
 }
 
 exit $exit

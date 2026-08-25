@@ -121,6 +121,13 @@ smuggled in here.
 **The spinner owns its line.** A carriage return rewinds to column 0 of the physical line and eats whatever is
 already there -- observed the first time it was tried, when the spinner devoured its own label.
 
+> **Amended 2026-08-25 by ADR-0035.** The refusal above was a refusal of two mechanisms drawing at the same time,
+> and that still stands. What has changed is that a second mechanism now exists: a bottom-anchored live region,
+> engaged only inside a regime that was measured (1000 repaints, 100 scroll events, three hosts) and refused
+> everywhere else, where this spinner keeps running exactly as described here. The choice between the two is made
+> once, before any drawing starts -- they are alternatives, never neighbours. No runspace was added; the limitation
+> about a single long blocking call is unchanged.
+
 ## Consequences
 
 - Bare `loki` no longer prints a banner. Its two catalog keys (`dispatch.overviewHint`, `dispatch.statusHint`) were
