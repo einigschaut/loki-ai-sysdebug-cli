@@ -7,6 +7,11 @@
 #   Test-LokiEncodingSupport -Encoding <Encoding> -Text <string> -> [bool]   PURE round-trip probe
 #   Resolve-LokiGlyphTier -Encoding <Encoding> -> 'rich' | 'oem' | 'ascii'    PURE
 #   Get-LokiGlyphTier / Get-LokiGlyph -Name <string>                          current tier and its glyph
+#   Write-LokiConsole -Text <string> [-Color] [-NoNewline]                    the ONLY Write-Host; fires NO hook
+#   Write-LokiRaw -Text <string> [-Color] [-NoNewline]                        hook first, then Write-LokiConsole
+#   Register-LokiWriteHook -Hook <scriptblock>                                what must run before ordinary output
+#   Invoke-LokiWriteHook / Get-LokiWriteHookError                             fires it once; records a throw
+#   Move-LokiCursor -Row <int> -> [bool]                                      absolute cursor move, $false on refusal
 # Nutzt Write-Host -ForegroundColor (kein VT nötig -> funktioniert auf Alt-Konsolen); Fehler/Warnungen zusätzlich nach stderr.
 Set-StrictMode -Version Latest
 
@@ -31,12 +36,78 @@ function Get-LokiUseColor { return $script:LokiUseColor }
 
 function Write-LokiLine {
     param([string]$Text = '')
-    Write-Host $Text
+    Write-LokiRaw -Text $Text
 }
 
 function Write-LokiColor {
     param([string]$Text, [System.ConsoleColor]$Color)
-    if ($script:LokiUseColor) { Write-Host $Text -ForegroundColor $Color } else { Write-Host $Text }
+    Write-LokiRaw -Text $Text -Color $Color
+}
+
+# --- the write seam (issue #130) ------------------------------------------------------------------------------
+# Every console write in Loki funnels through these two functions, because a live region and ordinary output cannot
+# both own the cursor. The hook is $null by default, so with no region open the bytes leaving this file are exactly
+# what they were before the seam existed -- which is what the dispatcher's bare-loki-equals-loki-guide byte-identity
+# test measures.
+#
+# Write-LokiConsole is the ONLY Write-Host in the codebase and it does NOT fire the hook: it is what the region
+# itself draws with, and a region redrawing through a hook that closes the region is a loop, not a feature.
+$script:LokiWriteHook = $null
+$script:LokiWriteHookError = ''
+
+function Register-LokiWriteHook {
+    param([Parameter(Mandatory = $true)][AllowNull()][scriptblock]$Hook)
+    $script:LokiWriteHook = $Hook
+}
+
+function Invoke-LokiWriteHook {
+    # Cleared BEFORE the hook runs: whatever it does, it cannot re-enter through its own writes.
+    if ($null -eq $script:LokiWriteHook) { return }
+    $hook = $script:LokiWriteHook
+    $script:LokiWriteHook = $null
+    # A hook that throws must not take the ordinary output with it -- but it must not vanish either. A live region
+    # broken for months that leaves no trace is a bug nobody goes looking for.
+    try { & $hook } catch { $script:LokiWriteHookError = [string]$_.Exception.Message }
+}
+
+function Get-LokiWriteHookError { return $script:LokiWriteHookError }
+
+function Write-LokiConsole {
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Text,
+        [AllowNull()]$Color = $null,
+        [switch]$NoNewline
+    )
+    $withColor = ($script:LokiUseColor -and $null -ne $Color)
+    if ($withColor) {
+        if ($NoNewline) { Write-Host $Text -ForegroundColor $Color -NoNewline } else { Write-Host $Text -ForegroundColor $Color }
+    }
+    else {
+        if ($NoNewline) { Write-Host $Text -NoNewline } else { Write-Host $Text }
+    }
+}
+
+function Write-LokiRaw {
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Text,
+        [AllowNull()]$Color = $null,
+        [switch]$NoNewline
+    )
+    Invoke-LokiWriteHook
+    Write-LokiConsole -Text $Text -Color $Color -NoNewline:$NoNewline
+}
+
+function Move-LokiCursor {
+    param([Parameter(Mandatory = $true)][int]$Row)
+    # The only absolute cursor move in Loki, and it reports failure instead of raising it: the console APIs throw
+    # when output is redirected, and a diagnostic tool that dies while drawing a decoration is worse than one that
+    # simply stops decorating. Named Move- rather than Set- on purpose (PSUseShouldProcessForStateChangingFunctions).
+    if ($Row -lt 0) { return $false }
+    try {
+        [Console]::SetCursorPosition(0, $Row)
+        return $true
+    }
+    catch { return $false }
 }
 
 function Write-LokiInfo { param([string]$Text) Write-LokiColor -Text $Text -Color Cyan }
@@ -46,6 +117,9 @@ function Write-LokiOk   { param([string]$Text) Write-LokiColor -Text "$(Get-Loki
 # Kein Write-Host-Duplikat: sonst erscheint die Meldung interaktiv doppelt und landet nicht sauber auf stderr.
 function Write-LokiToStdErr {
     param([string]$Text, [System.ConsoleColor]$Color)
+    # stderr bypasses Write-Host entirely, so it would otherwise print straight through an open live region -- and
+    # Write-LokiErr alone appears on dozens of source lines. The region closes first, exactly as for stdout.
+    Invoke-LokiWriteHook
     if (-not $script:LokiUseColor -or [Console]::IsErrorRedirected) {
         [Console]::Error.WriteLine($Text)
         return
