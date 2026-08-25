@@ -40,8 +40,16 @@ function Invoke-LokiCmd_guide {
     $label = Get-LokiText 'guide.checking'
     Initialize-LokiSpinner
     $onStep = { Write-LokiSpinnerTick -Label $label }.GetNewClosure()
-    $state = Get-LokiGuideState -AppRoot $Context.AppRoot -Config $config -OnStep $onStep
-    Write-LokiSpinnerDone
+    # try/finally, exactly as collect.ps1:65-68 and setup.ps1 do it. Write-LokiSpinnerTick leaves the cursor
+    # parked mid-line (carriage return, no newline), and only Write-LokiSpinnerDone puts it back -- on a
+    # console SHARED with the parent shell, which keeps that position after Loki exits. Get-LokiGuideState is
+    # built never to throw, so this is defence in depth rather than a live crash; it is here because two of
+    # three spinner call sites had the guard and this one did not, and an inconsistency like that reads as a
+    # deliberate exception to whoever finds it next.
+    try {
+        $state = Get-LokiGuideState -AppRoot $Context.AppRoot -Config $config -OnStep $onStep
+    }
+    finally { Write-LokiSpinnerDone }
     # ASSIGN FIRST, then wrap: Get-LokiGuideMenu ends in `return , @(...)`, so @(FUNC) would be 1 element.
     $options = Get-LokiGuideMenu -State $state
     $options = @($options)
