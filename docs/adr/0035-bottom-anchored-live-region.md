@@ -2,6 +2,25 @@
 
 Status: Accepted (2026-08-25)
 
+> **Amended 2026-08-26 by ADR-0036.** The paragraph below beginning "Anthropic's CLI was examined as the reference"
+> is **wrong on its central claim**, and the error is instructive. It says the reference's default rendering mode is
+> not a fullscreen takeover. A 249 KB capture of a real session says the opposite: the alternate screen is entered
+> at byte 1775 and left at 248,815 -- 99.1% of the run -- and the conversation never exists in the terminal's buffer
+> at all. The earlier sentence came from a 4 KB capture in which the same fixed startup offset (byte 1807) looked
+> like 44% of the file. A short capture made a constant look like a phase.
+>
+> The consequence for this ADR is narrower than it sounds. Everything measured here -- the anchor's survival across
+> 1000 repaints and 100 scroll events, the mutation control that caught a walking region 189 times, the one-write
+> rule against flicker, the CP850 tiers, the fail-closed capability gate -- stands unchanged and is now the
+> **fallback path**, taken whenever ADR-0036's screen refuses (no VT, a pipe, `--plain`, a window below the measured
+> floor). What does not survive is the *model*: the anchor solves the problem of a program that scrolls, and the
+> rebuilt UI does not scroll.
+>
+> Also corrected: the reason given here for refusing the alternate screen -- that `collect`'s report path must
+> survive in real scrollback -- was measured to be backwards. Entering and leaving the alternate screen changed 0 of
+> 30 visible rows and left a scrollback marker at the same absolute row, in a 9001-row buffer. Writing into the
+> technician's normal buffer is the option that leaves something behind.
+
 Supersedes the blanket refusal in ADR-0034 ("The spinner owns its line", "Two threads writing to a shared cursor is
 a class of bug this project should not invite for decoration") with a narrower rule. The reasoning there was right;
 what changed is that there is now a measurement instead of a fear.
