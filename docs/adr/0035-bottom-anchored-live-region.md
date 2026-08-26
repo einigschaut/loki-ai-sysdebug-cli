@@ -113,9 +113,11 @@ Loki exits. A region abandoned by a crash leaves a stale footer on screen — ne
 
 ## Consequences
 
-- `loki collect` gains a two-line footer: the serpent plus the running battery, and a progress bar. Finished
-  batteries scroll away above it. The second line is digits and ASCII bars only, so this adds no catalog key and no
-  new CP850 surface.
+- `loki collect` gains a footer: the serpent plus the running battery, and a progress bar. Finished batteries
+  scroll away above it. Its content is digits and ASCII bars only, so this adds no catalog key and no new CP850
+  surface. Since slice 2a the two content rows sit inside a frame drawn by `Get-LokiBoxArt`, making the region four
+  rows tall; the frame uses the same six characters that box the mascot's head, and its corners are **square**
+  because the rounded ones (U+256D..U+2570) do not exist in CP850 -- the shape issue #121 took.
 - `--plain` and `LOKI_PLAIN` switch it off, mirroring `--no-color` / `NO_COLOR`.
 - The dispatcher's teardown anchor, deliberately empty since stage 0, gains its first inhabitant: `Close-LokiRegion`
   on every exit path, including the one through the catch.
