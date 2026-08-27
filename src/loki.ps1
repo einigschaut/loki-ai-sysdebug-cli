@@ -42,6 +42,7 @@ if (-not [string]::IsNullOrEmpty($env:LOKI_PLAIN)) { $flags.Plain = $true }
 Initialize-LokiUi -NoColor:$flags.NoColor
 Initialize-LokiRegion
 Initialize-LokiScreen
+Initialize-LokiKeyread
 $version = Get-LokiVersion -AppRoot $AppRoot
 $exit = Get-LokiExitCode 'Ok'
 
@@ -109,6 +110,11 @@ finally {
     # hidden. Also a no-op when nothing is open, and it sits here BEFORE any command opens a screen so
     # that the first one cannot forget.
     Close-LokiScreen
+
+    # And the keyboard. Open-LokiKeyread takes Ctrl+C away from PowerShell so the session can
+    # define it; leaving it taken would mean the operator's shell no longer stops on Ctrl+C.
+    # Close puts back the value Open found, rather than assuming it was off.
+    Close-LokiKeyread
 }
 
 exit $exit
