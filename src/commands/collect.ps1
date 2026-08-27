@@ -74,7 +74,9 @@ function Invoke-LokiCmd_collect {
     # A hashtable and not an int: a scriptblock invoked from inside another function runs in its own
     # scope, so `$done++` would increment a local copy and the footer would never move.
     $progress = @{ Done = 0; Frame = 0 }
-    $useRegion = Open-LokiRegion -Height 2 -Color ([System.ConsoleColor]::Green) -Plain:$plain
+    # Four rows: two of content inside a frame. The frame is drawn by lib/brand.ps1 out of the same six
+    # characters that box the mascot's head, so the footer belongs to Loki instead of being a second style.
+    $useRegion = Open-LokiRegion -Height 4 -Color ([System.ConsoleColor]::Green) -Plain:$plain
     Initialize-LokiSpinner
     $onStep = {
         param($id)
@@ -82,10 +84,12 @@ function Invoke-LokiCmd_collect {
         $progress.Frame++
         if ($useRegion) {
             $bar = [int][math]::Floor(($progress.Done / [math]::Max($total, 1)) * 20)
-            Write-LokiRegion -Lines @(
-                ('  {0}  {1}' -f (Get-LokiSpinnerFrame -Tier (Get-LokiGlyphTier) -Index $progress.Frame), [string]$id),
-                ('  [{0}{1}]  {2}/{3}' -f ('#' * $bar), ('-' * (20 - $bar)), $progress.Done, $total)
-            )
+            # The width is asked for, not assumed: it is decided from the console when the region opens,
+            # and a guessed width puts the right-hand border in the wrong column on every other machine.
+            Write-LokiRegion -Lines (Get-LokiBoxArt -Tier (Get-LokiGlyphTier) -Width (Get-LokiRegionWidth) -Lines @(
+                    ('{0}  {1}' -f (Get-LokiSpinnerFrame -Tier (Get-LokiGlyphTier) -Index $progress.Frame), [string]$id),
+                    ('[{0}{1}]  {2}/{3}' -f ('#' * $bar), ('-' * (20 - $bar)), $progress.Done, $total)
+                ))
         }
         else { Write-LokiSpinnerTick -Label ([string]$id) }
     }.GetNewClosure()

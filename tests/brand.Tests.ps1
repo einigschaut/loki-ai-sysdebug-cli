@@ -100,7 +100,16 @@ Describe 'the serpent (spinner)' {
         (Get-LokiSpinnerFrame -Tier 'oem' -Index 0) | Should -Not -BeNullOrEmpty
         (Get-LokiSpinnerFrame -Tier 'oem' -Index 999) | Should -Not -BeNullOrEmpty
         (Get-LokiSpinnerFrame -Tier 'oem' -Index -1) | Should -Not -BeNullOrEmpty
-        (Get-LokiSpinnerFrame -Tier 'oem' -Index 6) | Should -Be (Get-LokiSpinnerFrame -Tier 'oem' -Index 0)
+        # Derived, not hardcoded: this pins that the index WRAPS, which is the contract, rather than how many
+        # frames the animation happens to have. The literal 6 that used to stand here went red the day the coil
+        # was redrawn, and the number was never what the test was about.
+        #
+        # ASSIGN FIRST, then wrap. Get-LokiSpinnerFrameSet ends in `return , @(...)`, so @(FUNC).Count is 1 -- the
+        # wrapper, not the frames. Written the short way this test went red against a perfectly correct animation.
+        $produced = Get-LokiSpinnerFrameSet -Tier 'oem'
+        $count = @($produced).Count
+        $count | Should -BeGreaterThan 1 -Because 'a count of 1 here means the comma trap bit again, not that there is one frame'
+        (Get-LokiSpinnerFrame -Tier 'oem' -Index $count) | Should -Be (Get-LokiSpinnerFrame -Tier 'oem' -Index 0)
     }
 }
 
@@ -149,5 +158,116 @@ Describe 'spinner throttle (issue #125)' {
         # A 5 GB model through the 128 KB copy loop. Unthrottled, drawing the spinner would cost more than the
         # download it reports on.
         [int](5GB / 131072) | Should -BeGreaterThan 30000
+    }
+}
+
+Describe 'Get-LokiBoxArt' {
+    It 'the oem frame uses ONLY characters CP850 and CP437 can both hold' {
+        # The same guard as the banner above, and for the same reason: the rounded corners this frame would
+        # otherwise use (U+256D..U+2570) are absent from CP850, which is what a German Windows console runs.
+        # That is the shape issue #121 took. If someone reaches for a rounded corner, this goes red first.
+        $box = Get-LokiBoxArt -Tier 'oem' -Width 40 -Lines @('working', '[####------]  4/10')
+        @($box).Count | Should -Be 4 -Because 'two content lines plus a top and a bottom'
+        Test-LokiArtFitsEncoding -Lines $box -CodePage 850 | Should -BeTrue
+        Test-LokiArtFitsEncoding -Lines $box -CodePage 437 | Should -BeTrue
+    }
+
+    It 'BREAK-THE-GUARD: the encoding check can actually fail' {
+        # Without this, the assertion above would be equally green if Test-LokiArtFitsEncoding always said yes.
+        Test-LokiArtFitsEncoding -Lines @('rounded ' + [char]0x256D) -CodePage 850 | Should -BeFalse
+    }
+
+    It 'the ascii frame is pure ASCII' {
+        $box = Get-LokiBoxArt -Tier 'ascii' -Width 40 -Lines @('working')
+        foreach ($line in $box) {
+            foreach ($ch in $line.ToCharArray()) { [int][char]$ch | Should -BeLessThan 128 }
+        }
+    }
+
+    It 'every line is exactly the requested width' {
+        foreach ($tier in @('rich', 'oem', 'ascii')) {
+            foreach ($width in @(12, 40, 80, 209)) {
+                $box = Get-LokiBoxArt -Tier $tier -Width $width -Lines @('a', 'bb')
+                foreach ($line in $box) {
+                    $line.Length | Should -Be $width -Because "$tier at $width must not be ragged"
+                }
+            }
+        }
+    }
+
+    It 'truncates content rather than letting it wrap' {
+        # A frame line one character too long wraps onto the next row, and a region that is one row taller
+        # than its anchor thinks is a region that eats the line above it.
+        $box = Get-LokiBoxArt -Tier 'ascii' -Width 20 -Lines @('x' * 200)
+        foreach ($line in $box) { $line.Length | Should -Be 20 }
+    }
+
+    It 'collapses to the bare lines when there is no room to frame them' {
+        $box = Get-LokiBoxArt -Tier 'oem' -Width 8 -Lines @('abc', 'de')
+        @($box) | Should -Be @('abc', 'de') -Because 'all border and no content is worse than no border'
+    }
+
+    It 'survives empty and null content' {
+        @(Get-LokiBoxArt -Tier 'oem' -Width 20 -Lines @()).Count | Should -Be 2
+        @(Get-LokiBoxArt -Tier 'oem' -Width 20 -Lines $null).Count | Should -Be 2
+        @(Get-LokiBoxArt -Tier 'oem' -Width 20 -Lines @('')).Count | Should -Be 3
+    }
+
+    It 'pads short content so nothing survives underneath it' {
+        $box = Get-LokiBoxArt -Tier 'ascii' -Width 20 -Lines @('hi')
+        $box[1] | Should -Be '| hi               |'
+    }
+}
+
+Describe 'the oem art is actually oem art' {
+    # These exist because the encoding assertions elsewhere in this file CANNOT catch the obvious regression.
+    # "Does it fit CP850" is satisfied perfectly by plain ASCII, so a frame or a serpent quietly rewritten to
+    # +---+ and -~-- would pass every other check in the suite while losing the entire point of having tiers.
+    #
+    # Found the hard way: a review agent mutated exactly that, to demonstrate a test could fail, and nothing
+    # went red. The gap was real and it was mine.
+
+    It 'the frame is drawn from box-drawing characters, not ASCII lookalikes' {
+        $box = Get-LokiBoxArt -Tier 'oem' -Width 40 -Lines @('x')
+        [int][char]$box[0][0] | Should -Be 0x250C -Because 'top-left must be a real corner'
+        [int][char]$box[0][1] | Should -Be 0x2500 -Because 'the rule must be a real horizontal line'
+        [int][char]$box[1][0] | Should -Be 0x2502 -Because 'the side must be a real vertical line'
+        $last = @($box)[-1]
+        [int][char]$last[0] | Should -Be 0x2514 -Because 'bottom-left must be a real corner'
+    }
+
+    It 'the frame uses NO rounded corner, at any tier' {
+        # U+256D..U+2570 are absent from CP850 -- the shape issue #121 took. Assert it directly rather than
+        # trusting that nobody reaches for the prettier character later.
+        foreach ($tier in @('rich', 'oem', 'ascii')) {
+            $box = Get-LokiBoxArt -Tier $tier -Width 40 -Lines @('x')
+            foreach ($line in $box) {
+                foreach ($ch in $line.ToCharArray()) {
+                    [int][char]$ch | Should -Not -BeIn @(0x256D, 0x256E, 0x256F, 0x2570)
+                }
+            }
+        }
+    }
+
+    It 'the serpent head is the square the mascot already owns' {
+        # ASSIGN FIRST, then wrap: Get-LokiSpinnerFrameSet ends in `return , @(...)`.
+        $produced = Get-LokiSpinnerFrameSet -Tier 'oem'
+        $frames = @($produced)
+        $frames.Count | Should -BeGreaterThan 1
+        foreach ($f in $frames) {
+            $f.IndexOf([char]0x25A0) | Should -BeGreaterOrEqual 0 -Because 'every frame carries the head'
+        }
+    }
+
+    It 'the serpent head shares no character with the frame' {
+        # The whole reason the coil was redrawn: a head made of border characters, printed next to a border,
+        # reads as broken border. If someone reintroduces one, this is where it stops.
+        $frameChars = @(0x250C, 0x2510, 0x2514, 0x2518, 0x2502)
+        $produced = Get-LokiSpinnerFrameSet -Tier 'oem'
+        foreach ($f in @($produced)) {
+            foreach ($ch in $f.ToCharArray()) {
+                [int][char]$ch | Should -Not -BeIn $frameChars
+            }
+        }
     }
 }

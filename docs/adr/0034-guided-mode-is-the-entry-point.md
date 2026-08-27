@@ -127,6 +127,14 @@ already there -- observed the first time it was tried, when the spinner devoured
 > everywhere else, where this spinner keeps running exactly as described here. The choice between the two is made
 > once, before any drawing starts -- they are alternatives, never neighbours. No runspace was added; the limitation
 > about a single long blocking call is unchanged.
+>
+> **The serpent was redrawn at the same time, and this is the identity half of that change.** It was a coil built
+> from the box-drawing corners, and on an open line it read exactly as intended. It stopped reading that way the
+> moment the footer gained a frame: a coil made of the *same six characters* as the border, printed immediately
+> after a border, looks like a broken piece of border rather than like a serpent. The head is now the filled square
+> that already serves as the mascot's eyes, travelling along a rule -- it shares no character with the frame, and it
+> is a glyph Loki already owns, so this remains one identity rather than two. The reasoning above is unchanged: the
+> art is still chosen by encoding rather than by taste, and U+25A0 is present in both CP850 and CP437.
 
 ## Consequences
 
