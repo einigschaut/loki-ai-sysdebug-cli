@@ -412,3 +412,23 @@ Describe 'the write seam' {
         Test-LokiRegionOpen | Should -BeFalse -Because 'Write-LokiErr alone appears on dozens of source lines'
     }
 }
+
+Describe 'Get-LokiRegionWidth' {
+    It 'is 0 when nothing is open and the cell width when something is' {
+        Initialize-LokiRegion
+        Get-LokiRegionWidth | Should -Be 0
+        Mock -CommandName Get-LokiConsoleFact -MockWith {
+            @{
+                HostName = 'ConsoleHost'; OutputRedirected = $false; InputRedirected = $false
+                WindowWidth = 209; WindowHeight = 51; BufferWidth = 209; BufferHeight = 51
+                CursorTop = 50
+            }
+        }
+        Mock -CommandName Write-LokiConsole -MockWith { }
+        Mock -CommandName Move-LokiCursor -MockWith { return $true }
+        Open-LokiRegion -Height 4 | Should -BeTrue
+        Get-LokiRegionWidth | Should -Be 208 -Because 'one column short of the window, as Get-LokiRegionCellWidth decides'
+        Close-LokiRegion
+        Get-LokiRegionWidth | Should -Be 0
+    }
+}

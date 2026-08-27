@@ -270,6 +270,14 @@ function Test-LokiRegionOpen { return ($null -ne $script:LokiRegionState) }
 
 function Get-LokiRegionRefusal { return [string]$script:LokiRegionReason }
 
+function Get-LokiRegionWidth {
+    # How wide a region line may be right now, or 0 when nothing is open. A caller that draws a frame
+    # has to know this: the width is decided here, from the console, and guessing it would put the
+    # right-hand border in the wrong column on every console but the author's.
+    if ($null -eq $script:LokiRegionState) { return 0 }
+    return [int]$script:LokiRegionState.CellWidth
+}
+
 function Initialize-LokiRegion {
     # Back to the state a fresh process starts in, matching Initialize-LokiUi / Initialize-LokiI18n /
     # Initialize-LokiSpinner. It exists because 'disabled' deliberately LASTS: once a resize or a

@@ -3,6 +3,7 @@
 #
 # Contract:
 #   Get-LokiBrandArt -Tier <'rich'|'oem'|'ascii'> -Width <int> -> [string[]]   PURE. Banner lines for that console.
+#   Get-LokiBoxArt -Tier <string> -Lines <string[]> -Width <int> -> [string[]]    PURE. Frames a live region.
 #   Get-LokiSpinnerFrameSet -Tier <string> -> [string[]]                          PURE. The animation, one entry per frame.
 #   Get-LokiSpinnerFrame -Tier <string> -Index <int> -> [string]                PURE. Wraps; any index is legal.
 #   Write-LokiBrand [-Width <int>] [-Tier <string>]                             renders the banner
@@ -64,6 +65,47 @@ function Get-LokiBrandArt {
     )
 }
 
+function Get-LokiBoxArt {
+    param(
+        [Parameter(Mandatory = $true)][ValidateSet('rich', 'oem', 'ascii')][string]$Tier,
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][AllowEmptyString()][AllowNull()][string[]]$Lines,
+        [Parameter(Mandatory = $true)][int]$Width
+    )
+    # PURE. Frames a live region (lib/liveregion.ps1) the way the mascot's own head is framed -- deliberately the
+    # same six characters, so the footer reads as part of Loki rather than as a second style bolted on.
+    #
+    # The corners are SQUARE, and that is a measurement rather than taste: the rounded corners this would otherwise
+    # use (U+256D..U+2570) do not exist in CP850, which is what a German Windows console runs by default. They are
+    # what issue #121 was found through. U+250C/2510/2514/2518 and U+2500/2502 are present in both CP850 and CP437.
+    $content = @()
+    if ($null -ne $Lines) { $content = @($Lines) }
+
+    # Too narrow to frame: hand the lines back unboxed rather than draw rubble, on the same principle that collapses
+    # the banner below 34 columns. Four characters go to the frame and two more to the padding, so anything under
+    # about a dozen columns would be all border and no content.
+    if ($Width -lt 12) { return $content }
+
+    $tl = '+'; $tr = '+'; $bl = '+'; $br = '+'; $h = '-'; $v = '|'
+    if ($Tier -ne 'ascii') {
+        $tl = [string][char]0x250C; $tr = [string][char]0x2510
+        $bl = [string][char]0x2514; $br = [string][char]0x2518
+        $h = [string][char]0x2500; $v = [string][char]0x2502
+    }
+
+    $inner = $Width - 4    # the two frame characters plus one space of padding on each side
+    $rule = $h * ($Width - 2)
+    $out = New-Object System.Collections.Generic.List[string]
+    $out.Add($tl + $rule + $tr)
+    foreach ($line in $content) {
+        $text = [string]$line
+        if ($null -eq $text) { $text = '' }
+        if ($text.Length -gt $inner) { $text = $text.Substring(0, $inner) }
+        $out.Add($v + ' ' + $text.PadRight($inner) + ' ' + $v)
+    }
+    $out.Add($bl + $rule + $br)
+    return $out.ToArray()
+}
+
 # The serpent. Frames are equal width so the line never jitters, and the coil advances one column per frame so it
 # reads as crawling rather than blinking.
 function Get-LokiSpinnerFrameSet {
@@ -71,11 +113,19 @@ function Get-LokiSpinnerFrameSet {
     if ($Tier -eq 'ascii') {
         return , @('~-------', '-~------', '--~-----', '---~----', '----~---', '-----~--', '------~-', '-------~')
     }
-    $h = [char]0x2500; $tr = [char]0x2510; $bl = [char]0x2514
+    # The head is the same filled square as the mascot's eyes, travelling along a rule.
+    #
+    # It used to be a coil built from the box-drawing corners, and on an open line that read well. It stopped
+    # reading well the moment the footer gained a frame (issue #130, slice 2a): a coil made of the SAME six
+    # characters as the border, printed immediately after a border, looks like a broken piece of border rather
+    # than like a serpent. The square shares nothing with the frame, so the head stays a head -- and it is a
+    # character the mascot already owns, so this is one identity rather than two.
+    $h = [string][char]0x2500
+    $head = [string][char]0x25A0
+    $track = 8
     $out = New-Object System.Collections.Generic.List[string]
-    for ($i = 0; $i -lt 6; $i++) {
-        $line = ([string]$h * $i) + $tr + $bl + ([string]$h * (6 - $i))
-        $out.Add($line)
+    for ($i = 0; $i -lt $track; $i++) {
+        $out.Add(($h * $i) + $head + ($h * ($track - 1 - $i)))
     }
     return , @($out.ToArray())
 }
