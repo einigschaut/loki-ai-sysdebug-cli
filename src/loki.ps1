@@ -41,6 +41,7 @@ if (-not [string]::IsNullOrEmpty($env:LOKI_PLAIN)) { $flags.Plain = $true }
 
 Initialize-LokiUi -NoColor:$flags.NoColor
 Initialize-LokiRegion
+Initialize-LokiScreen
 $version = Get-LokiVersion -AppRoot $AppRoot
 $exit = Get-LokiExitCode 'Ok'
 
@@ -102,6 +103,12 @@ finally {
     # must be closed on EVERY exit path -- including the one through the catch above. It is a no-op
     # when nothing is open, which is the overwhelmingly common case.
     Close-LokiRegion
+
+    # The owned screen (ADR-0036) has a harder version of the same obligation: leaving the alternate
+    # screen active would hand the operator's shell back a window that is not theirs, with the cursor
+    # hidden. Also a no-op when nothing is open, and it sits here BEFORE any command opens a screen so
+    # that the first one cannot forget.
+    Close-LokiScreen
 }
 
 exit $exit

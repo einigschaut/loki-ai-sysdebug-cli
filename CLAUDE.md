@@ -109,6 +109,11 @@ commands) · **security-core tests** (property/table-tested, §6) · **registry 
 (`commands/` == registry == README table) · **i18n parity** (every locale complete, §10). The
 footprint & security suites are release blockers.
 
+> **Run `build/Invoke-Checks.ps1` from PowerShell, never from a POSIX shell.** Under Git Bash / MSYS,
+> `/usr/bin/whoami` shadows `C:\WINDOWS\system32\whoami.exe`, and `tests/posture.Tests.ps1` goes red with
+> `extra operand '/groups'` — a **false** failure that has nothing to do with the change under test. Measured
+> 2026-08-26: same tree, 1 failed from Git Bash, 1623 passed from PowerShell.
+
 ## 8 — Process / Definition of Done
 - **Small, focused PRs** — one command/feature per PR. No drifting catch-all commit.
 - **Model routing:** Sonnet builds (default), Haiku for mechanical work, **Opus** for security
