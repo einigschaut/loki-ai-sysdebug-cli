@@ -1,6 +1,6 @@
 # ADR-0038: The input line, and when a pasted Enter is allowed to submit
 
-Status: Accepted (2026-08-27)
+Status: Accepted (2026-08-27) — amended 2026-08-31, see **Correction** at the end
 
 Slice 3a of the UI rebuild in #133. Splits the line editor out of the session loop before the loop exists, and
 settles the one rule that slice 2's measurements were taken for.
@@ -38,7 +38,7 @@ turns a third red.
 **A pasted line break is kept in the buffer, not discarded.** The operator gets back exactly what they pasted. A
 single-line box cannot show a newline, so `Format-LokiLineView` renders it as one visible mark — which is what lets
 them see it and delete it. The mark is a **parameter**, because this file draws nothing and the codebase has three
-glyph tiers; its default is U+00B6, which exists in both code pages measured on the target (CP850 0xF4, CP437 0x14).
+glyph tiers. Its default was U+00B6; that was wrong, and the **Correction** below replaces it.
 
 **The editor names intents, it never acts on them.** `submit`, `interrupt`, `history-prev`, `history-next`,
 `complete`. History and completion need lists this file has no business owning, and an editor that could end a
@@ -77,10 +77,29 @@ which makes the exit code depend on which command the operator happened to run l
 departure, the refusal code if it could never start, **1** if it broke. The individual commands' codes appear in
 the transcript, where a human reads them.
 
-**The status line carries capability and steering, not the environment.** The proposal was machine state plus the
+**The status line carries capability and steering, not the environment.** *(Implemented in ADR-0039.)* The proposal was machine state plus the
 stick path. The reference's always-visible row instead carries the current mode and the keys that change it
 (`auto mode on (shift+tab to cycle) · esc to interrupt · ← for agents`) — nothing about the environment. That is
 the right way round: what never changes belongs in a header drawn once, not in a row redrawn 1836 times. The stick
 path never changes and eats width. What does belong there for Loki is **which engine is answering right now**,
 because that genuinely changes mid-session — free some RAM and the offline agent appears, which is the reason #133
 recomputes state every round in the first place.
+
+## Correction (2026-08-31): the break mark was the wrong character, for the wrong kind of reason
+
+This ADR claimed U+00B6, the pilcrow, "exists in both code pages measured on the target (CP850 0xF4, CP437 0x14)".
+CP437 does carry a pilcrow *glyph* at 0x14 — the claim came from a code-page chart — but .NET maps 0x14 to U+0014, the
+control character, so the round trip comes back changed and the console shows something else. Measured with
+`Test-LokiEncodingSupport` while building ADR-0039:
+
+| | CP850 | CP437 | CP1252 | UTF-8 |
+| --- | --- | --- | --- | --- |
+| U+00B6 pilcrow | ok | **fails** | ok | ok |
+| U+00AC not sign | ok | ok | ok | ok |
+
+The default in `Format-LokiLineView` is now **U+00AC**, and the live callers take theirs from `Get-LokiSessionChrome`,
+whose test round-trips every mark through both code pages — which is what caught this.
+
+The general lesson is the part worth keeping: **a glyph in a code-page chart is not the same claim as a character an
+encoder will produce.** Only a round trip separates them, and `Test-LokiEncodingSupport` was written for exactly that
+in #121 and then not used here.

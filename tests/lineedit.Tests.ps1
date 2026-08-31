@@ -280,9 +280,14 @@ Describe 'Format-LokiLineView' {
     }
 
     It 'takes the mark from the caller, because it draws nothing itself' {
-        # The codebase has three glyph tiers and this file must not pick one. Default is U+00B6,
-        # which exists in both code pages measured on the target.
-        (Format-LokiLineView -Buffer "a`nb" -Cursor 0 -Width 10).Text | Should -Be ('a' + [string][char]0x00B6 + 'b')
+        # The codebase has three glyph tiers and this file must not pick one.
+        #
+        # The default WAS U+00B6, the pilcrow, on the stated grounds that CP437 carries it at 0x14.
+        # That was wrong, and it was corrected on 2026-08-31 by round-tripping the character rather
+        # than reading a code-page chart: .NET maps CP437 0x14 to U+0014, the control character. The
+        # live callers get theirs from Get-LokiSessionChrome, whose own test round-trips every mark
+        # through CP850 and CP437 -- which is what caught this.
+        (Format-LokiLineView -Buffer "a`nb" -Cursor 0 -Width 10).Text | Should -Be ('a' + [string][char]0x00AC + 'b')
         (Format-LokiLineView -Buffer "a`nb" -Cursor 0 -Width 10 -BreakMark '/').Text | Should -Be 'a/b'
     }
 

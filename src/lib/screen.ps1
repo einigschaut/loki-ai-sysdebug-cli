@@ -45,6 +45,8 @@
 #   Get-LokiScreenRow -Row -Width -> [string] or $null
 #   Open-LokiScreen [-Plain] -> [bool]   $false is a NORMAL answer
 #   Write-LokiScreenFrame -Model         one frame, one console write
+#   Resize-LokiScreen -> [bool]          re-measure and full-repaint after the window changed
+#   Hide-LokiScreenCaret / Show-LokiScreenCaret -Row -Col   the fence the reference puts round a frame
 #   Close-LokiScreen                     leaves the alternate screen, always
 #   Test-LokiScreenPaint -Model -> [int] rows where the console disagrees with the model
 #   Test-LokiScreenOpen / Get-LokiScreenRefusal / Get-LokiScreenSize / Initialize-LokiScreen
@@ -134,6 +136,21 @@ function Initialize-LokiScreenModel {
     # PURE. Height rows of exactly Width spaces. Note for callers: this returns Object[], because a
     # `return` unrolls the array. That is fine everywhere in this file -- see the type-constraint
     # rule at the top -- but it is why Write-LokiScreenCell must not constrain its parameter.
+    #
+    # DO NOT "FIX" THE RETURN TO `, $rows.ToArray()`. It was tried on 2026-08-31 and reverted, because
+    # the unrolling is load-bearing in two ways at once:
+    #
+    #   1. The unroll-and-recollect is what makes this Object[] rather than the String[] that
+    #      List[string].ToArray() actually produces. Handing back String[] makes binding to a
+    #      [string[]] parameter a no-op cast instead of a copy -- array covariance -- so the test
+    #      that reproduces this file's central trap stops reproducing anything and goes green while
+    #      guarding nothing. Exactly the wrong-against-wrong failure the trap is about.
+    #   2. `return , @()` on the degenerate path emits the empty array as ONE object instead of
+    #      emitting nothing, so a caller's @(...) gets Count 1 for a screen with no rows.
+    #
+    # The real consequence -- a one-row model comes back as a bare string, which Write-LokiScreenCell
+    # and Test-LokiScreenModelShape both correctly refuse -- belongs to the CALLER, and the caller
+    # fixes it with @(...) at the point of use. Format-LokiSessionFrame does exactly that.
     if ($Width -lt 1 -or $Height -lt 1) { return @() }
     $rows = New-Object System.Collections.Generic.List[string]
     $blank = ' ' * $Width
@@ -501,4 +518,79 @@ function Close-LokiScreen {
     # Cursor back, alternate screen off, attributes reset. In that order: showing the cursor after
     # leaving would show it in the restored screen at a position this file never chose.
     [void](Write-LokiScreenRaw -Text ($script:LokiEsc + '[?25h' + $script:LokiEsc + '[?1049l' + $script:LokiEsc + '[m'))
+}
+
+function Resize-LokiScreen {
+    # The window changed size. NOTHING ANNOUNCES THAT -- measured for ADR-0037: dragging the window
+    # from 209x51 to 75x30 while a key read was pending, ReadKey returned normally and the new size
+    # was visible only AFTER it returned. So the session asks after every key, and this is what it
+    # calls. $true means the screen now matches the console; $false means nothing was open, or the
+    # console could not be read, in which case the caller keeps the frame it has rather than painting
+    # into a geometry nobody measured.
+    #
+    # It does NOT leave and re-enter the alternate screen. Close-LokiScreen followed by
+    # Open-LokiScreen would work and is shorter, but ESC[?1049l restores the operator's shell for a
+    # frame and then hides it again -- which reads as a flash of somebody else's window in the middle
+    # of a session, and would re-run the capability gate and the read-back self-check on every drag.
+    #
+    # It DOES send a second ESC[2J, and the header of this file says the reference sends exactly one.
+    # That is not a contradiction: the reference's window was never resized during the 5.3 minutes
+    # captured, so the capture says nothing about this case. A resize invalidates every row -- a
+    # narrower window reflows what the terminal already holds -- so the honest paint is a clear plus
+    # a full paint, not a diff against rows whose geometry no longer exists.
+    if ($null -eq $script:LokiScreenState) { return $false }
+
+    $facts = Get-LokiConsoleFact
+    if ($null -eq $facts) { return $false }
+
+    $width = Get-LokiScreenCellWidth -WindowWidth $facts.WindowWidth
+    $height = [int]$facts.WindowHeight
+    if ($width -lt 1 -or $height -lt 1) { return $false }
+
+    $state = $script:LokiScreenState
+    if ($state.Width -eq $width -and $state.Height -eq $height) { return $true }
+
+    $model = Initialize-LokiScreenModel -Width $width -Height $height
+    if (-not (Write-LokiScreenRaw -Text ($script:LokiEsc + '[2J' + (Get-LokiScreenFullPaint -Model $model)))) {
+        Close-LokiScreen
+        $script:LokiScreenReason = 'write-failed'
+        return $false
+    }
+
+    $state.Width = $width
+    $state.Height = $height
+    $state.Model = [string[]]$model
+    return $true
+}
+
+function Hide-LokiScreenCaret {
+    # Half of the fence the reference puts around every frame: its 1836 frames are all bracketed
+    # ESC[?25l ... ESC[?25h. Without it the cursor is visibly parked wherever the diff happened to
+    # end -- in the middle of the transcript -- for the moment between the frame write and the caret
+    # move. At 8 frames a second that is not a theoretical flicker.
+    if ($null -eq $script:LokiScreenState) { return $false }
+    return Write-LokiScreenRaw -Text ($script:LokiEsc + '[?25l')
+}
+
+function Show-LokiScreenCaret {
+    param(
+        [Parameter(Mandatory = $true)][int]$Row,
+        [Parameter(Mandatory = $true)][int]$Col
+    )
+    # The other half, and the reason the caret is the console's OWN cursor rather than a character
+    # painted into the model: a real cursor blinks, sits at the right place for the terminal's own
+    # copy/paste, and is what a screen reader or a terminal-side IME asks for. Painting a block into
+    # the model would look similar and be none of those things.
+    #
+    # Measured in the reference: the last absolute move before each ESC[?25h is the input row --
+    # ESC[49;3H in the captured session, which is column 3, the first content column inside a
+    # one-space-padded box border. Row and column are 0-based here and 1-based on the wire.
+    #
+    # Move and show in ONE write. Two writes would show the cursor at the position the previous
+    # frame left it before moving it, which is the flicker this pair exists to remove.
+    if ($null -eq $script:LokiScreenState) { return $false }
+    if ($Row -lt 0 -or $Col -lt 0) { return $false }
+    if ($Row -ge [int]$script:LokiScreenState.Height) { return $false }
+    if ($Col -ge [int]$script:LokiScreenState.Width) { return $false }
+    return Write-LokiScreenRaw -Text ($script:LokiEsc + '[' + ($Row + 1) + ';' + ($Col + 1) + 'H' + $script:LokiEsc + '[?25h')
 }

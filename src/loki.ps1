@@ -43,6 +43,7 @@ Initialize-LokiUi -NoColor:$flags.NoColor
 Initialize-LokiRegion
 Initialize-LokiScreen
 Initialize-LokiKeyread
+Initialize-LokiSession
 $version = Get-LokiVersion -AppRoot $AppRoot
 $exit = Get-LokiExitCode 'Ok'
 
@@ -104,6 +105,12 @@ finally {
     # must be closed on EVERY exit path -- including the one through the catch above. It is a no-op
     # when nothing is open, which is the overwhelmingly common case.
     Close-LokiRegion
+
+    # A session owns the screen AND the keyboard, so closing it hands both back at once. The two
+    # calls below are NOT redundant with this one: the screen and the keyboard are separately
+    # openable on purpose -- a command may paint without ever reading a key -- so each still needs
+    # its own teardown, and each is a no-op when it was never opened.
+    Close-LokiSession
 
     # The owned screen (ADR-0036) has a harder version of the same obligation: leaving the alternate
     # screen active would hand the operator's shell back a window that is not theirs, with the cursor
