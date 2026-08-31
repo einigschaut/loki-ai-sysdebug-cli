@@ -1,15 +1,23 @@
 ﻿# commands/guide.ps1 -- `loki guide`, the guided mode. Bare `loki` routes here (see src/loki.ps1).
 # Metadata (Get-LokiCmdMeta_guide) is the single source of truth; the handler (Invoke-LokiCmd_guide) executes it.
-# ADR-0002 / ADR-0034.
+# ADR-0002 / ADR-0034 / ADR-0039 / ADR-0040.
 #
 # THIS FILE ONLY DRAWS AND ASKS. Every decision -- what is possible on this machine, why not, what would fix it,
-# what a choice maps to -- lives in lib/guide.ps1 as pure functions, because a menu whose logic is tangled up with
-# Write-Host is a menu nobody can test (CLAUDE.md section 2 and 6).
+# what a choice maps to, what the menu says -- lives in lib/guide.ps1 as pure functions, because a menu whose logic
+# is tangled up with Write-Host is a menu nobody can test (CLAUDE.md section 2 and 6).
 #
-# SECURITY NOTE, because "a mode that runs other commands" deserves one: this command grants nothing. It builds the
-# same context hashtable the dispatcher builds and calls the same registered handler, so env-isolate, the allow-list
-# gate and the footprint guard apply exactly as they do when the operator types the command themselves. The guide is
-# a signpost, never a side door.
+# TWO PATHS, ONE MENU. The session (ADR-0039/0040) is the real guided mode: a full-screen loop that stays open,
+# recomputes what this machine can do after every command, and does not make the operator type `loki` again for
+# every action -- which was the complaint that opened #133. The one-shot menu below it is the FALLBACK, and it is
+# not a lesser copy: it is the exact code that shipped before, unchanged, and it runs whenever the session refuses
+# -- under redirection, in CI, on a console without VT, on a tiny window, and whenever the operator passed --plain.
+# Both render the same lines from Get-LokiGuideMenuLine, so they cannot drift apart.
+#
+# SECURITY NOTE, because "a mode that runs other commands" deserves one: this command grants nothing, on either
+# path. It builds the same context hashtable the dispatcher builds and calls the same registered handler, so
+# env-isolate, the allow-list gate and the footprint guard apply exactly as they do when the operator types the
+# command themselves. The guide is a signpost, never a side door -- and the session does not weaken that, because
+# it hands the console over and calls the identical handler rather than running anything of its own.
 Set-StrictMode -Version Latest
 
 function Get-LokiCmdMeta_guide {
@@ -23,6 +31,177 @@ function Get-LokiCmdMeta_guide {
     }
 }
 
+function Get-LokiGuideCommandTarget {
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][array]$Registry,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Name
+    )
+    # PURE. Only reachable as $null if the registry and the guide's option table disagree -- i.e. a command was
+    # renamed and lib/guide.ps1 was not updated. Split out so both paths fail the same way instead of one of them
+    # quietly offering a dead entry.
+    return @($Registry) | Where-Object { $_.Name -eq $Name } | Select-Object -First 1
+}
+
+function New-LokiGuideChildContext {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Pure construction of the context hashtable; no side effect beyond the return value.')]
+    param(
+        [Parameter(Mandatory = $true)][hashtable]$Context,
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][array]$CommandArgs
+    )
+    # The same shape src/loki.ps1 builds. Deliberately identical, and deliberately in ONE place now that two paths
+    # need it: the guide must not become a second, divergent definition of what a command receives.
+    return @{
+        AppRoot  = $Context.AppRoot
+        Version  = $Context.Version
+        Args     = @($CommandArgs)
+        Flags    = $Context.Flags
+        Registry = $Context.Registry
+    }
+}
+
+function Invoke-LokiGuideSession {
+    param(
+        [Parameter(Mandatory = $true)][hashtable]$Context,
+        [Parameter(Mandatory = $true)][hashtable]$Config
+    )
+    # The loop #133 asked for. Assumes an OPEN session; the caller owns opening and closing it.
+    #
+    # THE STATE IS RECOMPUTED AFTER EVERY COMMAND, and that is the feature rather than an optimisation. In the
+    # session log that opened #133 the operator ran `collect` and then chose "analyse a dump" -- against a menu
+    # computed before the dump existed. Here the menu already knows, and freeing memory makes the offline agent
+    # appear without a restart.
+    #
+    # It is NOT recomputed per keystroke: Get-LokiGuideState reads the disk and opens a TCP probe, which is
+    # seconds. "Every round" in the issue means every round of the operator's attention, not of the keyboard's.
+    $state = New-LokiSessionState
+
+    # The identity, drawn once. In a diff-painted screen "once" is automatic -- these rows never change, so they
+    # are never repainted -- and they scroll away like the reference's own header as the transcript grows.
+    #
+    # The art needs the tier AND the width: it collapses to a single line below 34 columns rather than wrapping
+    # into rubble, and it uses only characters proven present in CP850 and CP437 (issue #121). The width comes from
+    # the screen, which is the only thing that knows it -- guessing would put the wide form on a narrow console.
+    $screen = Get-LokiScreenSize
+    foreach ($line in @(Get-LokiBrandArt -Tier $state.Tier -Width $screen.Width)) {
+        Add-LokiSessionEntry -State $state -Text $line
+    }
+    Add-LokiSessionEntry -State $state -Text ''
+    Add-LokiSessionEntry -State $state -Text (Get-LokiText 'guide.title' -ArgumentList @($Context.Version))
+    Add-LokiSessionEntry -State $state -Text ''
+    Add-LokiSessionEntry -State $state -Text (Get-LokiText 'guide.intro')
+
+    $options = @()
+    $refresh = $true
+    $exit = Get-LokiExitCode 'Ok'
+
+    while ($true) {
+        if ($refresh) {
+            # No spinner here, unlike the one-shot path. The spinner exists because the one-shot menu makes the
+            # operator wait at a blank console with nothing to read; in the session the previous frame stays on
+            # screen the whole time, which is a better answer to "is it doing something" than an animation.
+            $guideState = Get-LokiGuideState -AppRoot $Context.AppRoot -Config $Config
+            # ASSIGN FIRST, then wrap: Get-LokiGuideMenu ends in `return , @(...)`, so @(FUNC) would be 1 element.
+            $options = Get-LokiGuideMenu -State $guideState
+            $options = @($options)
+            $state.Engine = Get-LokiText (Get-LokiGuideEngineLabel -State $guideState)
+
+            Add-LokiSessionEntry -State $state -Text ''
+            foreach ($line in @(Get-LokiGuideMenuLine -Options $options)) {
+                Add-LokiSessionEntry -State $state -Text ([string]$line.Text)
+            }
+            Add-LokiSessionEntry -State $state -Text ''
+            Add-LokiSessionEntry -State $state -Text (Get-LokiText 'guide.session.prompt')
+            $refresh = $false
+        }
+
+        $round = Invoke-LokiSessionRound -State $state
+        if ([string]$round.Action -eq 'closed') {
+            # The console went away underneath. Not an error and not a clean departure either -- say nothing and
+            # leave, because there is nowhere left to say it.
+            break
+        }
+        if ([string]$round.Action -eq 'exit') { break }
+        if ([string]$round.Action -eq 'interrupt') {
+            # Escape with nothing running. The reference keeps the session and so does this.
+            continue
+        }
+        if ([string]$round.Action -ne 'submit') { continue }
+
+        $choice = Resolve-LokiGuideChoice -Options $options -Choice ([string]$round.Text)
+        if ([string]$choice.Kind -eq 'quit') { break }
+        if ([string]$choice.Kind -eq 'invalid') {
+            $state.Notice = Get-LokiText ([string]$choice.ReasonKey)
+            continue
+        }
+        if ([string]$choice.Kind -eq 'unavailable') {
+            # Refused, and the refusal repeats the reason AND the remedy into the transcript rather than the
+            # one-line notice -- choosing an unavailable option is itself a way of asking "why not?", and the
+            # answer should still be on screen after the next keystroke.
+            Add-LokiSessionEntry -State $state -Text (Get-LokiText ([string]$choice.ReasonKey))
+            Add-LokiSessionEntry -State $state -Text (Get-LokiText ([string]$choice.Option.RemedyKey))
+            continue
+        }
+
+        $option = $choice.Option
+        $target = Get-LokiGuideCommandTarget -Registry @($Context.Registry) -Name ([string]$option.Target)
+        if ($null -eq $target) {
+            Add-LokiSessionEntry -State $state -Text (Get-LokiText 'guide.error.noSuchCommand' -ArgumentList @([string]$option.Target))
+            $exit = Get-LokiExitCode 'GeneralError'
+            continue
+        }
+
+        # THE SCREEN IS HANDED OVER FOR THE COMMAND'S DURATION, and this is the decision worth reading (ADR-0040).
+        # Loki's commands are whole programs with their own output: spinners, colour, progress, a password prompt
+        # in `auth login`, and in `chat` and `offline --agent` an entire interactive child process. Capturing all
+        # of that into a diff-painted model would mean rebuilding every one of those interfaces, and capturing a
+        # native child's console output reliably is a job on its own.
+        #
+        # So the session closes, the command runs in the operator's real console exactly as if they had typed it,
+        # and the session reopens. Three things fall out of that, all of them wanted:
+        #   - what the command did stays in the REAL scrollback, which is the "nothing survives" complaint in #133
+        #   - there is never a second writer while the screen is open, which retires open decision 3 of #133
+        #   - Ctrl+C belongs to the command while it runs, because Close-LokiKeyread gives it back first
+        # The cost is honest and visible: the screen goes away and comes back. That is the trade, not an accident.
+        Close-LokiSession
+        Write-LokiLine ''
+        $result = & $target.Handler (New-LokiGuideChildContext -Context $Context -CommandArgs @($option.Args))
+        $childExit = [int](@($result) | Select-Object -Last 1)
+
+        # The learning curve, in one line. A guided mode that never names what it did produces dependants; one that
+        # always does produces operators who eventually stop needing it. That is the goal, not a side effect.
+        Write-LokiLine ''
+        Write-LokiInfo (Get-LokiText 'guide.equivalent' -ArgumentList @([string]$option.Teach))
+
+        Add-LokiSessionEntry -State $state -Text (Get-LokiText 'guide.session.ran' -ArgumentList @([string]$option.Teach, $childExit))
+
+        if (-not (Open-LokiSession -Plain:(Get-LokiGuideFlag -Flags $Context.Flags -Name 'Plain'))) {
+            # The console changed its mind while the command had it -- resized below the floor, redirected, or the
+            # screen disabled itself after a failed self-check. Leave cleanly with what the command returned
+            # rather than looping on a session that cannot draw.
+            return $childExit
+        }
+        $refresh = $true
+    }
+
+    # A session's exit code describes the SESSION, not the commands inside it (ADR-0038). "collect, then offline,
+    # then quit" did exactly what was asked; reporting offline's 5 would make the code depend on which command the
+    # operator happened to run last. The individual codes are in the transcript, where a human reads them.
+    return $exit
+}
+
+function Get-LokiGuideFlag {
+    param(
+        [Parameter(Mandatory = $true)][AllowNull()]$Flags,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+    # PURE. StrictMode makes a missing hashtable key a throw, and the dispatcher is not the only thing that ever
+    # builds a context -- the guide builds one too, and so does every test. Same shape the Quiet check below used
+    # inline before there were two flags to read.
+    if (-not ($Flags -is [hashtable])) { return $false }
+    if (-not $Flags.ContainsKey($Name)) { return $false }
+    return [bool]$Flags[$Name]
+}
+
 function Invoke-LokiCmd_guide {
     param($Context)
 
@@ -30,8 +209,17 @@ function Invoke-LokiCmd_guide {
     $configPath = Join-Path $Context.AppRoot 'loki.config.json'
     if (Test-Path -LiteralPath $configPath) { $config = Read-LokiConfig -Path $configPath }
 
-    $quiet = ($Context.Flags -is [hashtable]) -and $Context.Flags.ContainsKey('Quiet') -and [bool]$Context.Flags.Quiet
-    if (-not $quiet) {
+    # The session first. Open-LokiSession returning $false is a NORMAL answer and the one CI always gets, so the
+    # fallback below is not a rarely-exercised branch -- it is what the whole test suite runs against.
+    if (Open-LokiSession -Plain:(Get-LokiGuideFlag -Flags $Context.Flags -Name 'Plain')) {
+        try { return (Invoke-LokiGuideSession -Context $Context -Config $config) }
+        finally { Close-LokiSession }
+    }
+
+    # ---------------------------------------------------------------------------------------------------------
+    # FALLBACK: the one-shot menu, unchanged from before the session existed.
+    # ---------------------------------------------------------------------------------------------------------
+    if (-not (Get-LokiGuideFlag -Flags $Context.Flags -Name 'Quiet')) {
         Write-LokiBrand
         Write-LokiLine ''
     }
@@ -59,17 +247,13 @@ function Invoke-LokiCmd_guide {
     Write-LokiLine (Get-LokiText 'guide.intro')
     Write-LokiLine ''
 
-    foreach ($o in $options) {
-        $label = Get-LokiText $o.LabelKey
-        if ($o.Available) {
-            Write-LokiColor -Text ("  {0}) {1}" -f $o.Number, $label) -Color Green
+    # Same lines as the session draws, coloured by role. One source of truth for the text (CLAUDE.md section 2).
+    foreach ($line in @(Get-LokiGuideMenuLine -Options $options)) {
+        if ([string]$line.Role -eq 'available') {
+            Write-LokiColor -Text ([string]$line.Text) -Color Green
         }
         else {
-            # Shown, numbered and greyed -- never hidden. Hiding it would answer "can I do this here?" with silence,
-            # and the reason below is the single most useful line on the screen for someone new to the tool.
-            Write-LokiColor -Text ("  {0}) {1}" -f $o.Number, $label) -Color DarkGray
-            Write-LokiColor -Text ("       {0}" -f (Get-LokiText $o.ReasonKey)) -Color DarkGray
-            Write-LokiColor -Text ("       {0}" -f (Get-LokiText $o.RemedyKey)) -Color DarkGray
+            Write-LokiColor -Text ([string]$line.Text) -Color DarkGray
         }
     }
     Write-LokiLine ''
@@ -107,7 +291,7 @@ function Invoke-LokiCmd_guide {
     }
 
     $option = $choice.Option
-    $target = @($Context.Registry) | Where-Object { $_.Name -eq [string]$option.Target } | Select-Object -First 1
+    $target = Get-LokiGuideCommandTarget -Registry @($Context.Registry) -Name ([string]$option.Target)
     if ($null -eq $target) {
         # Only reachable if the registry and the guide's option table disagree -- i.e. a command was renamed and
         # this file was not updated. Fail loudly rather than silently offering a dead entry.
@@ -116,16 +300,7 @@ function Invoke-LokiCmd_guide {
     }
 
     Write-LokiLine ''
-    # The same shape src/loki.ps1 builds. Deliberately identical: the guide must not become a second, divergent
-    # definition of what a command receives.
-    $childContext = @{
-        AppRoot  = $Context.AppRoot
-        Version  = $Context.Version
-        Args     = @($option.Args)
-        Flags    = $Context.Flags
-        Registry = $Context.Registry
-    }
-    $result = & $target.Handler $childContext
+    $result = & $target.Handler (New-LokiGuideChildContext -Context $Context -CommandArgs @($option.Args))
     $exit = [int](@($result) | Select-Object -Last 1)
 
     # The learning curve, in one line. A guided mode that never names what it did produces dependants; one that
