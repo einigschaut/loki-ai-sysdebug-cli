@@ -297,4 +297,10 @@
     'session.notice.multiline'  = 'Ein Befehl pro Zeile. Die Zeilenumbrüche (angezeigt als {0}) entfernen und erneut Enter drücken.'
     'session.notice.completeUnavailable' = 'Tab-Vervollständigung gibt es noch nicht.'
     'session.window.tooSmall'   = 'Fenster zu klein. Mindestens {0} x {1} nötig.'
+
+    'guide.session.prompt'      = 'Zahl eingeben und Enter drücken. q beendet.'
+    'guide.session.ran'         = 'Ausgeführt: {0}  (Rückgabe {1})'
+    'guide.engine.online'       = 'online'
+    'guide.engine.offline'      = 'offline'
+    'guide.engine.none'         = 'keine Engine'
 }

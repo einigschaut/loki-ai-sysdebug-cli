@@ -210,6 +210,15 @@ Describe 'the guided mode can always be rendered' {
         foreach ($m in [regex]::Matches($handlerText, "Get-LokiText\s+'([^']+)'")) { $needed.Add($m.Groups[1].Value) }
         $needed.Add('guide.reason.unknown'); $needed.Add('guide.remedy.none')
 
+        # A THIRD source, and the regex above cannot see it: the session's status row resolves whatever
+        # Get-LokiGuideEngineLabel returns, so the key is never a literal in the handler. Collected by calling it.
+        foreach ($f in @(
+                (New-LokiTestState -Auth $true -Online $true),
+                (New-LokiTestState -Auth $false -Online $true),
+                (New-LokiTestState -Auth $false -Online $false -EngineOk $false -Fitting 0))) {
+            $needed.Add((Get-LokiGuideEngineLabel -State $f))
+        }
+
         $keys = @($needed.ToArray() | Sort-Object -Unique)
         # A floor, not a headcount: it must catch a collector that silently found nothing, without becoming a
         # number that has to be edited every time a key is added. The three spot-checks below are the real
@@ -226,6 +235,334 @@ Describe 'the guided mode can always be rendered' {
                 $cat.ContainsKey($k) | Should -BeTrue -Because "$locale is missing '$k'"
             }
         }
+    }
+}
+
+Describe 'Get-LokiGuideMenuLine -- one source of truth for the menu text' {
+
+    It 'renders an available entry as exactly one numbered line' {
+        $opts = Get-LokiGuideMenu -State (New-LokiTestState)
+        $opts = @($opts)
+        $lines = @(Get-LokiGuideMenuLine -Options $opts)
+        $first = @($lines | Where-Object { $_.Role -eq 'available' })[0]
+        $first.Text | Should -Match '^\s+1\)\s+\S'
+    }
+
+    It 'renders an unavailable entry as THREE lines: the entry, the reason, the remedy' {
+        # Shown, numbered and muted -- never hidden. The reason and the remedy are the most useful thing on the
+        # screen for someone new to the tool, so losing either of them is a regression worth a test.
+        $blind = New-LokiTestState -EngineOk $false -Fitting 0 -AgentFitting 0 -AgentInstalled 0 -Dumps 0 -Auth $false -Online $false
+        $opts = Get-LokiGuideMenu -State $blind
+        $opts = @($opts)
+        $unavailable = @($opts | Where-Object { -not $_.Available })
+        $unavailable.Count | Should -BeGreaterThan 0
+        $lines = @(Get-LokiGuideMenuLine -Options $opts)
+        $available = @($opts | Where-Object { $_.Available })
+        $lines.Count | Should -Be ($available.Count + ($unavailable.Count * 3))
+    }
+
+    It 'keeps the numbers where Get-LokiGuideMenu put them, available or not' {
+        # Rule 1 of lib/guide.ps1: the numbers never move, so muscle memory survives a machine that can do less
+        # today than it could yesterday.
+        $blind = New-LokiTestState -EngineOk $false -Fitting 0 -AgentFitting 0 -AgentInstalled 0 -Dumps 0 -Auth $false -Online $false
+        foreach ($state in @((New-LokiTestState), $blind)) {
+            $menu = Get-LokiGuideMenu -State $state
+            $lines = @(Get-LokiGuideMenuLine -Options @($menu))
+            $numbered = @($lines | Where-Object { $_.Text -match '^\s+(\d+)\)' } | ForEach-Object { [int]([regex]::Match($_.Text, '^\s+(\d+)\)').Groups[1].Value) })
+            ($numbered -join ',') | Should -Be '1,2,3,4,5,6'
+        }
+    }
+
+    It 'emits no escape sequence, because the session paints it into a diffed model' {
+        $menu = Get-LokiGuideMenu -State (New-LokiTestState)
+        $lines = @(Get-LokiGuideMenuLine -Options @($menu))
+        foreach ($l in $lines) { ([string]$l.Text) | Should -Not -Match ([char]27) }
+    }
+
+    It 'survives an empty menu instead of throwing' {
+        @(Get-LokiGuideMenuLine -Options @()).Count | Should -Be 0
+    }
+}
+
+Describe 'Get-LokiGuideEngineLabel' {
+
+    It 'names the online engine when a credential is present and the machine is reachable' {
+        Get-LokiGuideEngineLabel -State (New-LokiTestState -Auth $true -Online $true) | Should -Be 'guide.engine.online'
+    }
+
+    It 'falls back to offline when there is no credential or no network' {
+        Get-LokiGuideEngineLabel -State (New-LokiTestState -Auth $false -Online $true) | Should -Be 'guide.engine.offline'
+        Get-LokiGuideEngineLabel -State (New-LokiTestState -Auth $true -Online $false) | Should -Be 'guide.engine.offline'
+    }
+
+    It 'says so plainly when neither is available -- which is not an error state' {
+        # A stick with no model and no credential still runs collect and doctor, which is most of what it is for.
+        $bare = New-LokiTestState -Auth $false -Online $false -EngineOk $false -Fitting 0
+        Get-LokiGuideEngineLabel -State $bare | Should -Be 'guide.engine.none'
+    }
+
+    It 'prefers online when BOTH are available, matching the order the menu lists them in' {
+        $both = New-LokiTestState -Auth $true -Online $true -EngineOk $true -Fitting 1
+        Get-LokiGuideEngineLabel -State $both | Should -Be 'guide.engine.online'
+    }
+}
+
+Describe 'Invoke-LokiGuideSession -- the loop' {
+
+    BeforeAll {
+        Initialize-LokiI18n -AppRoot (Resolve-Path "$PSScriptRoot\..\src").Path -Locale 'en' | Out-Null
+
+        # Hands back a scripted sequence of rounds, one per call, and remembers the state it was given so the
+        # test can look at the transcript the loop built.
+        function global:Set-LokiTestRound {
+            param([object[]]$Rounds)
+            $script:rounds = @($Rounds)
+            $script:roundIndex = 0
+            $script:seenState = $null
+        }
+
+        function global:New-LokiTestGuideContext {
+            param([scriptblock]$Handler = { return 0 })
+            return @{
+                AppRoot  = 'C:\stick'
+                Version  = '9.9.9'
+                Args     = @()
+                Flags    = @{ Plain = $false; Quiet = $false }
+                Registry = @(
+                    @{ Name = 'collect'; Handler = $Handler },
+                    @{ Name = 'doctor';  Handler = $Handler },
+                    @{ Name = 'offline'; Handler = $Handler },
+                    @{ Name = 'ask';     Handler = $Handler },
+                    @{ Name = 'chat';    Handler = $Handler }
+                )
+            }
+        }
+    }
+
+    BeforeEach {
+        Mock -CommandName Get-LokiGuideState -MockWith { return (New-LokiTestState) }
+        Mock -CommandName Open-LokiSession -MockWith { return $true }
+        Mock -CommandName Close-LokiSession -MockWith { }
+        Mock -CommandName Write-LokiLine -MockWith { }
+        Mock -CommandName Write-LokiInfo -MockWith { }
+        Mock -CommandName Invoke-LokiSessionRound -MockWith {
+            $script:seenState = $State
+            if ($script:roundIndex -ge $script:rounds.Count) {
+                return [pscustomobject]@{ Action = 'exit'; Text = '' }
+            }
+            $r = $script:rounds[$script:roundIndex]
+            $script:roundIndex++
+            return $r
+        }
+    }
+
+    It 'draws the identity ONCE, at the top, then the menu -- before it reads anything' {
+        # The art itself is brand.ps1's business and is tested there; what matters here is that it is asked for,
+        # placed first, and asked for only once however many rounds the session runs.
+        Mock -CommandName Get-LokiBrandArt -MockWith { return @('<identity>') }
+        Set-LokiTestRound -Rounds @(
+            ([pscustomobject]@{ Action = ''; Text = '' }),
+            ([pscustomobject]@{ Action = 'exit'; Text = '' })
+        )
+        [void](Invoke-LokiGuideSession -Context (New-LokiTestGuideContext) -Config @{})
+        $lines = @($script:seenState.Lines)
+        $lines[0] | Should -Be '<identity>'
+        Should -Invoke Get-LokiBrandArt -Times 1 -Exactly
+        $text = ($lines -join "`n")
+        $text | Should -Match '9\.9\.9'
+        $text | Should -Match '1\)'
+    }
+
+    It 'asks the screen how wide it is, rather than guessing the banner width' {
+        # Below 34 columns the art collapses to one line instead of wrapping into rubble (issue #121), so the
+        # width has to be the real one.
+        Mock -CommandName Get-LokiScreenSize -MockWith { return [pscustomobject]@{ Width = 120; Height = 30 } }
+        Mock -CommandName Get-LokiBrandArt -MockWith { return @("w=$Width t=$Tier") }
+        Set-LokiTestRound -Rounds @(([pscustomobject]@{ Action = 'exit'; Text = '' }))
+        [void](Invoke-LokiGuideSession -Context (New-LokiTestGuideContext) -Config @{})
+        @($script:seenState.Lines)[0] | Should -Match '^w=120 t='
+    }
+
+    It 'leaves with Ok on the second Ctrl+C, whatever the commands inside it returned' {
+        # ADR-0038: a session's exit code describes the SESSION. "collect, then offline, then quit" did exactly
+        # what was asked, and reporting offline's 5 would make the code depend on which command happened to be last.
+        Set-LokiTestRound -Rounds @(
+            ([pscustomobject]@{ Action = 'submit'; Text = '1' }),
+            ([pscustomobject]@{ Action = 'exit'; Text = '' })
+        )
+        $ctx = New-LokiTestGuideContext -Handler { return 5 }
+        Invoke-LokiGuideSession -Context $ctx -Config @{} | Should -Be 0
+    }
+
+    It 'leaves on q without running anything' {
+        Set-LokiTestRound -Rounds @(([pscustomobject]@{ Action = 'submit'; Text = 'q' }))
+        # A captured LIST, not a $script: counter. Inside .GetNewClosure() a $script: reference resolves to the
+        # closure own scope, not to this file -- so the counter stayed 0 whatever happened, and THREE of the four
+        # tests using it were green for that reason rather than because nothing ran. Caught 2026-08-31 by the one
+        # assertion that expected a NON-zero count. A captured reference type is mutated in place and IS visible.
+        $calls = New-Object System.Collections.Generic.List[string]
+        $ctx = New-LokiTestGuideContext -Handler { $calls.Add('ran'); return 0 }.GetNewClosure()
+        Invoke-LokiGuideSession -Context $ctx -Config @{} | Should -Be 0
+        $calls.Count | Should -Be 0
+    }
+
+    It 'hands the console over for the command and takes it back afterwards' {
+        # The decision in ADR-0040: Loki commands are whole programs with their own output, so the session closes,
+        # the command runs in the operator real console, and the session reopens.
+        Set-LokiTestRound -Rounds @(
+            ([pscustomobject]@{ Action = 'submit'; Text = '1' }),
+            ([pscustomobject]@{ Action = 'exit'; Text = '' })
+        )
+        # A captured LIST, not a $script: counter. Inside .GetNewClosure() a $script: reference resolves to the
+        # closure own scope, not to this file -- so the counter stayed 0 whatever happened, and THREE of the four
+        # tests using it were green for that reason rather than because nothing ran. Caught 2026-08-31 by the one
+        # assertion that expected a NON-zero count. A captured reference type is mutated in place and IS visible.
+        $calls = New-Object System.Collections.Generic.List[string]
+        $ctx = New-LokiTestGuideContext -Handler { $calls.Add('ran'); return 0 }.GetNewClosure()
+        [void](Invoke-LokiGuideSession -Context $ctx -Config @{})
+        $calls.Count | Should -Be 1
+        Should -Invoke Close-LokiSession -Times 1 -Exactly
+        Should -Invoke Open-LokiSession -Times 1 -Exactly
+    }
+
+    It 'recomputes what the machine can do AFTER a command, not before it' {
+        # The complaint that opened #133: the operator ran collect and then chose "analyse a dump" against a menu
+        # computed before the dump existed.
+        Set-LokiTestRound -Rounds @(
+            ([pscustomobject]@{ Action = 'submit'; Text = '1' }),
+            ([pscustomobject]@{ Action = 'exit'; Text = '' })
+        )
+        [void](Invoke-LokiGuideSession -Context (New-LokiTestGuideContext) -Config @{})
+        Should -Invoke Get-LokiGuideState -Times 2 -Exactly
+    }
+
+    It 'does NOT recompute per keystroke -- the probe opens a socket' {
+        Set-LokiTestRound -Rounds @(
+            ([pscustomobject]@{ Action = ''; Text = '' }),
+            ([pscustomobject]@{ Action = ''; Text = '' }),
+            ([pscustomobject]@{ Action = 'exit'; Text = '' })
+        )
+        [void](Invoke-LokiGuideSession -Context (New-LokiTestGuideContext) -Config @{})
+        Should -Invoke Get-LokiGuideState -Times 1 -Exactly
+    }
+
+    It 'answers a typo with a notice and runs nothing' {
+        Set-LokiTestRound -Rounds @(
+            ([pscustomobject]@{ Action = 'submit'; Text = 'zzz' }),
+            ([pscustomobject]@{ Action = 'exit'; Text = '' })
+        )
+        # A captured LIST, not a $script: counter. Inside .GetNewClosure() a $script: reference resolves to the
+        # closure own scope, not to this file -- so the counter stayed 0 whatever happened, and THREE of the four
+        # tests using it were green for that reason rather than because nothing ran. Caught 2026-08-31 by the one
+        # assertion that expected a NON-zero count. A captured reference type is mutated in place and IS visible.
+        $calls = New-Object System.Collections.Generic.List[string]
+        $ctx = New-LokiTestGuideContext -Handler { $calls.Add('ran'); return 0 }.GetNewClosure()
+        [void](Invoke-LokiGuideSession -Context $ctx -Config @{})
+        $calls.Count | Should -Be 0
+        $script:seenState.Notice | Should -Not -Be ''
+    }
+
+    It 'writes the reason AND the remedy into the transcript for an unavailable entry' {
+        # Choosing an unavailable option is itself a way of asking "why not?", so the answer must survive the next
+        # keystroke -- which a one-line notice would not.
+        Mock -CommandName Get-LokiGuideState -MockWith {
+            return (New-LokiTestState -EngineOk $false -Fitting 0 -AgentFitting 0 -AgentInstalled 0 -Dumps 0 -Auth $false -Online $false)
+        }
+        $opts = Get-LokiGuideMenu -State (New-LokiTestState -EngineOk $false -Fitting 0 -AgentFitting 0 -AgentInstalled 0 -Dumps 0 -Auth $false -Online $false)
+        $opts = @($opts)
+        $blocked = @($opts | Where-Object { -not $_.Available })[0]
+        Set-LokiTestRound -Rounds @(
+            ([pscustomobject]@{ Action = 'submit'; Text = [string]$blocked.Number }),
+            ([pscustomobject]@{ Action = 'exit'; Text = '' })
+        )
+        # A captured LIST, not a $script: counter. Inside .GetNewClosure() a $script: reference resolves to the
+        # closure own scope, not to this file -- so the counter stayed 0 whatever happened, and THREE of the four
+        # tests using it were green for that reason rather than because nothing ran. Caught 2026-08-31 by the one
+        # assertion that expected a NON-zero count. A captured reference type is mutated in place and IS visible.
+        $calls = New-Object System.Collections.Generic.List[string]
+        $ctx = New-LokiTestGuideContext -Handler { $calls.Add('ran'); return 0 }.GetNewClosure()
+        [void](Invoke-LokiGuideSession -Context $ctx -Config @{})
+        $calls.Count | Should -Be 0
+        $text = ($script:seenState.Lines -join "`n")
+        $text | Should -Match ([regex]::Escape((Get-LokiText ([string]$blocked.ReasonKey))))
+        $text | Should -Match ([regex]::Escape((Get-LokiText ([string]$blocked.RemedyKey))))
+    }
+
+    It 'keeps the session on Escape' {
+        Set-LokiTestRound -Rounds @(
+            ([pscustomobject]@{ Action = 'interrupt'; Text = '' }),
+            ([pscustomobject]@{ Action = 'exit'; Text = '' })
+        )
+        Invoke-LokiGuideSession -Context (New-LokiTestGuideContext) -Config @{} | Should -Be 0
+        $script:roundIndex | Should -Be 2
+    }
+
+    It 'stops when the console goes away underneath it' {
+        Set-LokiTestRound -Rounds @(([pscustomobject]@{ Action = 'closed'; Text = '' }))
+        Invoke-LokiGuideSession -Context (New-LokiTestGuideContext) -Config @{} | Should -Be 0
+    }
+
+    It 'returns the command exit code when the screen cannot be taken back' {
+        # The console changed its mind while the command had it -- resized below the floor, redirected, or the
+        # screen disabled itself. Leaving with what the command returned beats looping on a session that cannot draw.
+        Mock -CommandName Open-LokiSession -MockWith { return $false }
+        Set-LokiTestRound -Rounds @(
+            ([pscustomobject]@{ Action = 'submit'; Text = '1' }),
+            ([pscustomobject]@{ Action = 'exit'; Text = '' })
+        )
+        $ctx = New-LokiTestGuideContext -Handler { return 6 }
+        Invoke-LokiGuideSession -Context $ctx -Config @{} | Should -Be 6
+    }
+
+    It 'records what ran, with its exit code, in the transcript' {
+        Set-LokiTestRound -Rounds @(
+            ([pscustomobject]@{ Action = 'submit'; Text = '1' }),
+            ([pscustomobject]@{ Action = 'exit'; Text = '' })
+        )
+        $ctx = New-LokiTestGuideContext -Handler { return 3 }
+        [void](Invoke-LokiGuideSession -Context $ctx -Config @{})
+        ($script:seenState.Lines -join "`n") | Should -Match 'loki collect'
+        ($script:seenState.Lines -join "`n") | Should -Match '3'
+    }
+
+    It 'puts the engine on the session status, and nothing else about the machine' {
+        Set-LokiTestRound -Rounds @(([pscustomobject]@{ Action = 'exit'; Text = '' }))
+        [void](Invoke-LokiGuideSession -Context (New-LokiTestGuideContext) -Config @{})
+        $script:seenState.Engine | Should -Be (Get-LokiText 'guide.engine.online')
+        # Not the stick path: it never changes and would eat the width the steering keys need (ADR-0038).
+        $script:seenState.Engine | Should -Not -Match 'C:\\stick'
+    }
+}
+
+Describe 'Get-LokiGuideCommandTarget / New-LokiGuideChildContext' {
+
+    It 'finds a registered command and reports a missing one as null' {
+        $registry = @(@{ Name = 'collect'; Handler = { 0 } }, @{ Name = 'doctor'; Handler = { 0 } })
+        (Get-LokiGuideCommandTarget -Registry $registry -Name 'doctor').Name | Should -Be 'doctor'
+        Get-LokiGuideCommandTarget -Registry $registry -Name 'nope' | Should -BeNullOrEmpty
+    }
+
+    It 'builds exactly the context shape the dispatcher builds' {
+        # If these two ever diverge, the guide becomes a second definition of what a command receives -- and the
+        # one nobody types is the one that rots.
+        $ctx = @{ AppRoot = 'C:\stick'; Version = '1.2.3'; Args = @('ignored'); Flags = @{ Plain = $true }; Registry = @() }
+        $child = New-LokiGuideChildContext -Context $ctx -CommandArgs @('--analyze', 'x.json')
+        @($child.Keys | Sort-Object) -join ',' | Should -Be 'AppRoot,Args,Flags,Registry,Version'
+        $child.AppRoot | Should -Be 'C:\stick'
+        $child.Version | Should -Be '1.2.3'
+        @($child.Args) -join ',' | Should -Be '--analyze,x.json'
+        $child.Flags.Plain | Should -BeTrue
+    }
+}
+
+Describe 'Get-LokiGuideFlag' {
+    It 'reads a flag, and treats a missing key or a missing hashtable as false' {
+        # StrictMode makes a missing key a throw, and the dispatcher is not the only thing that builds a context.
+        Get-LokiGuideFlag -Flags @{ Plain = $true } -Name 'Plain' | Should -BeTrue
+        Get-LokiGuideFlag -Flags @{ Plain = $false } -Name 'Plain' | Should -BeFalse
+        Get-LokiGuideFlag -Flags @{} -Name 'Plain' | Should -BeFalse
+        Get-LokiGuideFlag -Flags $null -Name 'Plain' | Should -BeFalse
+        Get-LokiGuideFlag -Flags 'not a hashtable' -Name 'Plain' | Should -BeFalse
     }
 }
 
