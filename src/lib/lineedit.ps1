@@ -171,9 +171,14 @@ function Format-LokiLineView {
         [Parameter(Mandatory = $true)][int]$Width,
         # The mark that stands in for a line break. A PARAMETER, because this file draws nothing and
         # must not pick a glyph: the codebase has three glyph tiers and the caller knows which one is
-        # live. The default is U+00B6, which exists in BOTH code pages measured on the target (CP850
-        # at 0xF4, CP437 at 0x14); an ascii-tier caller passes something else.
-        [Parameter(Mandatory = $false)][AllowEmptyString()][string]$BreakMark = ([string][char]0x00B6)
+        # live. An ascii-tier caller passes something else.
+        #
+        # The default was U+00B6, the pilcrow, on the grounds that CP437 carries it at 0x14. That was
+        # WRONG and it was corrected on 2026-08-31 by round-tripping the character instead of reading
+        # a code-page chart: .NET maps CP437 0x14 to U+0014, the control character, so the pilcrow
+        # comes back changed. U+00AC survives CP850, CP437, CP1252 and UTF-8 -- see the measurement
+        # table in Get-LokiSessionChrome (lib/session.ps1), which is where the live callers get theirs.
+        [Parameter(Mandatory = $false)][AllowEmptyString()][string]$BreakMark = ([string][char]0x00AC)
     )
     # PURE. What the box actually shows, and where the caret goes inside it.
     #

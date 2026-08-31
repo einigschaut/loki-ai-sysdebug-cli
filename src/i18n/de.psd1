@@ -291,4 +291,10 @@
     'guide.error.notANumber'    = 'Bitte eine der angezeigten Zahlen eingeben.'
     'guide.error.outOfRange'    = 'Diese Zahl steht nicht auf der Liste.'
     'guide.error.noSuchCommand' = 'Interner Fehler: Der geführte Modus bietet "{0}" an, ein solches Command ist aber nicht registriert.'
+
+    'session.status.hint'       = 'esc bricht ab, 2x Strg+C beendet'
+    'session.status.armed'      = 'Noch einmal Strg+C beendet die Sitzung.'
+    'session.notice.multiline'  = 'Ein Befehl pro Zeile. Die Zeilenumbrüche (angezeigt als {0}) entfernen und erneut Enter drücken.'
+    'session.notice.completeUnavailable' = 'Tab-Vervollständigung gibt es noch nicht.'
+    'session.window.tooSmall'   = 'Fenster zu klein. Mindestens {0} x {1} nötig.'
 }

@@ -468,3 +468,183 @@ Describe 'Test-LokiScreenPaint' {
         Test-LokiScreenPaint -Model ([string[]]@()) | Should -Be -1
     }
 }
+
+Describe 'the one-row model, and why the fix belongs to the caller' {
+
+    It 'UNROLLS a single row to a bare string, which both guards then correctly refuse' {
+        # Discovered 2026-08-31 by the property test over window sizes in tests/session.Tests.ps1.
+        # Pinned here as behaviour rather than repaired, because repairing it at the source was tried
+        # and reverted the same day: `return , $rows.ToArray()` hands back String[] instead of
+        # Object[], which turns the [string[]] binding below into a no-op cast -- array covariance --
+        # and the trap-reproduction test two Describes up goes green while guarding nothing.
+        $m = Initialize-LokiScreenModel -Width 10 -Height 1
+        ($m -is [array]) | Should -BeFalse
+        $m | Should -BeOfType [string]
+        Test-LokiScreenModelShape -Model $m -Width 10 -Height 1 | Should -BeFalse
+    }
+
+    It 'is an array again from two rows up' {
+        foreach ($h in @(2, 8, 30)) {
+            $m = Initialize-LokiScreenModel -Width 10 -Height $h
+            ($m -is [array]) | Should -BeTrue -Because "height $h"
+            Test-LokiScreenModelShape -Model $m -Width 10 -Height $h | Should -BeTrue -Because "height $h"
+        }
+    }
+
+    It 'is fixed at the point of use: @(...) makes a one-row model paintable' {
+        # Which is what Format-LokiSessionFrame does, and why it survives a one-row geometry.
+        $m = @(Initialize-LokiScreenModel -Width 10 -Height 1)
+        Write-LokiScreenCell -Model $m -Row 0 -Col 0 -Text 'hi'
+        Test-LokiScreenModelShape -Model $m -Width 10 -Height 1 | Should -BeTrue
+        $m[0] | Should -Be 'hi        '
+    }
+}
+
+Describe 'Resize-LokiScreen' {
+
+    BeforeEach {
+        Initialize-LokiScreen
+        $script:written = New-Object System.Collections.Generic.List[string]
+        Mock -CommandName Get-LokiConsoleFact -MockWith {
+            return @{
+                HostName = 'ConsoleHost'; OutputRedirected = $false; InputRedirected = $false
+                WindowWidth = 120; WindowHeight = 30
+                BufferWidth = 120; BufferHeight = 30; CursorTop = 0
+            }
+        }
+        Mock -CommandName Test-LokiVtProcessing -MockWith { return $true }
+        Mock -CommandName Write-LokiScreenRaw -MockWith { [void]$script:written.Add($Text); return $true }
+        Mock -CommandName Get-LokiScreenRow -MockWith { return (' ' * $Width) }
+    }
+    AfterEach { Initialize-LokiScreen }
+
+    It 'does nothing when the window did not change' {
+        [void](Open-LokiScreen)
+        $before = $script:written.Count
+        Resize-LokiScreen | Should -BeTrue
+        $script:written.Count | Should -Be $before
+        (Get-LokiScreenSize).Height | Should -Be 30
+    }
+
+    It 'adopts the new geometry and repaints all of it' {
+        [void](Open-LokiScreen)
+        $script:written.Clear()
+        Mock -CommandName Get-LokiConsoleFact -MockWith {
+            return @{
+                HostName = 'ConsoleHost'; OutputRedirected = $false; InputRedirected = $false
+                WindowWidth = 75; WindowHeight = 20
+                BufferWidth = 75; BufferHeight = 20; CursorTop = 0
+            }
+        }
+        Resize-LokiScreen | Should -BeTrue
+
+        $size = Get-LokiScreenSize
+        $size.Width | Should -Be 74      # Get-LokiScreenCellWidth: one column short, on purpose
+        $size.Height | Should -Be 20
+
+        # A resize invalidates every row, so the honest paint is a clear plus a full paint -- not a
+        # diff against rows whose geometry no longer exists.
+        $paint = $script:written -join ''
+        $paint | Should -Match ((Get-LokiTestEscPattern) + '\[2J')
+        $paint | Should -Match ((Get-LokiTestEscPattern) + '\[20;1H')
+        # And it must NOT leave and re-enter -- that flashes the operator's own shell mid-session.
+        $paint | Should -Not -Match ((Get-LokiTestEscPattern) + '\[\?1049l')
+    }
+
+    It 'keeps painting correctly after a resize, against the NEW model' {
+        [void](Open-LokiScreen)
+        Mock -CommandName Get-LokiConsoleFact -MockWith {
+            return @{
+                HostName = 'ConsoleHost'; OutputRedirected = $false; InputRedirected = $false
+                WindowWidth = 41; WindowHeight = 10
+                BufferWidth = 41; BufferHeight = 10; CursorTop = 0
+            }
+        }
+        [void](Resize-LokiScreen)
+        $script:written.Clear()
+
+        # The frame that would have been dropped as 'bad-shape' if the state had not been updated.
+        $model = Initialize-LokiScreenModel -Width 40 -Height 10
+        Write-LokiScreenCell -Model $model -Row 0 -Col 0 -Text 'after'
+        Write-LokiScreenFrame -Model $model
+        ($script:written -join '') | Should -Match 'after'
+        Get-LokiScreenRefusal | Should -Not -Be 'bad-shape'
+    }
+
+    It 'refuses when nothing is open, and when the console cannot be read' {
+        Resize-LokiScreen | Should -BeFalse
+        [void](Open-LokiScreen)
+        Mock -CommandName Get-LokiConsoleFact -MockWith { return $null }
+        Resize-LokiScreen | Should -BeFalse
+        Test-LokiScreenOpen | Should -BeTrue -Because 'an unreadable console is not a reason to drop the session'
+    }
+
+    It 'gives up the screen when the repaint cannot be written' {
+        [void](Open-LokiScreen)
+        Mock -CommandName Get-LokiConsoleFact -MockWith {
+            return @{
+                HostName = 'ConsoleHost'; OutputRedirected = $false; InputRedirected = $false
+                WindowWidth = 60; WindowHeight = 15
+                BufferWidth = 60; BufferHeight = 15; CursorTop = 0
+            }
+        }
+        Mock -CommandName Write-LokiScreenRaw -MockWith { return $false }
+        Resize-LokiScreen | Should -BeFalse
+        Test-LokiScreenOpen | Should -BeFalse
+        Get-LokiScreenRefusal | Should -Be 'write-failed'
+    }
+}
+
+Describe 'Hide-LokiScreenCaret / Show-LokiScreenCaret' {
+
+    BeforeEach {
+        Initialize-LokiScreen
+        $script:written = New-Object System.Collections.Generic.List[string]
+        Mock -CommandName Get-LokiConsoleFact -MockWith {
+            return @{
+                HostName = 'ConsoleHost'; OutputRedirected = $false; InputRedirected = $false
+                WindowWidth = 120; WindowHeight = 30
+                BufferWidth = 120; BufferHeight = 30; CursorTop = 0
+            }
+        }
+        Mock -CommandName Test-LokiVtProcessing -MockWith { return $true }
+        Mock -CommandName Write-LokiScreenRaw -MockWith { [void]$script:written.Add($Text); return $true }
+        Mock -CommandName Get-LokiScreenRow -MockWith { return (' ' * $Width) }
+    }
+    AfterEach { Initialize-LokiScreen }
+
+    It 'moves and shows in ONE write, 1-based on the wire' {
+        # Two writes would show the cursor at the position the previous frame left it before moving
+        # it, which is the flicker this pair exists to remove. The reference's own last move before
+        # each ESC[?25h was ESC[49;3H.
+        [void](Open-LokiScreen)
+        $script:written.Clear()
+        # Row 27 of the mocked 120x30 console. In the reference's 51-row window the same call was
+        # ESC[49;3H; what is pinned here is the arithmetic, not that one geometry.
+        Show-LokiScreenCaret -Row 27 -Col 2 | Should -BeTrue
+        $script:written.Count | Should -Be 1
+        $script:written[0] | Should -Be ((Get-LokiTestEsc) + '[28;3H' + (Get-LokiTestEsc) + '[?25h')
+    }
+
+    It 'hides with the same mode the alternate screen was opened with' {
+        [void](Open-LokiScreen)
+        $script:written.Clear()
+        Hide-LokiScreenCaret | Should -BeTrue
+        $script:written[0] | Should -Be ((Get-LokiTestEsc) + '[?25l')
+    }
+
+    It 'refuses a caret outside the screen instead of addressing a row that is not there' {
+        [void](Open-LokiScreen)
+        Show-LokiScreenCaret -Row 30 -Col 0 | Should -BeFalse
+        Show-LokiScreenCaret -Row 0 -Col 119 | Should -BeFalse
+        Show-LokiScreenCaret -Row -1 -Col 0 | Should -BeFalse
+        Show-LokiScreenCaret -Row 0 -Col -1 | Should -BeFalse
+        Show-LokiScreenCaret -Row 29 -Col 118 | Should -BeTrue
+    }
+
+    It 'writes nothing at all when no screen is open' {
+        Hide-LokiScreenCaret | Should -BeFalse
+        Show-LokiScreenCaret -Row 0 -Col 0 | Should -BeFalse
+        $script:written.Count | Should -Be 0
+    }
+}

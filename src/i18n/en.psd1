@@ -293,4 +293,10 @@
     'guide.error.notANumber'    = 'Please enter one of the numbers shown.'
     'guide.error.outOfRange'    = 'That number is not on the list.'
     'guide.error.noSuchCommand' = 'Internal error: the guide offers "{0}", but no such command is registered.'
+
+    'session.status.hint'       = 'esc to interrupt, ctrl+c twice to leave'
+    'session.status.armed'      = 'Press Ctrl+C again to leave the session.'
+    'session.notice.multiline'  = 'One command per line. Remove the line breaks (shown as {0}) and press Enter again.'
+    'session.notice.completeUnavailable' = 'Tab completion is not available yet.'
+    'session.window.tooSmall'   = 'Window too small. Make it at least {0} x {1}.'
 }
