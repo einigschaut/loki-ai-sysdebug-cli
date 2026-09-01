@@ -219,9 +219,19 @@ function Get-LokiGuideMenu {
         # whole learning-curve mechanism -- a guided mode that never names what it did produces dependants, not
         # operators. For `analyze` the newest dump is named explicitly, because "the path" is precisely the part a
         # newcomer cannot guess.
+        # INTERACTIVE means "this one needs the console itself, and cannot be captured into a transcript".
+        # Measured, not guessed (ADR-0040), and it is exactly two of the six:
+        #   chat   -> lib/claude.ps1 launches the Claude CLI with NO stream redirected on purpose, so the child
+        #             inherits stdin/stdout/stderr and is a live TUI the operator drives.
+        #   agent  -> lib/offline-agent.ps1 asks Read-Host before every mutating command. A confirm prompt captured
+        #             into a transcript is a prompt nobody can answer.
+        # Everything else writes only through the ui.ps1 seam or through an already-redirected child, so a session
+        # captures it whole. Getting this list wrong in the SAFE direction costs a screen flash; getting it wrong
+        # the other way hangs the session on a prompt the operator cannot see.
         $target = $id
         $cmdArgs = @()
         $teach = "loki $id"
+        $interactive = ($id -eq 'chat' -or $id -eq 'agent')
         if ($id -eq 'analyze') {
             $target = 'offline'
             $teach = 'loki offline --analyze <dump>'
@@ -244,9 +254,10 @@ function Get-LokiGuideMenu {
                 Available = [bool]$verdict.Ok
                 ReasonKey = $(if ($verdict.ContainsKey('ReasonKey')) { [string]$verdict.ReasonKey } else { '' })
                 RemedyKey = $(if ($verdict.ContainsKey('RemedyKey')) { [string]$verdict.RemedyKey } else { '' })
-                Target    = $target
-                Args      = $cmdArgs
-                Teach     = $teach
+                Target      = $target
+                Args        = $cmdArgs
+                Teach       = $teach
+                Interactive = $interactive
             })
     }
     return , @($result.ToArray())

@@ -1,4 +1,4 @@
-﻿# commands/guide.ps1 -- `loki guide`, the guided mode. Bare `loki` routes here (see src/loki.ps1).
+# commands/guide.ps1 -- `loki guide`, the guided mode. Bare `loki` routes here (see src/loki.ps1).
 # Metadata (Get-LokiCmdMeta_guide) is the single source of truth; the handler (Invoke-LokiCmd_guide) executes it.
 # ADR-0002 / ADR-0034 / ADR-0039 / ADR-0040.
 #
@@ -13,11 +13,20 @@
 # -- under redirection, in CI, on a console without VT, on a tiny window, and whenever the operator passed --plain.
 # Both render the same lines from Get-LokiGuideMenuLine, so they cannot drift apart.
 #
+# A COMMAND RUNS INSIDE THE SESSION AND ITS OUTPUT IS CAPTURED. The screen is not handed over for it. That is what
+# the reference does and what makes this a session rather than a launcher, and it is possible because Loki's own
+# output has exactly two exits -- Write-LokiConsole and Write-LokiToStdErr, both intercepted by lib/ui.ps1's sink --
+# and because every child process these entries spawn already redirects its streams.
+#
+# The exception is DECLARED and it is two of six: `chat` inherits the console on purpose (a live Claude TUI) and
+# `agent` asks Read-Host before every mutating command. lib/guide.ps1 marks them Interactive, and only they get the
+# console for their duration.
+#
 # SECURITY NOTE, because "a mode that runs other commands" deserves one: this command grants nothing, on either
 # path. It builds the same context hashtable the dispatcher builds and calls the same registered handler, so
 # env-isolate, the allow-list gate and the footprint guard apply exactly as they do when the operator types the
-# command themselves. The guide is a signpost, never a side door -- and the session does not weaken that, because
-# it hands the console over and calls the identical handler rather than running anything of its own.
+# command themselves. The guide is a signpost, never a side door. Capturing output does not change that: the sink
+# reads what a command PRINTS, it does not sit between the command and the gate.
 Set-StrictMode -Version Latest
 
 function Get-LokiCmdMeta_guide {
@@ -96,10 +105,15 @@ function Invoke-LokiGuideSession {
 
     while ($true) {
         if ($refresh) {
-            # No spinner here, unlike the one-shot path. The spinner exists because the one-shot menu makes the
-            # operator wait at a blank console with nothing to read; in the session the previous frame stays on
-            # screen the whole time, which is a better answer to "is it doing something" than an animation.
+            # Say so before the wait, not after it. Get-LokiGuideState reads the disk and opens a TCP probe, which
+            # is seconds -- long enough that a screen showing the previous frame with no explanation reads as a
+            # hang. No spinner: the session cannot animate from a single thread while a probe blocks, and a
+            # standing line that is true beats an animation that would have to lie about progress.
+            $state.Notice = Get-LokiText 'guide.checking'
+            Write-LokiSessionFrame -State $state
+
             $guideState = Get-LokiGuideState -AppRoot $Context.AppRoot -Config $Config
+            $state.Notice = ''
             # ASSIGN FIRST, then wrap: Get-LokiGuideMenu ends in `return , @(...)`, so @(FUNC) would be 1 element.
             $options = Get-LokiGuideMenu -State $guideState
             $options = @($options)
@@ -150,36 +164,64 @@ function Invoke-LokiGuideSession {
             continue
         }
 
-        # THE SCREEN IS HANDED OVER FOR THE COMMAND'S DURATION, and this is the decision worth reading (ADR-0040).
-        # Loki's commands are whole programs with their own output: spinners, colour, progress, a password prompt
-        # in `auth login`, and in `chat` and `offline --agent` an entire interactive child process. Capturing all
-        # of that into a diff-painted model would mean rebuilding every one of those interfaces, and capturing a
-        # native child's console output reliably is a job on its own.
+        # THE COMMAND RUNS INSIDE THE SESSION AND ITS OUTPUT IS CAPTURED, which is what the reference does and what
+        # #133 asked for. The screen is never handed over for it.
         #
-        # So the session closes, the command runs in the operator's real console exactly as if they had typed it,
-        # and the session reopens. Three things fall out of that, all of them wanted:
-        #   - what the command did stays in the REAL scrollback, which is the "nothing survives" complaint in #133
-        #   - there is never a second writer while the screen is open, which retires open decision 3 of #133
-        #   - Ctrl+C belongs to the command while it runs, because Close-LokiKeyread gives it back first
-        # The cost is honest and visible: the screen goes away and comes back. That is the trade, not an accident.
-        Close-LokiSession
-        Write-LokiLine ''
-        $result = & $target.Handler (New-LokiGuideChildContext -Context $Context -CommandArgs @($option.Args))
-        $childExit = [int](@($result) | Select-Object -Last 1)
+        # This is possible because Loki's own output has exactly two exits -- Write-LokiConsole and
+        # Write-LokiToStdErr -- and lib/ui.ps1's sink intercepts both; and because every child process Loki spawns
+        # for these entries already redirects its streams (lib/claude.ps1 for `ask`, lib/agent.ps1 for the engine,
+        # lib/offline-agent.ps1 for gated commands). Nothing writes to the console behind the session's back.
+        #
+        # The exception is DECLARED, not universal: `chat` inherits the console on purpose (a live Claude TUI) and
+        # `agent` asks Read-Host before every mutating command. Those two, and only those two, get the console.
+        $childExit = 0
+        $childContext = New-LokiGuideChildContext -Context $Context -CommandArgs @($option.Args)
 
-        # The learning curve, in one line. A guided mode that never names what it did produces dependants; one that
-        # always does produces operators who eventually stop needing it. That is the goal, not a side effect.
-        Write-LokiLine ''
-        Write-LokiInfo (Get-LokiText 'guide.equivalent' -ArgumentList @([string]$option.Teach))
+        if ([bool]$option.Interactive) {
+            # Hand over. A captured confirm prompt is a prompt nobody can answer, and a captured TUI is a frozen
+            # screen -- so for these the honest thing is to give the console back for the duration and take it
+            # again afterwards. Close-LokiKeyread also returns Ctrl+C to the child, which an interactive command
+            # needs.
+            Close-LokiSession
+            Write-LokiLine ''
+            $result = & $target.Handler $childContext
+            $childExit = [int](@($result) | Select-Object -Last 1)
+            Write-LokiLine ''
+            Write-LokiInfo (Get-LokiText 'guide.equivalent' -ArgumentList @([string]$option.Teach))
 
-        Add-LokiSessionEntry -State $state -Text (Get-LokiText 'guide.session.ran' -ArgumentList @([string]$option.Teach, $childExit))
-
-        if (-not (Open-LokiSession -Plain:(Get-LokiGuideFlag -Flags $Context.Flags -Name 'Plain'))) {
-            # The console changed its mind while the command had it -- resized below the floor, redirected, or the
-            # screen disabled itself after a failed self-check. Leave cleanly with what the command returned
-            # rather than looping on a session that cannot draw.
-            return $childExit
+            Add-LokiSessionEntry -State $state -Text (Get-LokiText 'guide.session.ran' -ArgumentList @([string]$option.Teach, $childExit))
+            if (-not (Open-LokiSession -Plain:(Get-LokiGuideFlag -Flags $Context.Flags -Name 'Plain'))) {
+                # The console changed its mind while the command had it -- resized below the floor, redirected, or
+                # the screen disabled itself. Leave with what the command returned rather than looping on a session
+                # that cannot draw.
+                return $childExit
+            }
+            $refresh = $true
+            continue
         }
+
+        # Captured. The sink appends each line to the transcript and repaints, so output appears line by line as it
+        # is produced rather than arriving in a lump when the command finishes -- which matters most for `collect`,
+        # the slowest entry and the one where a frozen screen would look like a hang.
+        #
+        # A no-newline write is PROGRESS, not transcript: the spinner rewinds its own line with a carriage return,
+        # and a transcript that grew a row per spinner frame would be unreadable. It goes to the notice row, which
+        # is what that row is for and what the reference does with its own spinner.
+        Open-LokiSessionCapture -State $state
+        try {
+            $result = & $target.Handler $childContext
+            $childExit = [int](@($result) | Select-Object -Last 1)
+        }
+        finally {
+            # ALWAYS. A sink left registered after the command that owns it has finished would swallow every
+            # subsequent line of output -- including the dispatcher's own error path -- into a transcript nobody
+            # is drawing any more.
+            Close-LokiSessionCapture
+        }
+
+        $state.Notice = ''
+        Add-LokiSessionEntry -State $state -Text (Get-LokiText 'guide.session.ran' -ArgumentList @([string]$option.Teach, $childExit))
+        Add-LokiSessionEntry -State $state -Text (Get-LokiText 'guide.equivalent' -ArgumentList @([string]$option.Teach))
         $refresh = $true
     }
 

@@ -10,6 +10,8 @@
 #   Write-LokiConsole -Text <string> [-Color] [-NoNewline]                    the ONLY Write-Host; fires NO hook
 #   Write-LokiRaw -Text <string> [-Color] [-NoNewline]                        hook first, then Write-LokiConsole
 #   Register-LokiWriteHook -Hook <scriptblock>                                what must run before ordinary output
+#   Register-LokiWriteSink -Sink <scriptblock>                                a session CAPTURES output instead of printing it
+#   Test-LokiWriteSinkActive / Send-LokiWriteSink -Text -NoNewline -Stream    the sink seam (ADR-0040)
 #   Invoke-LokiWriteHook / Get-LokiWriteHookError                             fires it once; records a throw
 #   Move-LokiCursor -Row <int> -> [bool]                                      absolute cursor move, $false on refusal
 # Nutzt Write-Host -ForegroundColor (kein VT nötig -> funktioniert auf Alt-Konsolen); Fehler/Warnungen zusätzlich nach stderr.
@@ -55,6 +57,57 @@ function Write-LokiColor {
 $script:LokiWriteHook = $null
 $script:LokiWriteHookError = ''
 
+# --- the capture sink (issue #133, ADR-0040) ------------------------------------------------------------------
+# A session owns the whole screen and paints it by difference, so a command's ordinary output cannot be allowed to
+# reach the console directly -- it would land wherever the cursor happened to be and corrupt every subsequent frame.
+# The reference CLI does not hand its screen over for that; it CAPTURES what it runs and renders it into its own
+# transcript, and this is the seam that makes Loki able to do the same.
+#
+# Registered => Write-LokiConsole and Write-LokiToStdErr hand the text to the sink INSTEAD of writing it.
+# Not registered => not one byte differs from before this existed, which is what the dispatcher's
+# bare-loki-equals-loki-guide byte-identity test measures.
+#
+# The sink receives ONE hashtable: @{ Text; NoNewline; Stream; Color }. Stream is 'out' or 'err' so a session can
+# show a warning differently from ordinary output; Color is reported and may be ignored, because a screen model
+# cannot carry an escape sequence (ADR-0039).
+#
+# WHY THIS DOES NOT LOOP: the session paints through Write-LokiScreenRaw, which is [Console]::Write and never comes
+# back through here. That separation is the whole reason lib/screen.ps1 has its own primitive instead of reusing
+# Write-LokiConsole.
+$script:LokiWriteSink = $null
+
+function Register-LokiWriteSink {
+    param([Parameter(Mandatory = $true)][AllowNull()][scriptblock]$Sink)
+    # $null clears it. Callers MUST clear in a finally: a sink left registered after the session that owns it has
+    # gone would swallow every subsequent line of output into an object nobody reads.
+    $script:LokiWriteSink = $Sink
+}
+
+function Test-LokiWriteSinkActive { return ($null -ne $script:LokiWriteSink) }
+
+function Send-LokiWriteSink {
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Text,
+        [Parameter(Mandatory = $true)][bool]$NoNewline,
+        [Parameter(Mandatory = $true)][ValidateSet('out', 'err')][string]$Stream,
+        [AllowNull()]$Color = $null
+    )
+    # $true means the sink took it and nothing may be written to the console. A sink that THROWS must not take the
+    # command's output with it -- the same argument as Invoke-LokiWriteHook -- so a failure is recorded and the text
+    # falls through to the console, which is the behaviour with no sink at all.
+    if ($null -eq $script:LokiWriteSink) { return $false }
+    $sink = $script:LokiWriteSink
+    try {
+        & $sink @{ Text = $Text; NoNewline = $NoNewline; Stream = $Stream; Color = $Color }
+        return $true
+    }
+    catch {
+        $script:LokiWriteHookError = [string]$_.Exception.Message
+        $script:LokiWriteSink = $null
+        return $false
+    }
+}
+
 function Register-LokiWriteHook {
     param([Parameter(Mandatory = $true)][AllowNull()][scriptblock]$Hook)
     $script:LokiWriteHook = $Hook
@@ -78,6 +131,10 @@ function Write-LokiConsole {
         [AllowNull()]$Color = $null,
         [switch]$NoNewline
     )
+    # The sink first, and it returns $true only if it took the text. See the block above: with no sink registered
+    # this is one null check and nothing else changes.
+    if (Send-LokiWriteSink -Text $Text -NoNewline ([bool]$NoNewline) -Stream 'out' -Color $Color) { return }
+
     $withColor = ($script:LokiUseColor -and $null -ne $Color)
     if ($withColor) {
         if ($NoNewline) { Write-Host $Text -ForegroundColor $Color -NoNewline } else { Write-Host $Text -ForegroundColor $Color }
@@ -120,6 +177,12 @@ function Write-LokiToStdErr {
     # stderr bypasses Write-Host entirely, so it would otherwise print straight through an open live region -- and
     # Write-LokiErr alone appears on dozens of source lines. The region closes first, exactly as for stdout.
     Invoke-LokiWriteHook
+
+    # And a session captures it, for the same reason: stderr goes to the console handle directly, so inside an owned
+    # screen it would print straight through the frame. Marked 'err' so the session can render it as a warning
+    # rather than as ordinary output.
+    if (Send-LokiWriteSink -Text $Text -NoNewline $false -Stream 'err' -Color $Color) { return }
+
     if (-not $script:LokiUseColor -or [Console]::IsErrorRedirected) {
         [Console]::Error.WriteLine($Text)
         return
