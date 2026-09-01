@@ -207,7 +207,11 @@ function Write-LokiSpinnerTick {
     $script:LokiSpinnerFrame++
     $line = "  {0}  {1}" -f $frame, $Label
     if ($line.Length -gt $script:LokiSpinnerMaxLen) { $script:LokiSpinnerMaxLen = $line.Length }
-    Write-Host ("`r" + $line) -NoNewline -ForegroundColor DarkGreen
+    # Through Write-LokiConsole, NOT a bare Write-Host. Byte-identical on a plain console -- it is the same call with
+    # the same colour -- but it is the difference between a session being able to capture the spinner and the
+    # spinner printing a carriage return straight through an owned screen. It also makes ui.ps1's own claim true
+    # again: Write-LokiConsole is the only Write-Host in the codebase, which this file had quietly contradicted.
+    Write-LokiConsole -Text ("`r" + $line) -Color DarkGreen -NoNewline
 }
 
 function Write-LokiSpinnerDone {
@@ -215,6 +219,6 @@ function Write-LokiSpinnerDone {
     # Cleared to the WIDEST line actually written, not to a guess. A label that grows while it ticks --
     # "5 %" becoming "100 %" -- would otherwise leave its own tail behind on the console.
     if ($script:LokiSpinnerMaxLen -le 0) { return }
-    Write-Host ("`r{0}`r" -f (' ' * $script:LokiSpinnerMaxLen)) -NoNewline
+    Write-LokiConsole -Text ("`r{0}`r" -f (' ' * $script:LokiSpinnerMaxLen)) -NoNewline
     Initialize-LokiSpinner
 }

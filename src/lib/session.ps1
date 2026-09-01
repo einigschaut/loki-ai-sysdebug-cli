@@ -52,6 +52,8 @@
 #   Open-LokiSession [-Plain] -> [bool]    screen and keyboard together, or neither
 #   Write-LokiSessionFrame -State          hide caret, paint one frame, place and show the caret
 #   Invoke-LokiSessionRound -State -> @{ Action; Text }   paint, block for a key, apply it
+#   Open-LokiSessionCapture -State / Write-LokiSessionCapture -Write / Close-LokiSessionCapture
+#                                          a command's output becomes transcript instead of console (ADR-0040)
 #   Close-LokiSession / Test-LokiSessionOpen / Get-LokiSessionRefusal / Initialize-LokiSession
 #
 # THE STATE IS MUTATED IN PLACE, deliberately, and it is the one place this file departs from
@@ -80,6 +82,10 @@ $script:LokiSessionChromeLean = 4
 
 $script:LokiSessionOpen = $false
 $script:LokiSessionReason = 'closed'
+
+# The session a running command's output is being captured into, or $null when nothing is being captured.
+$script:LokiSessionCaptureState = $null
+$script:LokiSessionCapturePaintTicks = 0
 
 # ==============================================================================================
 # PURE
@@ -611,6 +617,72 @@ function Invoke-LokiSessionRound {
     [void](Resize-LokiScreen)
 
     return Step-LokiSession -State $State -Key $key
+}
+
+function Write-LokiSessionCapture {
+    param([Parameter(Mandatory = $true)][AllowNull()][hashtable]$Write)
+    # What lib/ui.ps1's sink hands over while a command runs inside the session (ADR-0040). A command's ordinary
+    # output cannot reach the console -- it would land wherever the cursor happens to be and corrupt every
+    # subsequent frame -- so it is turned into transcript instead.
+    #
+    # Two kinds of write, and telling them apart is the whole job:
+    #   a LINE     -> a transcript entry. Permanent, scrolls up, stays readable.
+    #   NO NEWLINE -> progress. The spinner rewinds its own line with a carriage return and rewrites it several
+    #                 times a second; one transcript row per frame would bury everything else. It goes to the
+    #                 notice row, which is exactly what the reference does with its own spinner row.
+    #
+    # The repaint is RATE-LIMITED, the append never is. Dropping a frame costs nothing -- the next write, or the
+    # frame drawn when the command finishes, shows everything -- while dropping a line would lose output. The limit
+    # is Test-LokiSpinnerDue from lib/brand.ps1 rather than a second threshold of this file's own: "is a redraw
+    # due" already has one answer in this codebase and should not grow a second (CLAUDE.md section 2).
+    if ($null -eq $script:LokiSessionCaptureState -or $null -eq $Write) { return }
+    $state = $script:LokiSessionCaptureState
+
+    $text = [string]$Write.Text
+    if ($null -eq $text) { $text = '' }
+
+    if ([bool]$Write.NoNewline) {
+        # Strip the carriage returns the spinner rewinds with; a one-row notice does not need them. An all-blank
+        # progress write is the spinner clearing its own line, and it clears the notice with it.
+        $state.Notice = $text.Replace("`r", '').Replace("`n", ' ').Trim()
+    }
+    else {
+        # No marker is added for the 'err' stream, and that is checked rather than assumed: Write-LokiWarn and
+        # Write-LokiErr prefix "! " and "x " THEMSELVES before calling Write-LokiToStdErr, so the text arriving here
+        # already carries it. A second one would print "x x failed". Colour could not survive into a screen model
+        # in any case (see the note in Format-LokiSessionFrame), so a character is the only distinction available --
+        # and it is already there.
+        Add-LokiSessionEntry -State $state -Text $text
+    }
+
+    $now = [datetime]::UtcNow.Ticks
+    if (Test-LokiSpinnerDue -LastTicks $script:LokiSessionCapturePaintTicks -NowTicks $now) {
+        $script:LokiSessionCapturePaintTicks = $now
+        Write-LokiSessionFrame -State $state
+    }
+}
+
+function Open-LokiSessionCapture {
+    param([Parameter(Mandatory = $true)][AllowNull()][hashtable]$State)
+    # Everything a command prints from here until Close-LokiSessionCapture becomes transcript instead of console.
+    #
+    # A PLAIN scriptblock, deliberately NOT one built with .GetNewClosure(). A closure gets its own module scope,
+    # and dot-sourced functions are invisible from inside it -- so a closure that captured the state could not call
+    # Add-LokiSessionEntry at all. Measured 2026-08-31, and it fails the same way in the dispatcher as in a test,
+    # because Loki dot-sources every lib into one script scope rather than importing modules. A plain scriptblock
+    # keeps THIS file's session state, so the call below resolves; the state it needs travels in a script variable
+    # rather than in a capture.
+    $script:LokiSessionCaptureState = $State
+    $script:LokiSessionCapturePaintTicks = 0
+    Register-LokiWriteSink -Sink { param([hashtable]$LokiWrite) Write-LokiSessionCapture -Write $LokiWrite }
+}
+
+function Close-LokiSessionCapture {
+    # Callers MUST reach this from a finally. A sink left registered after the command that owns it has finished
+    # would swallow every later line of output -- including the dispatcher's own error path -- into a transcript
+    # nobody is drawing any more.
+    $script:LokiSessionCaptureState = $null
+    Register-LokiWriteSink -Sink $null
 }
 
 function Close-LokiSession {

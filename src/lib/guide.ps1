@@ -15,6 +15,13 @@
 #       to do about it.
 #   Resolve-LokiGuideChoice -Options <entries> -Choice <string> -> [hashtable]{ Kind; Option; ReasonKey }
 #       PURE. Kind is 'run' | 'quit' | 'invalid' | 'unavailable'.
+#   Get-LokiGuideMenuLine -Options <entries> -> [object[]]{ Text; Role }
+#       PURE. The menu as text, once, for BOTH renderers -- the coloured one-shot fallback and the session
+#       transcript. Role ('available' | 'muted') is what the fallback colours by; the session cannot colour at
+#       all, because an escape sequence inside a screen model breaks the diff's column arithmetic (ADR-0039).
+#   Get-LokiGuideEngineLabel -State <hashtable> -> [string]  a catalog key
+#       PURE. Which engine would answer right now. The session's status row carries this and nothing else about
+#       the machine (ADR-0038): it is the one fact that genuinely changes mid-session.
 #
 # Two design rules worth stating, because both are easy to "improve" into something worse:
 #
@@ -212,9 +219,19 @@ function Get-LokiGuideMenu {
         # whole learning-curve mechanism -- a guided mode that never names what it did produces dependants, not
         # operators. For `analyze` the newest dump is named explicitly, because "the path" is precisely the part a
         # newcomer cannot guess.
+        # INTERACTIVE means "this one needs the console itself, and cannot be captured into a transcript".
+        # Measured, not guessed (ADR-0040), and it is exactly two of the six:
+        #   chat   -> lib/claude.ps1 launches the Claude CLI with NO stream redirected on purpose, so the child
+        #             inherits stdin/stdout/stderr and is a live TUI the operator drives.
+        #   agent  -> lib/offline-agent.ps1 asks Read-Host before every mutating command. A confirm prompt captured
+        #             into a transcript is a prompt nobody can answer.
+        # Everything else writes only through the ui.ps1 seam or through an already-redirected child, so a session
+        # captures it whole. Getting this list wrong in the SAFE direction costs a screen flash; getting it wrong
+        # the other way hangs the session on a prompt the operator cannot see.
         $target = $id
         $cmdArgs = @()
         $teach = "loki $id"
+        $interactive = ($id -eq 'chat' -or $id -eq 'agent')
         if ($id -eq 'analyze') {
             $target = 'offline'
             $teach = 'loki offline --analyze <dump>'
@@ -237,9 +254,10 @@ function Get-LokiGuideMenu {
                 Available = [bool]$verdict.Ok
                 ReasonKey = $(if ($verdict.ContainsKey('ReasonKey')) { [string]$verdict.ReasonKey } else { '' })
                 RemedyKey = $(if ($verdict.ContainsKey('RemedyKey')) { [string]$verdict.RemedyKey } else { '' })
-                Target    = $target
-                Args      = $cmdArgs
-                Teach     = $teach
+                Target      = $target
+                Args        = $cmdArgs
+                Teach       = $teach
+                Interactive = $interactive
             })
     }
     return , @($result.ToArray())
@@ -273,4 +291,50 @@ function Resolve-LokiGuideChoice {
         return @{ Kind = 'unavailable'; Option = $match; ReasonKey = [string]$match.ReasonKey }
     }
     return @{ Kind = 'run'; Option = $match; ReasonKey = '' }
+}
+
+function Get-LokiGuideMenuLine {
+    param([Parameter(Mandatory = $true)][AllowEmptyCollection()][array]$Options)
+    # PURE. The menu as lines, resolved through the catalog, with no colour and no console call.
+    #
+    # It exists because there are now TWO renderers -- the coloured one-shot fallback and the session transcript --
+    # and the format string must not exist twice. When it did, for about ten minutes while this was being written,
+    # the two indentations had already drifted by a space (CLAUDE.md section 2: one source of truth per concept).
+    #
+    # Role, not colour: the session cannot colour anything, because an escape sequence inside a screen model is
+    # counted as content by the diff and shifts every column after it (ADR-0039). The fallback maps 'muted' to
+    # DarkGray; the session simply writes the same text.
+    $out = New-Object System.Collections.Generic.List[object]
+    foreach ($o in @($Options)) {
+        $label = Get-LokiText ([string]$o.LabelKey)
+        if ([bool]$o.Available) {
+            $out.Add(@{ Text = ("  {0}) {1}" -f $o.Number, $label); Role = 'available' })
+            continue
+        }
+        # Shown, numbered and muted -- never hidden. Hiding it would answer "can I do this here?" with silence,
+        # and the two lines below are the most useful thing on the screen for someone new to the tool.
+        $out.Add(@{ Text = ("  {0}) {1}" -f $o.Number, $label); Role = 'muted' })
+        $out.Add(@{ Text = ("       {0}" -f (Get-LokiText ([string]$o.ReasonKey))); Role = 'muted' })
+        $out.Add(@{ Text = ("       {0}" -f (Get-LokiText ([string]$o.RemedyKey))); Role = 'muted' })
+    }
+    # A PLAIN return, deliberately NOT the `return , @(...)` that Get-LokiGuideMenu uses two functions up.
+    # That idiom keeps a set from unrolling, and it costs every caller a two-step assignment -- `@(FUNC)` around it
+    # yields ONE element holding the whole array, which is why Get-LokiGuideMenu carries a warning comment at each
+    # of its call sites. Here every caller wants to iterate, so unrolling is exactly right: N lines come back as N,
+    # one line as one, and none as nothing. Written the other way first, and the tests caught it.
+    return $out.ToArray()
+}
+
+function Get-LokiGuideEngineLabel {
+    param([Parameter(Mandatory = $true)][hashtable]$State)
+    # PURE. Returns a CATALOG KEY, not prose -- this file resolves nothing the caller might want in another locale.
+    #
+    # Online wins when both are available, because that is the order Loki's own commands prefer: `ask` and `chat`
+    # are the online path and sit above the offline entries in the menu. "none" is not an error state -- a stick
+    # with no model and no credential still runs `collect` and `doctor`, which is most of what it is for.
+    $authOk = [bool]$State.AuthPresent
+    $online = [bool]$State.Online
+    if ($authOk -and $online) { return 'guide.engine.online' }
+    if ([bool]$State.EngineOk -and @($State.FittingTiers).Count -gt 0) { return 'guide.engine.offline' }
+    return 'guide.engine.none'
 }
