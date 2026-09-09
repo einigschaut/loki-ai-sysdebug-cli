@@ -299,4 +299,10 @@
     'session.notice.multiline'  = 'One command per line. Remove the line breaks (shown as {0}) and press Enter again.'
     'session.notice.completeUnavailable' = 'Tab completion is not available yet.'
     'session.window.tooSmall'   = 'Window too small. Make it at least {0} x {1}.'
+
+    'guide.session.prompt'      = 'Type a number and press Enter. q leaves.'
+    'guide.session.ran'         = 'Ran: {0}  (exit {1})'
+    'guide.engine.online'       = 'online'
+    'guide.engine.offline'      = 'offline'
+    'guide.engine.none'         = 'no engine'
 }
