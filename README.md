@@ -206,9 +206,12 @@ A full-screen session that stays open and runs commands inside itself is built, 
 while findings from its independent review are being fixed. To try it:
 
 ```powershell
-$env:LOKI_SESSION = '1'    # exactly '1' -- any other value leaves it off
-loki
+$env:LOKI_SESSION = '1'               # exactly '1' -- any other value leaves it off
+E:\loki.cmd                           # the guided mode, now as a full-screen session
+Remove-Item Env:\LOKI_SESSION         # back to the default for the rest of this shell
 ```
+
+The variable lives only in the shell window you set it in.
 
 If the console cannot host it (output redirected, no VT support, a very small window, or `--plain`), Loki falls
 back to the one-shot menu on its own. See [ADR-0040](docs/adr/0040-the-guided-mode-becomes-a-session.md).
