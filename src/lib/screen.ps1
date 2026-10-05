@@ -45,6 +45,7 @@
 #   Get-LokiBufferSnapshot -> @{ Row; Col; Width; Cells } or $null   the cursor row, cells and all
 #   Restore-LokiBufferSnapshot -Snapshot -> [bool]                   puts that row and the cursor back
 #   Get-LokiScreenRow -Row -Width -> [string] or $null
+#   Get-LokiScreenPrecheck [-Plain] -> @{ Engage; Reason; Facts }   the refusals that write nothing
 #   Open-LokiScreen [-Plain] -> [bool]   $false is a NORMAL answer
 #   Write-LokiScreenFrame -Model         one frame, one console write
 #   Resize-LokiScreen -> [bool]          re-measure and full-repaint after the window changed
@@ -53,6 +54,7 @@
 #                                        and again on the next call if the leave could not be written
 #   Test-LokiScreenPaint -Model -> [int] rows where the console disagrees with the model
 #   Test-LokiScreenOpen / Get-LokiScreenRefusal / Get-LokiScreenSize / Initialize-LokiScreen
+#   Test-LokiScreenMustLeave -> [bool]   is a leave still owed? Restore-LokiConsole asks, because Close reports by state
 #
 # THE TYPE-CONSTRAINT RULE IN THIS FILE, and it is not style. A [string[]] parameter handed an
 # Object[] is CONVERTED, and converting copies -- so a function that writes into the array writes
@@ -85,9 +87,21 @@ $script:LokiScreenDisabled = $false     # a refusal that lasts for the rest of t
 # hidden -- 13 of 80 points of a fault walk over one open/frame/close cycle (tests/teardown.Tests.ps1).
 #
 # Kept set when a leave could not be written, so the next Close -- the dispatcher runs it on every path -- tries again.
-# Sending the leave sequence when the screen was never actually entered is harmless: terminals ignore ?1049l outside
-# the alternate screen.
+#
+# A leave that was NOT owed is not harmless, as this comment used to claim. Measured on a real conhost (2026-10-05): a
+# ?1049l with no enter before it moves the operator's cursor to the top-left corner of the window (8,60 -> 0,31 in a
+# 9001-row buffer whose window started at row 31; the scroll position itself did not change), and a second ?1049l after
+# a successful one jumps it back to where it was at enter, on top of whatever was printed since. So:
+#   - an enter write that REPORTS failure clears the obligation again -- it never reached the terminal;
+#   - a leave goes out only while the obligation stands, and a confirmed leave ends it;
+#   - and for the one case nothing can decide -- the enter was attempted but never confirmed, because something stopped
+#     the open between setting the flag and the write returning -- the leave is followed by putting the cursor back
+#     where it was before the enter (LokiScreenHome). Only then: after a CONFIRMED enter the terminal restores the
+#     cursor itself, and does it better -- a window resized during the session reflows the main buffer, and a position
+#     recorded before the enter would no longer be the right one.
 $script:LokiScreenMustLeave = $false
+$script:LokiScreenEnterConfirmed = $false   # the enter write returned success
+$script:LokiScreenHome = $null              # @{ Row; Col } -- the operator's cursor just before the enter
 
 # ==============================================================================================
 # PURE
@@ -411,6 +425,8 @@ function Restore-LokiBufferSnapshot {
 
 function Test-LokiScreenOpen { return ($null -ne $script:LokiScreenState) }
 
+function Test-LokiScreenMustLeave { return [bool]$script:LokiScreenMustLeave }
+
 function Get-LokiScreenRefusal { return [string]$script:LokiScreenReason }
 
 function Get-LokiScreenSize {
@@ -429,7 +445,15 @@ function Initialize-LokiScreen {
     # It exists because 'disabled' deliberately LASTS: once the console has disagreed with the model,
     # reopening would walk straight back into the same trap, so nothing else in this file ever clears
     # that flag. Something has to, once, at the start.
+    #
+    # A fresh process owes no leave, so the obligation is dropped even if the Close here could not write one. In
+    # production this runs once, before anything was opened; in the tests it keeps one test's console from leaking a
+    # pending leave into the next.
     Close-LokiScreen
+    $script:LokiScreenState = $null
+    $script:LokiScreenMustLeave = $false
+    $script:LokiScreenEnterConfirmed = $false
+    $script:LokiScreenHome = $null
     $script:LokiScreenDisabled = $false
     $script:LokiScreenReason = 'closed'
 }
@@ -454,6 +478,27 @@ function Test-LokiScreenPaint {
     return $bad
 }
 
+function Get-LokiScreenPrecheck {
+    param([switch]$Plain)
+    # Every refusal that can be decided WITHOUT writing to the console: disabled for good, no console, --plain,
+    # redirection, a foreign host, a window too small. Facts carries the console facts read for it, for the caller
+    # that goes on to open.
+    #
+    # A function of its own because two callers need it before anything else happens. Open-LokiScreen, because the VT
+    # probe writes to the operator's screen and must not run for a console that was going to be refused anyway. And
+    # Open-LokiSession, because it claims Ctrl+C before it opens the screen -- and a session that was never going to
+    # open must not claim and release the operator's Ctrl+C for nothing: a release that fails would leave it claimed
+    # on a run that never showed a session at all.
+    if ($script:LokiScreenDisabled) { return [pscustomobject]@{ Engage = $false; Reason = 'disabled'; Facts = $null } }
+    $facts = Get-LokiConsoleFact
+    if ($null -eq $facts) { return [pscustomobject]@{ Engage = $false; Reason = 'no-console'; Facts = $null } }
+    $pre = Get-LokiScreenCapability -HostName $facts.HostName `
+        -OutputRedirected $facts.OutputRedirected -InputRedirected $facts.InputRedirected `
+        -Plain ([bool]$Plain) -VtActive $true `
+        -WindowWidth $facts.WindowWidth -WindowHeight $facts.WindowHeight
+    return [pscustomobject]@{ Engage = [bool]$pre.Engage; Reason = [string]$pre.Reason; Facts = $facts }
+}
+
 function Open-LokiScreen {
     param([switch]$Plain)
     # Returns $true only if the screen is now ours. EVERY caller must cope with $false -- that is the
@@ -461,27 +506,14 @@ function Open-LokiScreen {
     # no. The fallback is the bottom-anchored live region from #131, which needs none of this.
     Close-LokiScreen
 
-    if ($script:LokiScreenDisabled) {
-        $script:LokiScreenReason = 'disabled'
-        return $false
-    }
-
-    $facts = Get-LokiConsoleFact
-    if ($null -eq $facts) {
-        $script:LokiScreenReason = 'no-console'
-        return $false
-    }
-
     # Cheap refusals first: the VT probe writes to the operator's screen, so it must not run for a
     # console that was going to be refused anyway.
-    $pre = Get-LokiScreenCapability -HostName $facts.HostName `
-        -OutputRedirected $facts.OutputRedirected -InputRedirected $facts.InputRedirected `
-        -Plain ([bool]$Plain) -VtActive $true `
-        -WindowWidth $facts.WindowWidth -WindowHeight $facts.WindowHeight
+    $pre = Get-LokiScreenPrecheck -Plain:$Plain
     if (-not $pre.Engage) {
         $script:LokiScreenReason = [string]$pre.Reason
         return $false
     }
+    $facts = $pre.Facts
 
     $capability = Get-LokiScreenCapability -HostName $facts.HostName `
         -OutputRedirected $facts.OutputRedirected -InputRedirected $facts.InputRedirected `
@@ -495,18 +527,25 @@ function Open-LokiScreen {
     $model = Initialize-LokiScreenModel -Width $width -Height $height
 
     # From here on the alternate screen may be entered, so a Close has to leave it no matter where this stops -- see
-    # LokiScreenMustLeave at the top of the file. Set BEFORE the write, not after: a write that half succeeds, or a
-    # stop between the write and the next line, must still be undone.
+    # LokiScreenMustLeave at the top of the file. Set BEFORE the write, not after: a stop between the write and the
+    # next line must still be undone. Where the cursor stood goes with it, for the one case in which the leave turns
+    # out not to have been owed.
+    $script:LokiScreenHome = @{ Row = [int]$facts.CursorTop; Col = [int]$facts.CursorLeft }
+    $script:LokiScreenEnterConfirmed = $false
     $script:LokiScreenMustLeave = $true
 
     # Enter. ESC[2J exactly once, at entry, and never again -- the reference clears exactly once
     # across 1836 frames and repaints everything else by difference.
     $enter = $script:LokiEsc + '[?1049h' + $script:LokiEsc + '[2J' + $script:LokiEsc + '[?25l'
     if (-not (Write-LokiScreenRaw -Text $enter)) {
-        Close-LokiScreen
+        # Reported failure: the enter never reached the terminal, so there is nothing to leave -- and a leave sent
+        # anyway would move the operator's cursor to the corner of the window.
+        $script:LokiScreenMustLeave = $false
+        $script:LokiScreenHome = $null
         $script:LokiScreenReason = 'write-failed'
         return $false
     }
+    $script:LokiScreenEnterConfirmed = $true
 
     if (-not (Write-LokiScreenRaw -Text (Get-LokiScreenFullPaint -Model $model))) {
         Close-LokiScreen
@@ -528,8 +567,9 @@ function Open-LokiScreen {
     # not one which is wrong. Accepting it keeps hosts where GetBufferContents is stubbed, and the
     # per-frame shape check still guards the arithmetic.
 
-    # Every failure path above leaves through Close-LokiScreen, and only there. They used to write their own leave
-    # sequence -- without the attribute reset, and without the retry Close now does when the leave cannot be written.
+    # Every failure path above after the enter leaves through Close-LokiScreen, and only there. They used to write
+    # their own leave sequence -- without the attribute reset, and without the retry Close now does when the leave
+    # cannot be written.
     $script:LokiScreenState = @{
         Width  = $width
         Height = $height
@@ -579,9 +619,21 @@ function Close-LokiScreen {
     #
     # Only a write that went through clears the obligation. A failed one keeps it, so the next Close tries again --
     # the dispatcher runs one on every exit path, on the error path twice.
-    if (Write-LokiScreenRaw -Text ($script:LokiEsc + '[?25h' + $script:LokiEsc + '[?1049l' + $script:LokiEsc + '[m')) {
-        $script:LokiScreenMustLeave = $false
+    if (-not (Write-LokiScreenRaw -Text ($script:LokiEsc + '[?25h' + $script:LokiEsc + '[?1049l' + $script:LokiEsc + '[m'))) {
+        return
     }
+    # An enter that was attempted but never confirmed may never have happened, and then this leave was a bare one that
+    # put the cursor in the corner of the window. Put it back where it was before the enter -- measured on a real conhost:
+    # back at 8,60, scroll position unchanged -- and BEFORE the obligation is cleared, so a stop
+    # in between repeats both rather than leaving the cursor where the bare leave put it. Nothing was printed in
+    # between: an unconfirmed enter means the open stopped, and this is the Close that follows it. Best effort -- a
+    # console that cannot move its cursor has nothing better to offer.
+    if (-not $script:LokiScreenEnterConfirmed -and $null -ne $script:LokiScreenHome) {
+        [void](Move-LokiCursor -Row ([int]$script:LokiScreenHome.Row) -Col ([int]$script:LokiScreenHome.Col))
+    }
+    $script:LokiScreenMustLeave = $false
+    $script:LokiScreenEnterConfirmed = $false
+    $script:LokiScreenHome = $null
 }
 
 function Resize-LokiScreen {

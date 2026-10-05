@@ -600,8 +600,25 @@ Describe 'New-LokiSessionState' {
 
 Describe 'Open-LokiSession / Close-LokiSession' {
 
-    BeforeEach { Initialize-LokiSession }
+    BeforeEach {
+        # The screen's cheap checks read the real console, which under Pester is redirected and would refuse every
+        # open below before it reached the half under test.
+        Mock -CommandName Get-LokiScreenPrecheck -MockWith { return [pscustomobject]@{ Engage = $true; Reason = 'ok'; Facts = $null } }
+        Initialize-LokiSession
+    }
     AfterEach { Initialize-LokiSession }
+
+    It 'asks the screen''s cheap checks FIRST, and touches neither half when they refuse' {
+        # --plain, redirection, a foreign host, a tiny window: no session will open, so the operator's Ctrl+C must not
+        # be claimed and released for nothing -- a release that fails would leave it claimed.
+        Mock -CommandName Get-LokiScreenPrecheck -MockWith { return [pscustomobject]@{ Engage = $false; Reason = 'plain'; Facts = $null } }
+        Mock -CommandName Open-LokiKeyread -MockWith { throw 'must not be reached' }
+        Mock -CommandName Open-LokiScreen -MockWith { throw 'must not be reached' }
+        Open-LokiSession -Plain | Should -BeFalse
+        Get-LokiSessionRefusal | Should -Be 'screen:plain'
+        Should -Invoke Open-LokiKeyread -Times 0 -Exactly
+        Should -Invoke Get-LokiScreenPrecheck -Times 1 -Exactly -ParameterFilter { [bool]$Plain }
+    }
 
     It 'opens only when BOTH the screen and the keyboard are available' {
         Mock -CommandName Open-LokiScreen -MockWith { return $true }
@@ -679,7 +696,10 @@ Describe 'Write-LokiSessionFrame' {
 
 Describe 'Invoke-LokiSessionRound' {
 
-    BeforeEach { Initialize-LokiSession }
+    BeforeEach {
+        Mock -CommandName Get-LokiScreenPrecheck -MockWith { return [pscustomobject]@{ Engage = $true; Reason = 'ok'; Facts = $null } }
+        Initialize-LokiSession
+    }
     AfterEach { Initialize-LokiSession }
 
     It 'paints, reads a key, then checks the geometry -- in that order' {
@@ -706,11 +726,16 @@ Describe 'Invoke-LokiSessionRound' {
         Mock -CommandName Open-LokiScreen -MockWith { return $true }
         Mock -CommandName Open-LokiKeyread -MockWith { return $true }
         Mock -CommandName Write-LokiSessionFrame -MockWith { }
+        # The screen stays open, so the round gets as far as the read -- otherwise it would end on the lost screen and
+        # this would pass without ever testing the key.
+        Mock -CommandName Test-LokiScreenOpen -MockWith { return $true }
         Mock -CommandName Read-LokiKey -MockWith { return $null }
         Mock -CommandName Resize-LokiScreen -MockWith { return $true }
 
         [void](Open-LokiSession)
-        (Invoke-LokiSessionRound -State (New-LokiSessionState -Tier 'ascii')).Action | Should -Be 'closed'
+        $round = Invoke-LokiSessionRound -State (New-LokiSessionState -Tier 'ascii')
+        $round.Action | Should -Be 'closed'
+        $round.Text | Should -BeLike 'keyread:*'
     }
 
     It 'refuses to run a round when nothing is open' {

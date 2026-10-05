@@ -283,7 +283,7 @@ Describe 'the screen lifecycle, against mocked console primitives' {
         Mock -CommandName Get-LokiConsoleFact -MockWith {
             return @{
                 HostName = 'ConsoleHost'; OutputRedirected = $false; InputRedirected = $false
-                WindowWidth = 120; WindowHeight = 30; BufferWidth = 120; BufferHeight = 9001; CursorTop = 0
+                WindowWidth = 120; WindowHeight = 30; BufferWidth = 120; BufferHeight = 9001; CursorTop = 0; CursorLeft = 0
             }
         }
         Mock -CommandName Test-LokiVtProcessing -MockWith { return $true }
@@ -384,7 +384,7 @@ Describe 'the screen lifecycle, against mocked console primitives' {
         Mock -CommandName Get-LokiConsoleFact -MockWith {
             return @{
                 HostName = 'ConsoleHost'; OutputRedirected = $true; InputRedirected = $false
-                WindowWidth = 120; WindowHeight = 30; BufferWidth = 120; BufferHeight = 30; CursorTop = 0
+                WindowWidth = 120; WindowHeight = 30; BufferWidth = 120; BufferHeight = 30; CursorTop = 0; CursorLeft = 0
             }
         }
         Open-LokiScreen | Should -BeFalse
@@ -509,7 +509,7 @@ Describe 'Resize-LokiScreen' {
             return @{
                 HostName = 'ConsoleHost'; OutputRedirected = $false; InputRedirected = $false
                 WindowWidth = 120; WindowHeight = 30
-                BufferWidth = 120; BufferHeight = 30; CursorTop = 0
+                BufferWidth = 120; BufferHeight = 30; CursorTop = 0; CursorLeft = 0
             }
         }
         Mock -CommandName Test-LokiVtProcessing -MockWith { return $true }
@@ -533,7 +533,7 @@ Describe 'Resize-LokiScreen' {
             return @{
                 HostName = 'ConsoleHost'; OutputRedirected = $false; InputRedirected = $false
                 WindowWidth = 75; WindowHeight = 20
-                BufferWidth = 75; BufferHeight = 20; CursorTop = 0
+                BufferWidth = 75; BufferHeight = 20; CursorTop = 0; CursorLeft = 0
             }
         }
         Resize-LokiScreen | Should -BeTrue
@@ -557,7 +557,7 @@ Describe 'Resize-LokiScreen' {
             return @{
                 HostName = 'ConsoleHost'; OutputRedirected = $false; InputRedirected = $false
                 WindowWidth = 41; WindowHeight = 10
-                BufferWidth = 41; BufferHeight = 10; CursorTop = 0
+                BufferWidth = 41; BufferHeight = 10; CursorTop = 0; CursorLeft = 0
             }
         }
         [void](Resize-LokiScreen)
@@ -585,7 +585,7 @@ Describe 'Resize-LokiScreen' {
             return @{
                 HostName = 'ConsoleHost'; OutputRedirected = $false; InputRedirected = $false
                 WindowWidth = 60; WindowHeight = 15
-                BufferWidth = 60; BufferHeight = 15; CursorTop = 0
+                BufferWidth = 60; BufferHeight = 15; CursorTop = 0; CursorLeft = 0
             }
         }
         Mock -CommandName Write-LokiScreenRaw -MockWith { return $false }
@@ -604,7 +604,7 @@ Describe 'Hide-LokiScreenCaret / Show-LokiScreenCaret' {
             return @{
                 HostName = 'ConsoleHost'; OutputRedirected = $false; InputRedirected = $false
                 WindowWidth = 120; WindowHeight = 30
-                BufferWidth = 120; BufferHeight = 30; CursorTop = 0
+                BufferWidth = 120; BufferHeight = 30; CursorTop = 0; CursorLeft = 0
             }
         }
         Mock -CommandName Test-LokiVtProcessing -MockWith { return $true }

@@ -565,7 +565,16 @@ function Open-LokiSession {
     # "the session did not start" is not something an operator can act on.
     Close-LokiSession
 
-    # The keyboard FIRST, the screen second -- and Close does the reverse. With Ctrl+C claimed before the screen
+    # The screen's cheap refusals FIRST -- --plain, redirection, a foreign host, a tiny window -- because they need no
+    # keyboard, and a session that was never going to open must not claim the operator's Ctrl+C and release it again:
+    # a release that fails would leave it claimed on a run that never showed a session at all.
+    $pre = Get-LokiScreenPrecheck -Plain:$Plain
+    if (-not $pre.Engage) {
+        $script:LokiSessionReason = 'screen:' + [string]$pre.Reason
+        return $false
+    }
+
+    # Then the keyboard, then the screen -- and Close does the reverse. With Ctrl+C claimed before the screen
     # opens, a Ctrl+C pressed while it opens arrives as a key the session reads later, not as a stop that tears the
     # opening apart halfway. An independent review found the old order (screen first) let exactly that Ctrl+C leave
     # the operator in the alternate screen with the cursor hidden.
@@ -631,6 +640,15 @@ function Invoke-LokiSessionRound {
     # session learns its window changed, and it must learn it before the next frame is laid out
     # against a geometry that no longer exists.
     [void](Resize-LokiScreen)
+
+    # The repaint after a resize can fail too, and it closes the screen when it does. The key must not be acted on
+    # then: an independent review found the round returning the key's action anyway, so the caller ran a command with
+    # nothing drawn and Ctrl+C still claimed.
+    if (-not (Test-LokiScreenOpen)) {
+        $why = 'screen:' + (Get-LokiScreenRefusal)
+        Close-LokiSession
+        return [pscustomobject]@{ Action = 'closed'; Text = $why }
+    }
 
     return Step-LokiSession -State $State -Key $key
 }

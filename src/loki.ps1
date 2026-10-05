@@ -111,19 +111,11 @@ finally {
     # overwhelmingly common case.
     Restore-LokiConsole
 
-    # A step that failed is not silently forgotten, and a run that could not give the console back does not end with
-    # exit code 0 -- that would be a failure that looks like success. Writing the warning is best-effort: the console
-    # is likely broken if a step failed, and an exception escaping a finally would replace the exit code with
-    # PowerShell's own error text on a screen that may not show it.
-    $restoreFailures = @(Get-LokiRestoreFailure)
-    if ($restoreFailures.Count -gt 0) {
-        if ($exit -eq (Get-LokiExitCode 'Ok')) { $exit = Get-LokiExitCode 'GeneralError' }
-        foreach ($failed in $restoreFailures) {
-            # If one warning cannot be written, the rest will not be either: stop trying.
-            try { Write-LokiWarn (Get-LokiText 'restore.failed' -ArgumentList @($failed)) }
-            catch { break }
-        }
-    }
+    # A part that could not be given back is not silently forgotten, and a run that could not give the console back
+    # does not end with exit code 0 -- that would be a failure that looks like success. Both live in lib/teardown.ps1,
+    # where they are tested; the warning is best effort and never throws.
+    $exit = Get-LokiRestoreExitCode -ExitCode $exit
+    Write-LokiRestoreWarning
 }
 
 exit $exit
