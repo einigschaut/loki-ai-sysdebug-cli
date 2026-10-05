@@ -1,6 +1,7 @@
 # ADR-0036: Loki owns the screen, and gives it back untouched
 
-Status: Accepted (2026-08-26)
+Status: Accepted (2026-08-26) — **amended 2026-10-05**: one of its consequences was false as written; see *Amendment* at
+the end.
 
 Reverses the central claim of ADR-0035 and the "What is deliberately NOT copied from the reference" section of
 issue #133. Both ruled out the alternate screen and every escape sequence, on the grounds that Loki must leave no
@@ -149,6 +150,7 @@ and its own probe, not this ADR.
   that scrolls and this one does not scroll.
 - The dispatcher's teardown gains `Close-LokiScreen` beside `Close-LokiRegion`. There is no path on which Loki
   exits with the alternate screen still active that does not also mean the process was killed outright.
+  **— False as written; corrected in the amendment of 2026-10-05.**
 - `lib/screen.ps1` reaches into `lib/liveregion.ps1` for `Get-LokiConsoleFact`, and reuses `Test-LokiRegionTextSafe`
   is *not* done — the screen pads by cell count the same way and will need the same rule. Both are recorded debts:
   the console-fact reader belongs in `lib/ui.ps1`, and the cell-text rule belongs in a shared place under a name
@@ -168,3 +170,51 @@ Stated rather than assumed, because the last time this project assumed a renderi
   configuration, and the hidden repeat was consistent — but no arm was *known* to flicker, so the honest conclusion
   is "nothing flickered here", not "the number of writes stopped mattering". The one-write rule stays because it is
   the only thing previously measured to matter and it costs nothing.
+
+## Amendment (2026-10-05): the console was not given back on every path
+
+The consequence above — *no path short of a kill leaves the alternate screen active* — was false. An independent
+review of the session layer found the gap, and a fault walk over the real code measured it.
+
+**What was wrong.** `Open-LokiScreen` wrote the enter sequence first and recorded that the screen was open only at
+the very end, after the full paint and the read-back. An exception or a stop anywhere in between left the record
+empty, so `Close-LokiScreen` — and with it the dispatcher's `finally` — had nothing to undo, and the operator was left
+in the alternate screen with the cursor hidden. The session also opened the screen *before* it claimed Ctrl+C, so a
+Ctrl+C pressed while the screen was opening was a real stop, landing exactly in that window.
+
+**How it was measured.** `tests/teardown.Tests.ps1` runs one full open → frame → close cycle against a fake console
+that interprets what Loki writes (`tests/helpers/LokiTestConsole.ps1`), and fails the cycle at every single console
+call in turn — once by throwing, once by reporting failure — then asks whether the operator got their console back:
+main screen visible and untouched, cursor visible, Ctrl+C as it was. Against the previous code, **17 of 80** points
+failed: 13 left the alternate screen active with the cursor hidden, 2 left Ctrl+C claimed, 2 lost a leave that was
+never retried. After the change, all 80 pass.
+
+**What changed.**
+
+- A separate flag, set **before** the enter sequence is written and cleared only once a leave has been written
+  successfully. `Close-LokiScreen` acts on it even when no screen was ever fully open, and a leave that could not be
+  written is tried again by the next close. Every failure path inside `Open-LokiScreen` now leaves through
+  `Close-LokiScreen` instead of writing its own leave sequence.
+- The session claims Ctrl+C **first** and gives it back **last** — so a Ctrl+C while the screen opens or closes is a
+  key, not a stop that can interrupt it halfway. `Close-LokiKeyread` keeps its state until Ctrl+C has really been
+  handed back, so a failed attempt is retried too.
+- One function, `Restore-LokiConsole` (`lib/teardown.ps1`), replaces the four separate teardown calls in the
+  dispatcher. It runs every step on its own guard (a step that throws no longer skips the ones after it), in a fixed
+  order — capture sink, screen, live region, session, keyboard last — and records any step that failed. The
+  dispatcher calls it from its `catch` **before** printing the error, because an error printed while the alternate
+  screen is still active lands in the alternate buffer and is discarded with it; the `finally` calls it again. A run
+  that could not give the console back no longer ends with exit code 0.
+- A session whose screen is lost — a frame or caret write that fails — now ends instead of carrying on with nothing
+  drawn and Ctrl+C still claimed, and the guided mode reports it with an error code rather than exiting 0.
+- The VT probe puts the operator's cursor row back from a **snapshot of its cells** — characters and colours —
+  through `$Host.UI.RawUI.SetBufferContents`, in a `finally`. It used to reprint the row's text through the output
+  code page. Measured on a real conhost window (CP850, Windows PowerShell 5.1) with a coloured row holding ✓ and →:
+  the old code changed **11 of 120** cells (✓ came back as `V`, colours gone); the new code changed **0 of 120**,
+  cursor included. Not measured under Windows Terminal (ConPTY).
+
+**What is still true, and what still is not covered.** A hard kill of the window runs no `finally` anywhere and so
+still leaves the alternate screen active; nothing short of a job object (which would need `Add-Type`, a trace) can
+change that. While Ctrl+C is claimed it is a key and cannot interrupt anything, and the keyboard is given back last,
+so by the time Ctrl+C is a stop again the screen is already back. Not covered: the live region (the `collect`
+footer) never claims Ctrl+C, so there a second Ctrl+C inside the `finally` can still cut its cleanup short — the
+review measured that a stop aborts a running `finally` under 5.1.

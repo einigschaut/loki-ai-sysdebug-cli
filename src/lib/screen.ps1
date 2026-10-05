@@ -42,12 +42,15 @@
 #
 #   IMPURE:
 #   Test-LokiVtProcessing -> [bool]      does this console interpret escapes? measured, not assumed
+#   Get-LokiBufferSnapshot -> @{ Row; Col; Width; Cells } or $null   the cursor row, cells and all
+#   Restore-LokiBufferSnapshot -Snapshot -> [bool]                   puts that row and the cursor back
 #   Get-LokiScreenRow -Row -Width -> [string] or $null
 #   Open-LokiScreen [-Plain] -> [bool]   $false is a NORMAL answer
 #   Write-LokiScreenFrame -Model         one frame, one console write
 #   Resize-LokiScreen -> [bool]          re-measure and full-repaint after the window changed
 #   Hide-LokiScreenCaret / Show-LokiScreenCaret -Row -Col   the fence the reference puts round a frame
-#   Close-LokiScreen                     leaves the alternate screen, always
+#   Close-LokiScreen                     leaves the alternate screen -- also after an open that stopped halfway,
+#                                        and again on the next call if the leave could not be written
 #   Test-LokiScreenPaint -Model -> [int] rows where the console disagrees with the model
 #   Test-LokiScreenOpen / Get-LokiScreenRefusal / Get-LokiScreenSize / Initialize-LokiScreen
 #
@@ -68,9 +71,23 @@ Set-StrictMode -Version Latest
 # Not a magic number worth naming twice.
 $script:LokiEsc = [string][char]27
 
-$script:LokiScreenState    = $null      # $null = closed. Otherwise Width / Height / Model / Encoding
+$script:LokiScreenState    = $null      # $null = closed. Otherwise Width / Height / Model
 $script:LokiScreenReason   = 'closed'   # why there is no screen right now, as a machine token
 $script:LokiScreenDisabled = $false     # a refusal that lasts for the rest of the process
+
+# Has the alternate screen possibly been entered, without a confirmed leave since? Set BEFORE the enter sequence is
+# written and cleared only once the leave sequence has been written successfully -- deliberately separate from
+# LokiScreenState, which is set only at the very END of a successful open.
+#
+# An independent review found what happened without it: the enter sequence went out first, the state was recorded
+# only after the full paint and the read-back, and an exception or a Ctrl+C anywhere in between left the state empty.
+# Close-LokiScreen then had nothing to act on, and the operator was left in the alternate screen with the cursor
+# hidden -- 13 of 80 points of a fault walk over one open/frame/close cycle (tests/teardown.Tests.ps1).
+#
+# Kept set when a leave could not be written, so the next Close -- the dispatcher runs it on every path -- tries again.
+# Sending the leave sequence when the screen was never actually entered is harmless: terminals ignore ?1049l outside
+# the alternate screen.
+$script:LokiScreenMustLeave = $false
 
 # ==============================================================================================
 # PURE
@@ -280,14 +297,18 @@ function Get-LokiScreenFullPaint {
 # WHAT IT NEVER DOES: it changes no code page, no console mode, no buffer size, no colour default.
 # It sets two DEC private modes that are view state and measured to restore exactly (?1049 alternate
 # screen, ?25 cursor visibility), and it writes text. There is no path on which Loki exits with the
-# alternate screen still active that does not also mean the process was killed outright.
+# alternate screen still active that does not also mean the process was killed outright -- a claim that was
+# FALSE as first written: an open that stopped between the enter sequence and recording its state left the screen
+# entered with nothing to undo it. LokiScreenMustLeave closes that, and tests/teardown.Tests.ps1 walks every point.
 # ==============================================================================================
 
 function Write-LokiScreenRaw {
     param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Text)
-    # The only console write in this file, and it reports failure instead of raising it -- the
-    # console APIs throw when output is redirected, and a diagnostic tool that dies while drawing is
-    # worse than one that stops drawing. [Console]::Write and not Write-Host: this is exactly the
+    # The only console write in this file, and it reports failure instead of raising it -- a write to
+    # a closed or invalid console handle throws, and a diagnostic tool that dies while drawing is
+    # worse than one that stops drawing. (It does NOT throw merely because output is redirected, as
+    # this comment used to claim; an independent review checked. The capability gate refuses to open
+    # a screen under redirection in any case.) [Console]::Write and not Write-Host: this is exactly the
     # call the feasibility probe measured, and it must stay the same call for those numbers to mean
     # anything. It deliberately does NOT fire the ordinary write hook -- the screen's own painting
     # must not be mistaken for output that should tear the screen down.
@@ -328,31 +349,62 @@ function Test-LokiVtProcessing {
     # to a temporary DLL under %TEMP%, which is a trace, and traces are the one thing this project
     # does not get to leave.
     #
-    # It borrows one row of the operator's screen for a few milliseconds and puts it back. The row is
-    # restored from its own contents, so the text survives; colour attributes on that row do not.
-    # That is the price of not being allowed to ask the console directly.
-    $probe = 'A'
+    # It borrows one row of the operator's screen for a few milliseconds and puts it back -- the CELLS, characters and
+    # colours both, taken before and written back after through the host's own buffer API.
+    #
+    # It used to put the row back by printing its text again. An independent review measured what that costs on a
+    # CP850 console: colours gone, and any character the code page cannot encode replaced -- a check mark came back as
+    # 'V', an arrow as a different symbol. And if the probe was interrupted, the row was not restored at all. Now the
+    # snapshot is restored in a finally, from cells rather than from text, so neither encoding nor an interruption
+    # between the probe and the restore can change what the operator had on that row.
+    $snapshot = Get-LokiBufferSnapshot
+    if ($null -eq $snapshot) { return $false }       # cannot put it back, so do not touch it
+    if ([int]$snapshot.Width -lt 8) { return $false }
+    try {
+        if (-not (Move-LokiCursor -Row ([int]$snapshot.Row))) { return $false }
+        if (-not (Write-LokiScreenRaw -Text ($script:LokiEsc + '[1m' + 'A' + $script:LokiEsc + '[m'))) { return $false }
+        $seen = Get-LokiScreenRow -Row ([int]$snapshot.Row) -Width ([int]$snapshot.Width)
+        if ($null -eq $seen -or $seen.Length -lt 1) { return $false }
+        # The code point, not -eq on characters: PowerShell compares [char]'a' and [char]'A' as equal.
+        return ([int][char]$seen[0] -eq [int][char]'A')
+    }
+    catch {
+        # Never throws, as before: Open-LokiScreen asks this inside its capability check and treats "could not tell"
+        # as "no". (A Ctrl+C stop is not caught here -- it cannot be -- and the finally still puts the row back.)
+        return $false
+    }
+    finally {
+        [void](Restore-LokiBufferSnapshot -Snapshot $snapshot)
+    }
+}
+
+function Get-LokiBufferSnapshot {
+    # The operator's cursor row -- every cell, characters and colours -- plus where the cursor stood, so it can be put
+    # back exactly. $null when the console cannot be read, which tells the VT probe not to touch the row at all.
+    #
+    # Through $Host.UI.RawUI, the same API Get-LokiScreenRow reads with: no P/Invoke and no Add-Type, because Add-Type
+    # compiles a DLL into %TEMP% and that is a trace.
     try {
         $rawUi = $Host.UI.RawUI
         $width = [int]$rawUi.BufferSize.Width
-        $row = [int]$rawUi.CursorPosition.Y
-        $col = [int]$rawUi.CursorPosition.X
-        if ($width -lt 8) { return $false }
+        $pos = $rawUi.CursorPosition
+        $rect = New-Object System.Management.Automation.Host.Rectangle 0, ([int]$pos.Y), ($width - 1), ([int]$pos.Y)
+        $cells = $rawUi.GetBufferContents($rect)
+        return @{ Row = [int]$pos.Y; Col = [int]$pos.X; Width = $width; Cells = $cells }
+    }
+    catch { return $null }
+}
 
-        $before = Get-LokiScreenRow -Row $row -Width $width
-        if ($null -eq $before) { return $false }
-
-        [Console]::SetCursorPosition(0, $row)
-        [Console]::Write($script:LokiEsc + '[1m' + $probe + $script:LokiEsc + '[m')
-        $seen = Get-LokiScreenRow -Row $row -Width $width
-
-        # Put the row back exactly as it was, then the cursor.
-        [Console]::SetCursorPosition(0, $row)
-        [Console]::Write($before.Substring(0, $width - 1))
-        [Console]::SetCursorPosition($col, $row)
-
-        if ($null -eq $seen -or $seen.Length -lt 1) { return $false }
-        return ($seen[0] -eq $probe[0])
+function Restore-LokiBufferSnapshot {
+    param([Parameter(Mandatory = $true)][AllowNull()]$Snapshot)
+    # Writes the cells back where they were taken and puts the cursor back. $false when it could not; the caller is
+    # already on its way out and has nothing better to do than report it.
+    if ($null -eq $Snapshot) { return $false }
+    try {
+        $rawUi = $Host.UI.RawUI
+        $rawUi.SetBufferContents((New-Object System.Management.Automation.Host.Coordinates 0, ([int]$Snapshot.Row)), $Snapshot.Cells)
+        $rawUi.CursorPosition = New-Object System.Management.Automation.Host.Coordinates ([int]$Snapshot.Col), ([int]$Snapshot.Row)
+        return $true
     }
     catch { return $false }
 }
@@ -442,16 +494,22 @@ function Open-LokiScreen {
     $height = [int]$facts.WindowHeight
     $model = Initialize-LokiScreenModel -Width $width -Height $height
 
+    # From here on the alternate screen may be entered, so a Close has to leave it no matter where this stops -- see
+    # LokiScreenMustLeave at the top of the file. Set BEFORE the write, not after: a write that half succeeds, or a
+    # stop between the write and the next line, must still be undone.
+    $script:LokiScreenMustLeave = $true
+
     # Enter. ESC[2J exactly once, at entry, and never again -- the reference clears exactly once
     # across 1836 frames and repaints everything else by difference.
     $enter = $script:LokiEsc + '[?1049h' + $script:LokiEsc + '[2J' + $script:LokiEsc + '[?25l'
     if (-not (Write-LokiScreenRaw -Text $enter)) {
+        Close-LokiScreen
         $script:LokiScreenReason = 'write-failed'
         return $false
     }
 
     if (-not (Write-LokiScreenRaw -Text (Get-LokiScreenFullPaint -Model $model))) {
-        [void](Write-LokiScreenRaw -Text ($script:LokiEsc + '[?25h' + $script:LokiEsc + '[?1049l'))
+        Close-LokiScreen
         $script:LokiScreenReason = 'write-failed'
         return $false
     }
@@ -461,7 +519,7 @@ function Open-LokiScreen {
     # drawing it. Refuse for good and hand the caller back to the fallback path.
     $mismatch = Test-LokiScreenPaint -Model $model
     if ($mismatch -gt 0) {
-        [void](Write-LokiScreenRaw -Text ($script:LokiEsc + '[?25h' + $script:LokiEsc + '[?1049l'))
+        Close-LokiScreen
         $script:LokiScreenDisabled = $true
         $script:LokiScreenReason = 'self-check'
         return $false
@@ -470,14 +528,12 @@ function Open-LokiScreen {
     # not one which is wrong. Accepting it keeps hosts where GetBufferContents is stubbed, and the
     # per-frame shape check still guards the arithmetic.
 
-    $encoding = $null
-    try { $encoding = [Console]::OutputEncoding } catch { $encoding = $null }
-
+    # Every failure path above leaves through Close-LokiScreen, and only there. They used to write their own leave
+    # sequence -- without the attribute reset, and without the retry Close now does when the leave cannot be written.
     $script:LokiScreenState = @{
-        Width    = $width
-        Height   = $height
-        Model    = $model
-        Encoding = $encoding
+        Width  = $width
+        Height = $height
+        Model  = $model
     }
     return $true
 }
@@ -510,14 +566,22 @@ function Write-LokiScreenFrame {
 }
 
 function Close-LokiScreen {
-    if ($null -eq $script:LokiScreenState) { return }
+    # Acts whenever the alternate screen MAY have been entered -- not only when a screen is fully open. An open that
+    # stopped halfway has no LokiScreenState yet but has already written the enter sequence; see LokiScreenMustLeave.
+    if ($null -eq $script:LokiScreenState -and -not $script:LokiScreenMustLeave) { return }
     # State is cleared FIRST: everything below writes, and a write that re-entered here would loop.
     $script:LokiScreenState = $null
     $script:LokiScreenReason = 'closed'
+    $script:LokiScreenMustLeave = $true
 
     # Cursor back, alternate screen off, attributes reset. In that order: showing the cursor after
     # leaving would show it in the restored screen at a position this file never chose.
-    [void](Write-LokiScreenRaw -Text ($script:LokiEsc + '[?25h' + $script:LokiEsc + '[?1049l' + $script:LokiEsc + '[m'))
+    #
+    # Only a write that went through clears the obligation. A failed one keeps it, so the next Close tries again --
+    # the dispatcher runs one on every exit path, on the error path twice.
+    if (Write-LokiScreenRaw -Text ($script:LokiEsc + '[?25h' + $script:LokiEsc + '[?1049l' + $script:LokiEsc + '[m')) {
+        $script:LokiScreenMustLeave = $false
+    }
 }
 
 function Resize-LokiScreen {
@@ -569,7 +633,12 @@ function Hide-LokiScreenCaret {
     # end -- in the middle of the transcript -- for the moment between the frame write and the caret
     # move. At 8 frames a second that is not a theoretical flicker.
     if ($null -eq $script:LokiScreenState) { return $false }
-    return Write-LokiScreenRaw -Text ($script:LokiEsc + '[?25l')
+    if (Write-LokiScreenRaw -Text ($script:LokiEsc + '[?25l')) { return $true }
+    # A console that cannot take five bytes cannot take a frame either. Leave, the way a failed frame write does,
+    # rather than keep drawing blind -- the session notices the screen is gone and ends.
+    Close-LokiScreen
+    $script:LokiScreenReason = 'write-failed'
+    return $false
 }
 
 function Show-LokiScreenCaret {
@@ -592,5 +661,11 @@ function Show-LokiScreenCaret {
     if ($Row -lt 0 -or $Col -lt 0) { return $false }
     if ($Row -ge [int]$script:LokiScreenState.Height) { return $false }
     if ($Col -ge [int]$script:LokiScreenState.Width) { return $false }
-    return Write-LokiScreenRaw -Text ($script:LokiEsc + '[' + ($Row + 1) + ';' + ($Col + 1) + 'H' + $script:LokiEsc + '[?25h')
+    if (Write-LokiScreenRaw -Text ($script:LokiEsc + '[' + ($Row + 1) + ';' + ($Col + 1) + 'H' + $script:LokiEsc + '[?25h')) {
+        return $true
+    }
+    # Same as Hide-LokiScreenCaret: a write that fails here closes the screen instead of being ignored.
+    Close-LokiScreen
+    $script:LokiScreenReason = 'write-failed'
+    return $false
 }

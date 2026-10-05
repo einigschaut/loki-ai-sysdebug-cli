@@ -611,26 +611,30 @@ Describe 'Open-LokiSession / Close-LokiSession' {
         Get-LokiSessionRefusal | Should -Be 'ok'
     }
 
-    It 'refuses when the screen refuses, and says which half said no' {
+    It 'refuses when the screen refuses, says which half said no, and gives Ctrl+C back' {
+        # The keyboard is claimed FIRST now (so a Ctrl+C while the screen opens is a key, not a stop), which means a
+        # screen refusal has a claimed keyboard to give back.
+        Mock -CommandName Open-LokiKeyread -MockWith { return $true }
         Mock -CommandName Open-LokiScreen -MockWith { return $false }
         Mock -CommandName Get-LokiScreenRefusal -MockWith { return 'no-vt' }
-        Mock -CommandName Open-LokiKeyread -MockWith { throw 'must not be reached' }
+        Mock -CommandName Close-LokiKeyread -MockWith { }
         Open-LokiSession | Should -BeFalse
         Test-LokiSessionOpen | Should -BeFalse
         Get-LokiSessionRefusal | Should -Be 'screen:no-vt'
+        # Twice: once from the Close-LokiSession that begins EVERY open attempt, so a reopen cannot inherit half a
+        # previous session, and once from the screen's refusal path -- the one under test.
+        Should -Invoke Close-LokiKeyread -Times 2 -Exactly
     }
 
-    It 'gives the screen back when the keyboard refuses, rather than leaving half a session' {
-        Mock -CommandName Open-LokiScreen -MockWith { return $true }
+    It 'never touches the screen when the keyboard refuses' {
+        # The other half of the new order. The screen's VT probe writes into the operator's cursor row; a keyboard
+        # that cannot be read means there will be no session, so the probe must not run at all.
         Mock -CommandName Open-LokiKeyread -MockWith { return $false }
         Mock -CommandName Get-LokiKeyreadRefusal -MockWith { return 'redirected' }
-        Mock -CommandName Close-LokiScreen -MockWith { }
+        Mock -CommandName Open-LokiScreen -MockWith { throw 'must not be reached' }
         Open-LokiSession | Should -BeFalse
         Get-LokiSessionRefusal | Should -Be 'keyread:redirected'
-        # Twice: once from the Close-LokiSession that begins EVERY open attempt, so a reopen cannot
-        # inherit half a previous session, and once from the keyboard's refusal path. The first is a
-        # no-op here; the second is the one under test.
-        Should -Invoke Close-LokiScreen -Times 2 -Exactly
+        Should -Invoke Open-LokiScreen -Times 0 -Exactly
     }
 
     It 'closes both halves, and closing twice is harmless' {
@@ -686,6 +690,7 @@ Describe 'Invoke-LokiSessionRound' {
         Mock -CommandName Open-LokiScreen -MockWith { return $true }
         Mock -CommandName Open-LokiKeyread -MockWith { return $true }
         Mock -CommandName Write-LokiSessionFrame -MockWith { [void]$script:order.Add('paint') }
+        Mock -CommandName Test-LokiScreenOpen -MockWith { return $true }
         Mock -CommandName Read-LokiKey -MockWith { [void]$script:order.Add('read'); return (New-LokiTestTextKey -Char 'q') }
         Mock -CommandName Resize-LokiScreen -MockWith { [void]$script:order.Add('resize'); return $true }
 
@@ -716,6 +721,7 @@ Describe 'Invoke-LokiSessionRound' {
         Mock -CommandName Open-LokiScreen -MockWith { return $true }
         Mock -CommandName Open-LokiKeyread -MockWith { return $true }
         Mock -CommandName Write-LokiSessionFrame -MockWith { }
+        Mock -CommandName Test-LokiScreenOpen -MockWith { return $true }
         Mock -CommandName Resize-LokiScreen -MockWith { return $true }
         Mock -CommandName Read-LokiKey -MockWith { return (New-LokiTestEnterKey) }
 

@@ -42,8 +42,10 @@
 #   Get-LokiInputSource -MoreWaiting -GapMs -> [string]   paste | typing
 #   Get-LokiExitIntent -Kind -ControlLetter -Armed -> @{ Armed; Exit }
 #
-#   IMPURE -- four primitives, so a test can replace all four and still reach every path:
+#   IMPURE -- primitives, so a test can replace all of them and still reach every path:
 #   Request-LokiCtrlCInput -Enabled -> [bool]   named Request- not Set-, for the analyzer
+#   Get-LokiCtrlCInput -> [bool]                is Ctrl+C claimed right now? read once by Open, to give back
+#   Get-LokiKeyreadFact -> @{ HostName; InputRedirected } or $null
 #   Read-LokiRawKey -> [hashtable] or $null
 #   Test-LokiKeyWaiting -> [bool]
 #   Get-LokiKeyElapsed -> [double]            MILLISECONDS since the previous key; restarts the clock
@@ -182,6 +184,27 @@ function Request-LokiCtrlCInput {
     catch { return $false }
 }
 
+function Get-LokiCtrlCInput {
+    # Is Ctrl+C currently claimed as input? The counterpart of Request-LokiCtrlCInput, and a primitive of its own so a
+    # test can hand Open a console on which it was ALREADY claimed. Without it, "remember what you found" could be
+    # replaced by "assume it was off" and every test stayed green -- an independent review did exactly that.
+    try { return [bool][Console]::TreatControlCAsInput }
+    catch { return $false }
+}
+
+function Get-LokiKeyreadFact {
+    # The two facts the keyboard's capability gate needs, or $null when there is no console to ask. A primitive, so a
+    # test can open the keyboard on a pretend interactive console -- Pester itself runs with stdin redirected, which is
+    # exactly the condition under which this refuses.
+    try {
+        return @{
+            HostName        = [string]$Host.Name
+            InputRedirected = [bool][Console]::IsInputRedirected
+        }
+    }
+    catch { return $null }
+}
+
 function Read-LokiRawKey {
     # BLOCKS. Returns the three facts a key carries, as a plain hashtable, so a test can hand over a
     # scripted sequence without constructing ConsoleKeyInfo values.
@@ -193,7 +216,12 @@ function Read-LokiRawKey {
             Modifiers = [string]$k.Modifiers
         }
     }
-    catch { return $null }
+    catch {
+        # Recorded, not swallowed. The session ends on a $null here, and without a reason that end looked exactly like
+        # an ordinary one -- exit code 0 for a console that had gone away underneath.
+        $script:LokiKeyReason = 'read-failed'
+        return $null
+    }
 }
 
 function Test-LokiKeyWaiting {
@@ -233,25 +261,19 @@ function Open-LokiKeyread {
     # normal answer under redirection and in CI.
     Close-LokiKeyread
 
-    $hostName = ''
-    $redirected = $true
-    try {
-        $hostName = [string]$Host.Name
-        $redirected = [bool][Console]::IsInputRedirected
-    }
-    catch {
+    $facts = Get-LokiKeyreadFact
+    if ($null -eq $facts) {
         $script:LokiKeyReason = 'no-console'
         return $false
     }
 
-    $capability = Get-LokiKeyreadCapability -HostName $hostName -InputRedirected $redirected
+    $capability = Get-LokiKeyreadCapability -HostName ([string]$facts.HostName) -InputRedirected ([bool]$facts.InputRedirected)
     $script:LokiKeyReason = [string]$capability.Reason
     if (-not $capability.Engage) { return $false }
 
     # Remember what it was, so Close puts it back rather than assuming it was off. It was False on
     # every console measured, but assuming that is how a tool leaves a machine changed.
-    $was = $false
-    try { $was = [bool][Console]::TreatControlCAsInput } catch { $was = $false }
+    $was = Get-LokiCtrlCInput
 
     if (-not (Request-LokiCtrlCInput -Enabled $true)) {
         $script:LokiKeyReason = 'no-ctrl-c'
@@ -298,9 +320,12 @@ function Read-LokiKey {
 
 function Close-LokiKeyread {
     if ($null -eq $script:LokiKeyState) { return }
-    # State cleared FIRST, so nothing below can re-enter.
-    $state = $script:LokiKeyState
-    $script:LokiKeyState = $null
-    $script:LokiKeyReason = 'closed'
-    [void](Request-LokiCtrlCInput -Enabled ([bool]$state.CtrlCWasOwned))
+    # The state is given up only once Ctrl+C has really been handed back. If that fails, the state stays, and the next
+    # Close -- the dispatcher runs one on every exit path -- tries again. It used to be cleared first, so one failed
+    # attempt left the operator's shell with Ctrl+C claimed and nothing left that knew to give it back. Request does
+    # not call back into this file, so keeping the state across the call cannot re-enter.
+    if (Request-LokiCtrlCInput -Enabled ([bool]$script:LokiKeyState.CtrlCWasOwned)) {
+        $script:LokiKeyState = $null
+        $script:LokiKeyReason = 'closed'
+    }
 }

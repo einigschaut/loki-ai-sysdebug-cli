@@ -44,6 +44,7 @@ Initialize-LokiRegion
 Initialize-LokiScreen
 Initialize-LokiKeyread
 Initialize-LokiSession
+Initialize-LokiRestore
 $version = Get-LokiVersion -AppRoot $AppRoot
 $exit = Get-LokiExitCode 'Ok'
 
@@ -95,33 +96,34 @@ try {
     }
 }
 catch {
+    # Give the console back BEFORE saying what went wrong. catch runs before finally, and an error printed while the
+    # alternate screen is still active lands in the alternate buffer -- which the finally then discards, leaving exit
+    # code 1 and no message at all. Restore-LokiConsole is idempotent; the finally runs it again regardless.
+    Restore-LokiConsole
     Write-LokiErr $_.Exception.Message
     if ($flags.Verbose) { Write-LokiLine ($_.ScriptStackTrace) }
     $exit = Get-LokiExitCode 'GeneralError'
 }
 finally {
-    # Teardown anchor (stage 0 minimal; later: env-isolate cleanup, llama-server kill, footprint guard).
-    # A live region parks the cursor mid-screen and owns rows the shell is about to write over, so it
-    # must be closed on EVERY exit path -- including the one through the catch above. It is a no-op
-    # when nothing is open, which is the overwhelmingly common case.
-    Close-LokiRegion
+    # Teardown anchor (later also: env-isolate cleanup, llama-server kill, footprint guard). EVERY exit path ends here,
+    # and lib/teardown.ps1 says in what order and why: capture sink, owned screen, live region, session, and the
+    # keyboard last. Each step is guarded on its own and each is a no-op when its part was never opened -- which is the
+    # overwhelmingly common case.
+    Restore-LokiConsole
 
-    # A session owns the screen AND the keyboard, so closing it hands both back at once. The two
-    # calls below are NOT redundant with this one: the screen and the keyboard are separately
-    # openable on purpose -- a command may paint without ever reading a key -- so each still needs
-    # its own teardown, and each is a no-op when it was never opened.
-    Close-LokiSession
-
-    # The owned screen (ADR-0036) has a harder version of the same obligation: leaving the alternate
-    # screen active would hand the operator's shell back a window that is not theirs, with the cursor
-    # hidden. Also a no-op when nothing is open, and it sits here BEFORE any command opens a screen so
-    # that the first one cannot forget.
-    Close-LokiScreen
-
-    # And the keyboard. Open-LokiKeyread takes Ctrl+C away from PowerShell so the session can
-    # define it; leaving it taken would mean the operator's shell no longer stops on Ctrl+C.
-    # Close puts back the value Open found, rather than assuming it was off.
-    Close-LokiKeyread
+    # A step that failed is not silently forgotten, and a run that could not give the console back does not end with
+    # exit code 0 -- that would be a failure that looks like success. Writing the warning is best-effort: the console
+    # is likely broken if a step failed, and an exception escaping a finally would replace the exit code with
+    # PowerShell's own error text on a screen that may not show it.
+    $restoreFailures = @(Get-LokiRestoreFailure)
+    if ($restoreFailures.Count -gt 0) {
+        if ($exit -eq (Get-LokiExitCode 'Ok')) { $exit = Get-LokiExitCode 'GeneralError' }
+        foreach ($failed in $restoreFailures) {
+            # If one warning cannot be written, the rest will not be either: stop trying.
+            try { Write-LokiWarn (Get-LokiText 'restore.failed' -ArgumentList @($failed)) }
+            catch { break }
+        }
+    }
 }
 
 exit $exit

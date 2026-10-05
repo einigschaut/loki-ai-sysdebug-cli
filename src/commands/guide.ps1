@@ -130,8 +130,11 @@ function Invoke-LokiGuideSession {
 
         $round = Invoke-LokiSessionRound -State $state
         if ([string]$round.Action -eq 'closed') {
-            # The console went away underneath. Not an error and not a clean departure either -- say nothing and
-            # leave, because there is nowhere left to say it.
+            # The screen or the keyboard went away underneath, and the round has already closed the session. This is
+            # NOT a clean departure, and it used to end with exit code 0 and no word -- a failure that looked exactly
+            # like success. Say why on the real console, now that the session is closed, and leave with an error.
+            Write-LokiWarn (Get-LokiText 'guide.session.lost' -ArgumentList @([string]$round.Text))
+            $exit = Get-LokiExitCode 'GeneralError'
             break
         }
         if ([string]$round.Action -eq 'exit') { break }
