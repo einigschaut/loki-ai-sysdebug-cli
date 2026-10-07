@@ -116,6 +116,9 @@ finally {
     # where they are tested; the warning is best effort and never throws.
     $exit = Get-LokiRestoreExitCode -ExitCode $exit
     Write-LokiRestoreWarning
-}
 
-exit $exit
+    # INSIDE the finally, as its last statement. After a stop the finally runs to its end but nothing after it does --
+    # measured by an independent review on a real conhost (powershell -File, a real CTRL_C_EVENT): `exit` after the
+    # finally gave the process exit code 0, `exit` inside it gave the code the finally had computed.
+    exit $exit
+}

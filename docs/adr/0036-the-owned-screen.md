@@ -197,7 +197,10 @@ reported as failed.
 *Correction.* The first version of this amendment said "17 of 80 points failed, all 80 pass after the change". The
 walk then had 80 points, but the cycle it walked made only 24 console calls: 32 of the 80 points lay past its end and
 re-ran the fault-free cycle. The 17 failures were among the 48 real points. The walk now covers exactly the calls of
-the run it counted — K = **60** calls, so **180** points over three modes, all passing.
+the run it counted — K = **60** calls, so **180** points over three modes, all passing. A second review then found
+that 11 of those 60 calls ignored the "reports failure" mode — the fake answered as if nothing had happened, so 11 of
+the 180 points re-ran the fault-free cycle once more. Every call now answers that mode the way its real primitive
+answers a failure (no console facts, no key, VT off, Ctrl+C not claimed), and all 180 points still pass.
 
 **What changed.**
 
@@ -222,10 +225,18 @@ the run it counted — K = **60** calls, so **180** points over three modes, all
   been handed back, so a failed attempt is retried.
 - One function, `Restore-LokiConsole` (`lib/teardown.ps1`), replaces the four separate teardown calls in the
   dispatcher. It runs every step on its own guard (a step that throws no longer skips the ones after it), in a fixed
-  order — capture sink, screen, live region, session, keyboard last — and then asks the state what is still not given
+  order — capture sink, live region, screen, session, keyboard last — and then asks the state what is still not given
   back. The dispatcher calls it from its `catch` **before** printing the error, because an error printed while the
   alternate screen is still active lands in the alternate buffer and is discarded with it; the `finally` calls it
   again and reports the outcome of that last call only.
+  *The region goes before the screen*, in this function and in `Close-LokiSession`. A live region that a command
+  opened inside the session (`collect` does) closes by blanking its rows at an anchor read from the console; after the
+  leave that is the operator's main buffer. A second review measured it on a real conhost with the region closed after
+  the screen: four of the operator's rows blanked, the cursor moved from 11,40 to 0,36, nothing reported. With the
+  region first: no row changed, cursor in place.
+  *The dispatcher exits from inside its `finally`.* After a stop the `finally` runs to its end but nothing after it
+  does; measured by the second review (`powershell -File`, a real `CTRL_C_EVENT`): `exit` after the `finally` ended the
+  process with 0 whatever the restore had found, `exit` inside it with the code the `finally` computed.
   *Correction.* The first version said that a run which could not give the console back no longer ended with exit
   code 0. It still did: the Close functions report a failed write by keeping their state, not by throwing, and only
   throws were recorded — the review measured it on a real console (alternate screen active, exit 0, no warning). Now
@@ -248,10 +259,26 @@ the run it counted — K = **60** calls, so **180** points over three modes, all
 
 **What is still true, and what still is not covered.** A hard kill of the window runs no `finally` anywhere and so
 still leaves the alternate screen active; nothing short of a job object (which would need `Add-Type`, a trace) can
-change that. While Ctrl+C is claimed it is a key and cannot interrupt anything, and the keyboard is given back last,
-so by the time Ctrl+C is a stop again the screen is already back. Not covered: the live region (the `collect`
-footer) never claims Ctrl+C, so there a second Ctrl+C inside the `finally` can still cut its cleanup short — the
-review measured that a stop aborts a running `finally` under 5.1.
+change that. While Ctrl+C is claimed, a Ctrl+C typed **on the keyboard** is a key and interrupts nothing, and the
+keyboard is given back last, so by the time Ctrl+C is a stop again the screen is already back. That is narrower than
+this sentence first said; the second review measured two ways round it on a real conhost:
+
+- **Ctrl+Break** cannot be claimed. In an open session it breaks into the PowerShell debugger on the next key, and the
+  `[DBG]` prompt is drawn into the *alternate* screen with Ctrl+C released. Leaving it with `q` stops the script, the
+  `finally` runs, and the console came back fully (buffer, cursor, Ctrl+C, no failures). Continuing with `c` was not
+  measured conclusively.
+- A `CTRL_C_EVENT` sent **programmatically** to the console still stops the script while Ctrl+C is claimed.
+
+Not covered either: the live region (the `collect` footer) outside a session never claims Ctrl+C, so there a second
+Ctrl+C inside the `finally` can still cut its cleanup short — the review measured that a stop aborts a running
+`finally` under 5.1.
+
+Known residuals, reasoned and not measured, and none of them reported to the operator: the VT probe ignores a failed
+restore of its snapshot (a bold `A` would stay in column 0 of the operator's row); the cursor repair after an
+unconfirmed enter is best effort; a region failure that does not throw is invisible to `Restore-LokiConsole`, because
+the region clears its own state first; and an enter write that reported failure *after* its bytes went out would clear
+the leave obligation and strand the operator in the alternate screen. That last one is the same never-observed
+failure mode as the leave-retry case below, with a worse outcome.
 
 The fake console does not model, and so nothing green covers:
 
@@ -263,4 +290,9 @@ The fake console does not model, and so nothing green covers:
   reports failure after its bytes went out was never observed;
 - ordinary output. `Write-LokiLine` and the one-shot fallback menu write to the real console, not into the fake, so a
   line that falls through a capture sink which failed while the screen was up is invisible to the walk;
+- the real console primitives. `Move-LokiCursor`, `Get-LokiConsoleFact` and the buffer snapshot are always replaced in
+  the tests, so the *column* half of "cursor where it was" rests on the real-console measurements above alone: three
+  mutations that force the column to 0 pass the whole suite;
+- a live region inside the session, which is not part of the walk's lifecycle (its order is pinned by a test of its
+  own);
 - line wrapping, a main buffer reflowed by a resize, and Windows Terminal / ConPTY in general.

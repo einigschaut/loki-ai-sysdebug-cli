@@ -53,14 +53,16 @@ BeforeAll {
     function global:Get-LokiTestConsoleMock {
         return @{
             Fact     = { return $script:tc.Fact() }
-            Vt       = { [void]$script:tc.Tick('vt-probe'); $script:tc.AfterEffect(); return $true }
+            # Every call honours 'false' with what its real primitive returns on failure, or the walk's 'false' mode
+            # changes nothing at that call -- an independent review found 11 of 60 such calls in an earlier version.
+            Vt       = { if (-not $script:tc.Tick('vt-probe')) { return $false }; $script:tc.AfterEffect(); return $true }
             Raw      = { return $script:tc.Write($Text) }
             Row      = { return $script:tc.ReadRow($Row, $Width) }
             SetCtrlC = { return $script:tc.SetCtrlC($Enabled) }
             GetCtrlC = { return $script:tc.GetCtrlC() }
-            KeyFact  = { [void]$script:tc.Tick('keyread-fact'); $script:tc.AfterEffect(); return @{ HostName = 'ConsoleHost'; InputRedirected = $false } }
+            KeyFact  = { if (-not $script:tc.Tick('keyread-fact')) { return $null }; $script:tc.AfterEffect(); return @{ HostName = 'ConsoleHost'; InputRedirected = $false } }
             Cursor   = { return $script:tc.MoveCursor($Row, $Col) }
-            Key      = { [void]$script:tc.Tick('read-key'); $script:tc.AfterEffect(); return @{ Key = 'Q'; KeyChar = 113; Modifiers = '0' } }
+            Key      = { if (-not $script:tc.Tick('read-key')) { return $null }; $script:tc.AfterEffect(); return @{ Key = 'Q'; KeyChar = 113; Modifiers = '0' } }
         }
     }
 }
@@ -550,6 +552,23 @@ Describe 'Restore-LokiConsole reports what it could not give back' {
         $script:order[$script:order.Count - 1] | Should -Be 'keyboard'
         $script:order.IndexOf('screen') | Should -BeLessThan $script:order.IndexOf('keyboard')
     }
+
+    It 'closes a live region BEFORE it leaves the screen' {
+        # A region opened inside the session blanks its rows at an anchor read from the console. Closed after the leave,
+        # those are the operator's rows in the main buffer -- measured on a real conhost: four rows blanked, cursor moved.
+        $script:order = New-Object System.Collections.Generic.List[string]
+        Mock -CommandName Close-LokiScreen -MockWith { [void]$script:order.Add('screen') }
+        Mock -CommandName Close-LokiRegion -MockWith { [void]$script:order.Add('region') }
+        Mock -CommandName Close-LokiKeyread -MockWith { }
+        Restore-LokiConsole
+        $script:order[0] | Should -Be 'region'
+        $script:order.IndexOf('region') | Should -BeLessThan $script:order.IndexOf('screen')
+
+        # And the session's own close, which the guided mode's finally and the session step run, does the same.
+        $script:order.Clear()
+        Close-LokiSession
+        $script:order -join ',' | Should -Be 'region,screen'
+    }
 }
 
 Describe 'Get-LokiRestoreExitCode -- a run that could not give the console back does not end in success' {
@@ -631,6 +650,14 @@ Describe 'the dispatcher gives the console back on every path' {
         $restore | Should -BeGreaterOrEqual 0
         $exitFrom | Should -BeGreaterThan $restore
         $warn | Should -BeGreaterThan $restore
+    }
+
+    It 'exits from INSIDE the finally, as its last statement' {
+        # After a stop nothing after the finally runs, so an `exit` there was never reached and the process ended with 0
+        # whatever the restore had found (measured on a real conhost).
+        $last = $script:mainTry.Finally.Statements[$script:mainTry.Finally.Statements.Count - 1]
+        $last | Should -BeOfType ([System.Management.Automation.Language.ExitStatementAst])
+        $last.Pipeline.Extent.Text | Should -Be '$exit'
     }
 
     It 'restores the console in the catch block BEFORE it prints the error' {

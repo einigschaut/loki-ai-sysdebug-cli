@@ -210,7 +210,8 @@ function global:New-LokiTestConsole {
     }
 
     Add-Member -InputObject $console -MemberType ScriptMethod -Name GetCtrlC -Value {
-        [void]$this.Tick('ctrl-c?')
+        # 'false' answers what Get-LokiCtrlCInput answers when the console cannot be asked.
+        if (-not $this.Tick('ctrl-c?')) { return $false }
         $this.AfterEffect()
         return $this.CtrlC
     }
@@ -227,7 +228,8 @@ function global:New-LokiTestConsole {
 
     # The geometry Get-LokiConsoleFact reports for a real interactive console.
     Add-Member -InputObject $console -MemberType ScriptMethod -Name Fact -Value {
-        [void]$this.Tick('fact')
+        # 'false' answers what Get-LokiConsoleFact answers when there is no console to read: nothing.
+        if (-not $this.Tick('fact')) { return $null }
         $this.AfterEffect()
         return @{
             HostName = 'ConsoleHost'; OutputRedirected = $false; InputRedirected = $false

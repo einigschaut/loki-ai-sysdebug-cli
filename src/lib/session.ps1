@@ -726,9 +726,13 @@ function Close-LokiSession {
     $script:LokiSessionOpen = $false
     $script:LokiSessionReason = 'closed'
     # The capture first, so nothing written while closing is swallowed into a transcript nobody draws any more. Then
-    # the screen, while Ctrl+C is STILL claimed -- a Ctrl+C pressed now is a key, not a stop that could interrupt the
-    # leave halfway. The keyboard last. This is the reverse of Open, and it used to be the other way round.
+    # a live region a command opened INSIDE the session (collect does), while the alternate screen is still up: a
+    # region closes by moving the cursor to its anchor and blanking its rows, and after the leave that anchor is read
+    # from the MAIN buffer -- an independent review measured it on a real conhost: four of the operator's rows blanked
+    # and the cursor moved, unreported. Then the screen, while Ctrl+C is STILL claimed -- a Ctrl+C pressed now is a
+    # key, not a stop that could interrupt the leave halfway. The keyboard last. This is the reverse of Open.
     Close-LokiSessionCapture
+    Close-LokiRegion
     Close-LokiScreen
     Close-LokiKeyread
 }

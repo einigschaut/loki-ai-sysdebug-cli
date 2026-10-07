@@ -1,7 +1,8 @@
 # lib/teardown.ps1 -- giving the operator's console back, in one place (issue #133 review, invariant I1).
 #
 # I1: after Loki ends by any path short of a hard kill -- including an exception or a stop at any instruction -- the
-# operator's console is as Loki found it: main screen visible, cursor visible, Ctrl+C handled the way it was.
+# operator's console is as Loki found it: main screen visible and untouched, cursor visible and where it was, Ctrl+C
+# handled the way it was, attributes reset.
 #
 # Contract:
 #   Restore-LokiConsole            undo everything Loki may have done to the console. Idempotent, never throws.
@@ -69,10 +70,13 @@ function Restore-LokiConsole {
     #
     #   1. The capture sink. Anything written from here on -- including the error message the dispatcher is about to
     #      print -- must reach the real console, not a transcript nobody draws any more.
-    #   2. The screen, while Ctrl+C is STILL claimed: a Ctrl+C pressed now arrives as a key, not as a stop that could
+    #   2. The live region, BEFORE the screen. It closes by blanking its rows at an anchor read from the console, and
+    #      while the alternate screen is up that is the alternate buffer, discarded with it. After the leave it is the
+    #      operator's main buffer: an independent review measured four of the operator's rows blanked and the cursor
+    #      moved on a real conhost, with this step after the screen. With it first: nothing changed.
+    #   3. The screen, while Ctrl+C is STILL claimed: a Ctrl+C pressed now arrives as a key, not as a stop that could
     #      interrupt the leave halfway.
-    #   3. The live region, which also writes, and so also goes before the keyboard.
-    #   4. The session, which re-runs 1-2 for itself and is then marked closed.
+    #   4. The session, which re-runs 1-3 for itself and is then marked closed.
     #   5. The keyboard, LAST: once Ctrl+C is PowerShell's again, a second press stops everything, and by then there is
     #      nothing left on the console to leave half done.
     #
@@ -85,8 +89,8 @@ function Restore-LokiConsole {
     $script:LokiRestoreFailure.Clear()
     Invoke-LokiRestoreStep -Name 'sink' -Step { Register-LokiWriteSink -Sink $null }
     Invoke-LokiRestoreStep -Name 'capture' -Step { Close-LokiSessionCapture }
-    Invoke-LokiRestoreStep -Name 'screen' -Step { Close-LokiScreen }
     Invoke-LokiRestoreStep -Name 'region' -Step { Close-LokiRegion }
+    Invoke-LokiRestoreStep -Name 'screen' -Step { Close-LokiScreen }
     Invoke-LokiRestoreStep -Name 'session' -Step { Close-LokiSession }
     Invoke-LokiRestoreStep -Name 'keyboard' -Step { Close-LokiKeyread }
 
