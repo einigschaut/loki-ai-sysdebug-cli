@@ -6,12 +6,16 @@
 # what a choice maps to, what the menu says -- lives in lib/guide.ps1 as pure functions, because a menu whose logic
 # is tangled up with Write-Host is a menu nobody can test (CLAUDE.md section 2 and 6).
 #
-# TWO PATHS, ONE MENU. The session (ADR-0039/0040) is the real guided mode: a full-screen loop that stays open,
-# recomputes what this machine can do after every command, and does not make the operator type `loki` again for
-# every action -- which was the complaint that opened #133. The one-shot menu below it is the FALLBACK, and it is
-# not a lesser copy: it is the exact code that shipped before, unchanged, and it runs whenever the session refuses
-# -- under redirection, in CI, on a console without VT, on a tiny window, and whenever the operator passed --plain.
-# Both render the same lines from Get-LokiGuideMenuLine, so they cannot drift apart.
+# TWO PATHS, ONE MENU. The session (ADR-0039/0040) is a full-screen loop that stays open, recomputes what this
+# machine can do after every command, and does not make the operator type `loki` again for every action -- which
+# was the complaint that opened #133. The one-shot menu below it is the code that shipped before the session.
+#
+# FOR NOW THE ONE-SHOT MENU IS THE DEFAULT, and the session is opt-in with LOKI_SESSION=1 (ADR-0040, amendment of
+# 2026-10-05). An independent review of the session found defects in exactly what it promises -- giving the console
+# back on every abort, stopping a running command, keeping what a command printed -- and the release goes out with
+# the session switched off rather than waiting for all of them. The one-shot menu also runs whenever an opted-in
+# session refuses: redirection, CI, no VT, a tiny window, --plain. Both render the same lines from
+# Get-LokiGuideMenuLine, so they cannot drift apart.
 #
 # A COMMAND RUNS INSIDE THE SESSION AND ITS OUTPUT IS CAPTURED. The screen is not handed over for it. That is what
 # the reference does and what makes this a session rather than a launcher, and it is possible because Loki's own
@@ -254,9 +258,18 @@ function Invoke-LokiCmd_guide {
     $configPath = Join-Path $Context.AppRoot 'loki.config.json'
     if (Test-Path -LiteralPath $configPath) { $config = Read-LokiConfig -Path $configPath }
 
-    # The session first. Open-LokiSession returning $false is a NORMAL answer and the one CI always gets, so the
-    # fallback below is not a rarely-exercised branch -- it is what the whole test suite runs against.
-    if (Open-LokiSession -Plain:(Get-LokiGuideFlag -Flags $Context.Flags -Name 'Plain')) {
+    # The session is OPT-IN for now (ADR-0040, amendment of 2026-10-05): an independent review found that it does not
+    # yet give the console back on every abort, cannot stop a running command, and loses captured output. Until those
+    # are fixed it runs only with LOKI_SESSION=1, and everyone else gets the one-shot menu below.
+    #
+    # The opt-in is checked FIRST and short-circuits. Not "try the session and let it refuse": opening it runs a VT
+    # probe that writes into the operator's cursor row, so a refusal has already touched the console. Without the
+    # opt-in, Open-LokiSession is never called at all.
+    #
+    # With the opt-in, Open-LokiSession returning $false is still a NORMAL answer -- redirection, no VT, a tiny
+    # window, --plain -- and the one-shot menu runs in its place.
+    $sessionWanted = Test-LokiGuideSessionOptIn -Value $env:LOKI_SESSION
+    if ($sessionWanted -and (Open-LokiSession -Plain:(Get-LokiGuideFlag -Flags $Context.Flags -Name 'Plain'))) {
         try { return (Invoke-LokiGuideSession -Context $Context -Config $config) }
         finally { Close-LokiSession }
     }

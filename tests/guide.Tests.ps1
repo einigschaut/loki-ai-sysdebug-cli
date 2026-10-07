@@ -715,6 +715,72 @@ Describe 'Get-LokiGuideFlag' {
     }
 }
 
+Describe 'the session is opt-in until its review findings are fixed' {
+    # The invariant this block pins, in one sentence: without LOKI_SESSION=1, no path that `loki` or `loki guide`
+    # starts ever calls Open-LokiSession -- so by default there is no VT probe, no alternate screen, no Ctrl+C claim
+    # and no capture sink. That is what lets 0.19.0 ship while the session's independent review is being worked off.
+
+    It 'treats exactly "1" as the opt-in and everything else as off' {
+        Test-LokiGuideSessionOptIn -Value '1' | Should -BeTrue
+        foreach ($v in @($null, '', '0', ' 1', '1 ', 'true', 'yes', 'on', '2', '11')) {
+            Test-LokiGuideSessionOptIn -Value $v | Should -BeFalse -Because "'$v' must not switch the session on"
+        }
+    }
+
+    Context 'the guided-mode handler' {
+        BeforeAll {
+            Initialize-LokiI18n -AppRoot (Resolve-Path "$PSScriptRoot\..\src").Path -Locale 'en' | Out-Null
+        }
+
+        BeforeEach {
+            $script:savedSessionOptIn = $env:LOKI_SESSION
+            Mock -CommandName Get-LokiGuideState -MockWith { return (New-LokiTestState) }
+            Mock -CommandName Open-LokiSession -MockWith { return $false }
+            # The fallback prompts. Read-Host is a cmdlet, so Pester can stand in for it; 'q' leaves at once. Under CI
+            # stdin is redirected and the fallback returns before ever reaching it, which is fine either way.
+            Mock -CommandName Read-Host -MockWith { return 'q' }
+            Mock -CommandName Write-LokiBrand -MockWith { }
+            Mock -CommandName Write-LokiLine -MockWith { }
+            Mock -CommandName Write-LokiColor -MockWith { }
+            Mock -CommandName Write-LokiHeading -MockWith { }
+            Mock -CommandName Write-LokiInfo -MockWith { }
+        }
+
+        AfterEach {
+            if ($null -eq $script:savedSessionOptIn) { Remove-Item Env:\LOKI_SESSION -ErrorAction SilentlyContinue }
+            else { $env:LOKI_SESSION = $script:savedSessionOptIn }
+        }
+
+        It 'never even tries to open the session when the opt-in is absent' {
+            Remove-Item Env:\LOKI_SESSION -ErrorAction SilentlyContinue
+            $ctx = @{ AppRoot = 'C:\stick'; Version = '9.9.9'; Args = @(); Flags = @{ Plain = $false; Quiet = $false }; Registry = @() }
+            Invoke-LokiCmd_guide $ctx | Should -Be 0
+            # Not "it refused" -- it was never asked. Open-LokiSession is where the VT probe writes into the operator's
+            # cursor row, so a refusal would already have touched the console.
+            Should -Invoke Open-LokiSession -Times 0 -Exactly
+            # And the one-shot menu really ran in its place.
+            Should -Invoke Get-LokiGuideState -Times 1 -Exactly
+        }
+
+        It 'does not take "0" or "true" as an opt-in either' {
+            foreach ($v in @('0', 'true')) {
+                $env:LOKI_SESSION = $v
+                $ctx = @{ AppRoot = 'C:\stick'; Version = '9.9.9'; Args = @(); Flags = @{ Plain = $false; Quiet = $false }; Registry = @() }
+                [void](Invoke-LokiCmd_guide $ctx)
+            }
+            Should -Invoke Open-LokiSession -Times 0 -Exactly
+        }
+
+        It 'tries the session with LOKI_SESSION=1, and falls back to the one-shot menu when it refuses' {
+            $env:LOKI_SESSION = '1'
+            $ctx = @{ AppRoot = 'C:\stick'; Version = '9.9.9'; Args = @(); Flags = @{ Plain = $false; Quiet = $false }; Registry = @() }
+            Invoke-LokiCmd_guide $ctx | Should -Be 0
+            Should -Invoke Open-LokiSession -Times 1 -Exactly
+            Should -Invoke Get-LokiGuideState -Times 1 -Exactly
+        }
+    }
+}
+
 Describe 'Get-LokiGuideState never throws' {
     It 'a missing stick yields an all-unavailable picture instead of an exception' {
         # A guide that crashes while explaining a broken machine is worse than no guide at all.

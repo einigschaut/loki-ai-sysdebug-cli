@@ -199,6 +199,23 @@ Precedence: `--lang` > `LOKI_LANG` > config `Language` > OS UI culture > English
 Adding a language means dropping a new `src/i18n/<locale>.psd1` with the full key set — a CI gate
 fails the build if any locale is incomplete. See [ADR-0004](docs/adr/0004-language-and-localization.md).
 
+## The full-screen session (experimental, off by default)
+
+Running `loki` with no arguments opens the guided mode as a one-shot menu: pick an entry, it runs, Loki exits.
+A full-screen session that stays open and runs commands inside itself is built, but it is **not yet the default**
+while findings from its independent review are being fixed. To try it:
+
+```powershell
+$env:LOKI_SESSION = '1'               # exactly '1' -- any other value leaves it off
+E:\loki.cmd                           # the guided mode, now as a full-screen session
+Remove-Item Env:\LOKI_SESSION         # back to the default for the rest of this shell
+```
+
+The variable lives only in the shell window you set it in.
+
+If the console cannot host it (output redirected, no VT support, a very small window, or `--plain`), Loki falls
+back to the one-shot menu on its own. See [ADR-0040](docs/adr/0040-the-guided-mode-becomes-a-session.md).
+
 ## Development
 
 Loki is built **100% with Claude Code**. Because an AI agent wrote every line, the project leans
