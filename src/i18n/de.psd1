@@ -303,4 +303,6 @@
     'guide.engine.online'       = 'online'
     'guide.engine.offline'      = 'offline'
     'guide.engine.none'         = 'keine Engine'
+    'guide.session.lost'        = 'Die Sitzung wurde unerwartet beendet ({0}).'
+    'restore.failed'            = 'Die Konsole konnte nicht vollständig wiederhergestellt werden ({0}).'
 }

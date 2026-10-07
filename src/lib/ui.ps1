@@ -13,7 +13,7 @@
 #   Register-LokiWriteSink -Sink <scriptblock>                                a session CAPTURES output instead of printing it
 #   Test-LokiWriteSinkActive / Send-LokiWriteSink -Text -NoNewline -Stream    the sink seam (ADR-0040)
 #   Invoke-LokiWriteHook / Get-LokiWriteHookError                             fires it once; records a throw
-#   Move-LokiCursor -Row <int> -> [bool]                                      absolute cursor move, $false on refusal
+#   Move-LokiCursor -Row <int> [-Col <int>] -> [bool]                         absolute cursor move, $false on refusal
 # Nutzt Write-Host -ForegroundColor (kein VT nötig -> funktioniert auf Alt-Konsolen); Fehler/Warnungen zusätzlich nach stderr.
 Set-StrictMode -Version Latest
 
@@ -155,13 +155,18 @@ function Write-LokiRaw {
 }
 
 function Move-LokiCursor {
-    param([Parameter(Mandatory = $true)][int]$Row)
+    param(
+        [Parameter(Mandatory = $true)][int]$Row,
+        [int]$Col = 0
+    )
     # The only absolute cursor move in Loki, and it reports failure instead of raising it: the console APIs throw
     # when output is redirected, and a diagnostic tool that dies while drawing a decoration is worse than one that
     # simply stops decorating. Named Move- rather than Set- on purpose (PSUseShouldProcessForStateChangingFunctions).
-    if ($Row -lt 0) { return $false }
+    # Column 0 unless told otherwise -- every caller but one wants the start of a row; the owned screen's Close wants
+    # the operator's cursor back exactly where it was (lib/screen.ps1, LokiScreenHome).
+    if ($Row -lt 0 -or $Col -lt 0) { return $false }
     try {
-        [Console]::SetCursorPosition(0, $Row)
+        [Console]::SetCursorPosition($Col, $Row)
         return $true
     }
     catch { return $false }

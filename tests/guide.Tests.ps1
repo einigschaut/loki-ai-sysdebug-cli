@@ -548,9 +548,14 @@ Describe 'Invoke-LokiGuideSession -- the loop' {
         $script:roundIndex | Should -Be 2
     }
 
-    It 'stops when the console goes away underneath it' {
-        Set-LokiTestRound -Rounds @(([pscustomobject]@{ Action = 'closed'; Text = '' }))
-        Invoke-LokiGuideSession -Context (New-LokiTestGuideContext) -Config @{} | Should -Be 0
+    It 'stops when the console goes away underneath it, and says so with an error code' {
+        # A session that ended because its screen or keyboard went away used to leave with 0 and no word -- a failure
+        # that looked like success. An independent review also found this test could not fail: the round mock falls
+        # back to 'exit' once its list is used up, and 'exit' returned 0 too. GeneralError is what tells them apart.
+        Mock -CommandName Write-LokiWarn -MockWith { }
+        Set-LokiTestRound -Rounds @(([pscustomobject]@{ Action = 'closed'; Text = 'screen:write-failed' }))
+        Invoke-LokiGuideSession -Context (New-LokiTestGuideContext) -Config @{} | Should -Be (Get-LokiExitCode 'GeneralError')
+        Should -Invoke Write-LokiWarn -Times 1 -Exactly -ParameterFilter { $Text -like '*screen:write-failed*' }
     }
 
     It 'returns the command exit code when the screen cannot be taken back after an interactive one' {

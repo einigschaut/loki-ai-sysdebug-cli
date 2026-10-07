@@ -261,6 +261,7 @@ function Get-LokiConsoleFact {
             BufferWidth      = [int]$rawUi.BufferSize.Width
             BufferHeight     = [int]$rawUi.BufferSize.Height
             CursorTop        = [int]$rawUi.CursorPosition.Y
+            CursorLeft       = [int]$rawUi.CursorPosition.X
         }
     }
     catch { return $null }

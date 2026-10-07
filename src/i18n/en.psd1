@@ -305,4 +305,6 @@
     'guide.engine.online'       = 'online'
     'guide.engine.offline'      = 'offline'
     'guide.engine.none'         = 'no engine'
+    'guide.session.lost'        = 'The session ended unexpectedly ({0}).'
+    'restore.failed'            = 'Could not fully restore the console ({0}).'
 }

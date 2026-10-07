@@ -565,13 +565,26 @@ function Open-LokiSession {
     # "the session did not start" is not something an operator can act on.
     Close-LokiSession
 
-    if (-not (Open-LokiScreen -Plain:$Plain)) {
-        $script:LokiSessionReason = 'screen:' + (Get-LokiScreenRefusal)
+    # The screen's cheap refusals FIRST -- --plain, redirection, a foreign host, a tiny window -- because they need no
+    # keyboard, and a session that was never going to open must not claim the operator's Ctrl+C and release it again:
+    # a release that fails would leave it claimed on a run that never showed a session at all.
+    $pre = Get-LokiScreenPrecheck -Plain:$Plain
+    if (-not $pre.Engage) {
+        $script:LokiSessionReason = 'screen:' + [string]$pre.Reason
         return $false
     }
+
+    # Then the keyboard, then the screen -- and Close does the reverse. With Ctrl+C claimed before the screen
+    # opens, a Ctrl+C pressed while it opens arrives as a key the session reads later, not as a stop that tears the
+    # opening apart halfway. An independent review found the old order (screen first) let exactly that Ctrl+C leave
+    # the operator in the alternate screen with the cursor hidden.
     if (-not (Open-LokiKeyread)) {
-        Close-LokiScreen
         $script:LokiSessionReason = 'keyread:' + (Get-LokiKeyreadRefusal)
+        return $false
+    }
+    if (-not (Open-LokiScreen -Plain:$Plain)) {
+        $script:LokiSessionReason = 'screen:' + (Get-LokiScreenRefusal)
+        Close-LokiKeyread
         return $false
     }
 
@@ -606,8 +619,20 @@ function Invoke-LokiSessionRound {
     }
 
     Write-LokiSessionFrame -State $State
+    # A frame (or a caret move) that could not be written closes the SCREEN. If the session carried on regardless, the
+    # next key would run a command with nothing drawn and Ctrl+C still claimed -- which is what an independent review
+    # found it did. So a lost screen ends the session, and Text says why, for the caller to report.
+    if (-not (Test-LokiScreenOpen)) {
+        $why = 'screen:' + (Get-LokiScreenRefusal)
+        Close-LokiSession
+        return [pscustomobject]@{ Action = 'closed'; Text = $why }
+    }
     $key = Read-LokiKey
-    if ($null -eq $key) { return [pscustomobject]@{ Action = 'closed'; Text = '' } }
+    if ($null -eq $key) {
+        $why = 'keyread:' + (Get-LokiKeyreadRefusal)
+        Close-LokiSession
+        return [pscustomobject]@{ Action = 'closed'; Text = $why }
+    }
 
     # AFTER the read, and it can only be here. Nothing announces a resize -- measured for ADR-0037:
     # dragging 209x51 down to 75x30 while a read was pending returned normally, and the new size
@@ -615,6 +640,15 @@ function Invoke-LokiSessionRound {
     # session learns its window changed, and it must learn it before the next frame is laid out
     # against a geometry that no longer exists.
     [void](Resize-LokiScreen)
+
+    # The repaint after a resize can fail too, and it closes the screen when it does. The key must not be acted on
+    # then: an independent review found the round returning the key's action anyway, so the caller ran a command with
+    # nothing drawn and Ctrl+C still claimed.
+    if (-not (Test-LokiScreenOpen)) {
+        $why = 'screen:' + (Get-LokiScreenRefusal)
+        Close-LokiSession
+        return [pscustomobject]@{ Action = 'closed'; Text = $why }
+    }
 
     return Step-LokiSession -State $State -Key $key
 }
@@ -666,12 +700,13 @@ function Open-LokiSessionCapture {
     param([Parameter(Mandatory = $true)][AllowNull()][hashtable]$State)
     # Everything a command prints from here until Close-LokiSessionCapture becomes transcript instead of console.
     #
-    # A PLAIN scriptblock, deliberately NOT one built with .GetNewClosure(). A closure gets its own module scope,
-    # and dot-sourced functions are invisible from inside it -- so a closure that captured the state could not call
-    # Add-LokiSessionEntry at all. Measured 2026-08-31, and it fails the same way in the dispatcher as in a test,
-    # because Loki dot-sources every lib into one script scope rather than importing modules. A plain scriptblock
-    # keeps THIS file's session state, so the call below resolves; the state it needs travels in a script variable
-    # rather than in a capture.
+    # A PLAIN scriptblock, deliberately NOT one built with .GetNewClosure(). A closure gets its own module scope, and
+    # UNDER PESTER the dot-sourced lib functions are invisible from inside it -- Add-LokiSessionEntry is "not
+    # recognized". This comment used to claim the same happens in the dispatcher; an independent review measured
+    # otherwise, and so did a re-check: loaded the way src/loki.ps1 loads the libs, a closure DOES resolve them. The
+    # plain scriptblock is still the right choice, for a smaller reason than first given -- it behaves the same in
+    # production and in the tests, so the tests exercise the path that ships. The state it needs travels in a script
+    # variable rather than in a capture.
     $script:LokiSessionCaptureState = $State
     $script:LokiSessionCapturePaintTicks = 0
     Register-LokiWriteSink -Sink { param([hashtable]$LokiWrite) Write-LokiSessionCapture -Write $LokiWrite }
@@ -690,6 +725,14 @@ function Close-LokiSession {
     # dispatcher's finally block, which exists precisely for the paths nobody planned.
     $script:LokiSessionOpen = $false
     $script:LokiSessionReason = 'closed'
-    Close-LokiKeyread
+    # The capture first, so nothing written while closing is swallowed into a transcript nobody draws any more. Then
+    # a live region a command opened INSIDE the session (collect does), while the alternate screen is still up: a
+    # region closes by moving the cursor to its anchor and blanking its rows, and after the leave that anchor is read
+    # from the MAIN buffer -- an independent review measured it on a real conhost: four of the operator's rows blanked
+    # and the cursor moved, unreported. Then the screen, while Ctrl+C is STILL claimed -- a Ctrl+C pressed now is a
+    # key, not a stop that could interrupt the leave halfway. The keyboard last. This is the reverse of Open.
+    Close-LokiSessionCapture
+    Close-LokiRegion
     Close-LokiScreen
+    Close-LokiKeyread
 }
