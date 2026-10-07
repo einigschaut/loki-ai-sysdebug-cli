@@ -19,6 +19,8 @@
 #       PURE. The menu as text, once, for BOTH renderers -- the coloured one-shot fallback and the session
 #       transcript. Role ('available' | 'muted') is what the fallback colours by; the session cannot colour at
 #       all, because an escape sequence inside a screen model breaks the diff's column arithmetic (ADR-0039).
+#   Test-LokiGuideSessionOptIn -Value <string> -> [bool]
+#       PURE. Whether the full-screen session may be tried at all. Off unless the value is exactly '1' (ADR-0040).
 #   Get-LokiGuideEngineLabel -State <hashtable> -> [string]  a catalog key
 #       PURE. Which engine would answer right now. The session's status row carries this and nothing else about
 #       the machine (ADR-0038): it is the one fact that genuinely changes mid-session.
@@ -323,6 +325,19 @@ function Get-LokiGuideMenuLine {
     # of its call sites. Here every caller wants to iterate, so unrolling is exactly right: N lines come back as N,
     # one line as one, and none as nothing. Written the other way first, and the tests caught it.
     return $out.ToArray()
+}
+
+function Test-LokiGuideSessionOptIn {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][AllowNull()][string]$Value)
+    # PURE. The full-screen session is OPT-IN until the findings of its independent review are fixed (ADR-0040,
+    # amendment of 2026-10-05). Until then the guided mode is the one-shot menu that shipped before it, and the
+    # session runs only for someone who asks for it with LOKI_SESSION=1.
+    #
+    # Exactly '1' and nothing else, deliberately stricter than LOKI_PLAIN (which takes any non-empty value). The two
+    # are not symmetric: a false positive for --plain only makes the output plainer, while a false positive here
+    # puts an operator into the alternate screen and claims their Ctrl+C. LOKI_SESSION=0 meaning "on" would be the
+    # kind of surprise that cannot be allowed on a switch whose whole purpose is keeping something off.
+    return ($Value -ceq '1')
 }
 
 function Get-LokiGuideEngineLabel {

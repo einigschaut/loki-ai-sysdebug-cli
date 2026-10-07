@@ -1,6 +1,7 @@
 # ADR-0040: The guided mode becomes a session, and captures what it runs
 
-Status: Accepted (2026-08-31)
+Status: Accepted (2026-08-31) — **amended 2026-10-05: the session ships switched off, opt-in with `LOKI_SESSION=1`.**
+See *Amendment* at the end.
 
 The last slice of #133. ADR-0036 to ADR-0039 built a screen, a keyboard, a line editor and a loop; this is the
 command that opens one. `commands/guide.ps1` shrinks to "start a session", exactly as #133 planned it.
@@ -126,3 +127,32 @@ asserting something that must be non-default.
   inheritance from the spinner, not by measuring this case.
 - **Typing a command name instead of a number.** The line editor makes it possible and the registry makes it cheap;
   it is not in this slice because `Resolve-LokiGuideChoice` is the existing, tested contract.
+
+## Amendment (2026-10-05): shipped switched off, opt-in with `LOKI_SESSION=1`
+
+An independent review of the session and the layers under it (ADR-0036 to ADR-0040), run after this ADR was
+accepted, found defects in exactly the things this ADR promises: that the console is given back unchanged on every
+abort, that a command running inside the session can be stopped, and that what a command printed survives. Several
+of the claims above are therefore wrong as written, and are corrected in the changes that fix them rather than here.
+
+The maintainer's decision was not to hold the release for all of them. Until they are fixed, **bare `loki` and
+`loki guide` run the one-shot menu that shipped before the session**, and the session runs only for someone who
+asks for it:
+
+```powershell
+$env:LOKI_SESSION = '1'   # exactly '1'; any other value, including '0' and 'true', leaves it off
+loki
+```
+
+The opt-in is checked **before** `Open-LokiSession` is called, not after it refuses. Opening a session runs a VT
+probe that writes into the operator's cursor row, so a refusal has already touched the console; without the opt-in
+nothing in the session layer runs at all — no probe, no alternate screen, no Ctrl+C claim, no capture sink. With
+the opt-in, a session that refuses (redirection, no VT, a tiny window, `--plain`) still falls back to the one-shot
+menu exactly as before.
+
+The switch is deliberately stricter than `LOKI_PLAIN`, which takes any non-empty value. The two mistakes are not
+symmetric: a false positive for plain output only makes the output plainer, while a false positive here puts an
+operator into the alternate screen and claims their Ctrl+C.
+
+This is a temporary state, and the switch goes when the findings are fixed — at which point the session becomes the
+default again and `LOKI_SESSION` stops being consulted.
